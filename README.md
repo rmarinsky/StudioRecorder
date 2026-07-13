@@ -26,6 +26,15 @@ Requirements: Xcode 26.5, XcodeGen, macOS Tahoe 26 on Apple Silicon.
 
 On first launch, grant Screen Recording and Microphone access in macOS when requested. Use one short recording first and verify the raw `.mov` files and `journal.ndjson` in the project package.
 
+## Install the DEV app
+
+    ./scripts/dev-install.sh
+
+This builds an arm64 Debug bundle with the separate identifier
+ua.com.rmarinsky.studiorecorder.dev, installs it as
+/Applications/Studio Recorder DEV.app, and launches it. Its permissions are
+separate from a future release build.
+
 ## Test
 
     xcodebuild -project StudioRecorder.xcodeproj -scheme StudioRecorder \
