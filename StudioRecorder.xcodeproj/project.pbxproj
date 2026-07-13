@@ -1,0 +1,463 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
+		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
+		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
+		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
+		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
+		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
+		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
+		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2E96BB2028CD2063C591C7DD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E71B071AC7021315EE0841A6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C3F3C710F9EA1B2082E5B95F;
+			remoteInfo = StudioRecorder;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		027D0183284B828436F04225 /* StudioRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
+		3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlannerTests.swift; sourceTree = "<group>"; };
+		4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderRootView.swift; sourceTree = "<group>"; };
+		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9A418726188BA1186770D369 /* RecordingProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStore.swift; sourceTree = "<group>"; };
+		B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCoordinator.swift; sourceTree = "<group>"; };
+		C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlanner.swift; sourceTree = "<group>"; };
+		D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlannerTests.swift; sourceTree = "<group>"; };
+		FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudioRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0AA0B2638E89C4D301F652D5 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		330971FAA4ECDBCD9C3F2F9F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */,
+				027D0183284B828436F04225 /* StudioRecorderTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4311767BE24A5CFB6E9C3496 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */,
+				2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		5337D38CB9E134F023ECDA2A /* StudioRecorder */ = {
+			isa = PBXGroup;
+			children = (
+				CBA642BF5C7EBB2A6DD26436 /* App */,
+				4311767BE24A5CFB6E9C3496 /* Domain */,
+				67CDD07686B91E7A4757E663 /* Resources */,
+				0AA0B2638E89C4D301F652D5 /* UI */,
+			);
+			path = StudioRecorder;
+			sourceTree = "<group>";
+		};
+		67CDD07686B91E7A4757E663 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				6F8286A5033B63337E4DD342 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		AEB60D501EAC087B4F803C04 /* StudioRecorderTests */ = {
+			isa = PBXGroup;
+			children = (
+				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
+				3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */,
+			);
+			path = StudioRecorderTests;
+			sourceTree = "<group>";
+		};
+		BCC583B46E8F372CEE4C3BCE /* Recording */ = {
+			isa = PBXGroup;
+			children = (
+				B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */,
+			);
+			path = Recording;
+			sourceTree = "<group>";
+		};
+		CB745AD74D63EDF34EBCA822 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				9A418726188BA1186770D369 /* RecordingProjectStore.swift */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		CBA642BF5C7EBB2A6DD26436 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		DB8939C8D6309FF7722ADBF4 = {
+			isa = PBXGroup;
+			children = (
+				CB745AD74D63EDF34EBCA822 /* Domain */,
+				BCC583B46E8F372CEE4C3BCE /* Recording */,
+				5337D38CB9E134F023ECDA2A /* StudioRecorder */,
+				AEB60D501EAC087B4F803C04 /* StudioRecorderTests */,
+				330971FAA4ECDBCD9C3F2F9F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C3F3C710F9EA1B2082E5B95F /* StudioRecorder */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7EC436051ABBC9303EDD79DB /* Build configuration list for PBXNativeTarget "StudioRecorder" */;
+			buildPhases = (
+				A77BB2CF2232BF266804EA4A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StudioRecorder;
+			packageProductDependencies = (
+			);
+			productName = StudioRecorder;
+			productReference = FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D5A537D71DF98B8D30D4F873 /* StudioRecorderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 134EBA65D624FAB740D437E7 /* Build configuration list for PBXNativeTarget "StudioRecorderTests" */;
+			buildPhases = (
+				1A0BB5A010D6226E81F72FF7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EC8A7E73DEDD42EFB344673F /* PBXTargetDependency */,
+			);
+			name = StudioRecorderTests;
+			packageProductDependencies = (
+			);
+			productName = StudioRecorderTests;
+			productReference = 027D0183284B828436F04225 /* StudioRecorderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E71B071AC7021315EE0841A6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = D5DBE17CE1AAA213E68DD89B /* Build configuration list for PBXProject "StudioRecorder" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = DB8939C8D6309FF7722ADBF4;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 330971FAA4ECDBCD9C3F2F9F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C3F3C710F9EA1B2082E5B95F /* StudioRecorder */,
+				D5A537D71DF98B8D30D4F873 /* StudioRecorderTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A0BB5A010D6226E81F72FF7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
+				1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A77BB2CF2232BF266804EA4A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
+				8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */,
+				0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */,
+				C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */,
+				DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */,
+				A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		EC8A7E73DEDD42EFB344673F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C3F3C710F9EA1B2082E5B95F /* StudioRecorder */;
+			targetProxy = 2E96BB2028CD2063C591C7DD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0CC5ECB08D3B8FACDC3CB6D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = StudioRecorder/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ua.com.rmarinsky.studiorecorder;
+				PRODUCT_MODULE_NAME = StudioRecorder;
+				PRODUCT_NAME = "Studio Recorder";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		19887832A7A339D2EE798DC7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A0BAE85DE3061EC4A0A2E9B5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ua.com.rmarinsky.studiorecorder.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Studio Recorder.app/Contents/MacOS/Studio Recorder";
+			};
+			name = Release;
+		};
+		AB9F28907D61779180D404CB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ua.com.rmarinsky.studiorecorder.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Studio Recorder.app/Contents/MacOS/Studio Recorder";
+			};
+			name = Debug;
+		};
+		BDD5CB87D6CC3C97136D51F4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = StudioRecorder/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ua.com.rmarinsky.studiorecorder;
+				PRODUCT_MODULE_NAME = StudioRecorder;
+				PRODUCT_NAME = "Studio Recorder";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		D99D66F2871FF6216744A272 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		134EBA65D624FAB740D437E7 /* Build configuration list for PBXNativeTarget "StudioRecorderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB9F28907D61779180D404CB /* Debug */,
+				A0BAE85DE3061EC4A0A2E9B5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7EC436051ABBC9303EDD79DB /* Build configuration list for PBXNativeTarget "StudioRecorder" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0CC5ECB08D3B8FACDC3CB6D7 /* Debug */,
+				BDD5CB87D6CC3C97136D51F4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D5DBE17CE1AAA213E68DD89B /* Build configuration list for PBXProject "StudioRecorder" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D99D66F2871FF6216744A272 /* Debug */,
+				19887832A7A339D2EE798DC7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E71B071AC7021315EE0841A6 /* Project object */;
+}

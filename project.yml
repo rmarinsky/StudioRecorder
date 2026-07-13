@@ -1,0 +1,47 @@
+name: StudioRecorder
+options:
+  minimumXcodeGenVersion: 2.38.0
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "6.0"
+targets:
+  StudioRecorder:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: StudioRecorder
+      - path: Domain
+      - path: Recording
+    info:
+      path: StudioRecorder/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ua.com.rmarinsky.studiorecorder
+        PRODUCT_NAME: Studio Recorder
+        PRODUCT_MODULE_NAME: StudioRecorder
+        GENERATE_INFOPLIST_FILE: NO
+  StudioRecorderTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: StudioRecorderTests
+    dependencies:
+      - target: StudioRecorder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ua.com.rmarinsky.studiorecorder.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Studio Recorder.app/Contents/MacOS/Studio Recorder"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  StudioRecorder:
+    build:
+      targets:
+        StudioRecorder: all
+        StudioRecorderTests: [test]
+    test:
+      targets:
+        - StudioRecorderTests
