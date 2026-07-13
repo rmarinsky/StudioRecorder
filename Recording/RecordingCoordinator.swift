@@ -46,8 +46,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var durationTask: Task<Void, Never>?
     private var startedOutputIDs: Set<ObjectIdentifier> = []
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
-    private var outputCompletion: CheckedContinuation<Void, Never>?
+    private var outputCompletion: CheckedContinuation<Bool, Never>?
     private var isTearingDown = false
+    private var terminalFailure: String?
 
     override init() {
         super.init()
@@ -74,6 +75,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     func startRecording(selectedDisplayIDs: Set<UInt32>) async {
         guard state == .ready else { return }
         state = .preparing
+        terminalFailure = nil
 
         do {
             let content = try await SCShareableContent.current
@@ -117,33 +119,36 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             startDurationTimer()
             state = .recording
         } catch {
-            await finalizeInterruptedRecording(reason: error.localizedDescription)
+            await beginInterruptedTeardown(reason: error.localizedDescription)
         }
     }
 
     func stopRecording() async {
         guard state == .recording else { return }
+        isTearingDown = true
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
         let stopErrors = await stopCaptures()
 
-        if let activeProject, stopErrors.isEmpty {
+        if let reason = terminalFailure ?? stopErrors.first {
+            completeInterruptedTeardown(reason: reason)
+            return
+        }
+
+        if let activeProject {
             do {
                 try projectStore.close(activeProject)
             } catch {
-                state = .failed(error.localizedDescription)
+                completeInterruptedTeardown(reason: error.localizedDescription)
                 return
             }
         }
 
-        if stopErrors.isEmpty {
-            clearCaptureState()
-            state = .ready
-            interruptedProjects = projectStore.interruptedProjects()
-        } else {
-            await finalizeInterruptedRecording(reason: stopErrors.map(\.localizedDescription).joined(separator: "; "))
-        }
+        clearCaptureState()
+        state = .ready
+        interruptedProjects = projectStore.interruptedProjects()
+        isTearingDown = false
     }
 
     private func makeStreamConfiguration(
@@ -183,20 +188,22 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func stopCaptures() async -> [Error] {
+    private func stopCaptures() async -> [String] {
         let activeCaptures = Array(captures.values)
         pendingOutputIDs = Set(activeCaptures.map(\.output).map(ObjectIdentifier.init))
             .intersection(startedOutputIDs)
-        var errors: [Error] = []
+        var errors: [String] = []
 
         for capture in activeCaptures {
             do {
                 try await capture.stream.stopCapture()
             } catch {
-                errors.append(error)
+                errors.append(error.localizedDescription)
             }
         }
-        await waitForPendingOutputs()
+        if await waitForPendingOutputs() {
+            errors.append("Timed out while finalizing one or more recording outputs.")
+        }
         return errors
     }
 
@@ -204,14 +211,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         captures.values.first { $0.output === output }
     }
 
-    private func waitForPendingOutputs() async {
-        guard !pendingOutputIDs.isEmpty else { return }
+    private func waitForPendingOutputs() async -> Bool {
+        guard !pendingOutputIDs.isEmpty else { return false }
 
-        await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { continuation in
             outputCompletion = continuation
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(5))
-                self?.finishPendingOutputs()
+                self?.timeOutPendingOutputs()
             }
         }
     }
@@ -221,24 +228,30 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         startedOutputIDs.remove(outputID)
         pendingOutputIDs.remove(outputID)
         if pendingOutputIDs.isEmpty {
-            outputCompletion?.resume()
+            outputCompletion?.resume(returning: false)
             outputCompletion = nil
         }
     }
 
-    private func finishPendingOutputs() {
+    private func timeOutPendingOutputs() {
+        guard !pendingOutputIDs.isEmpty else { return }
         pendingOutputIDs.removeAll()
-        outputCompletion?.resume()
+        outputCompletion?.resume(returning: true)
         outputCompletion = nil
     }
 
-    private func finalizeInterruptedRecording(reason: String) async {
+    private func beginInterruptedTeardown(reason: String) async {
+        terminalFailure = terminalFailure ?? reason
         guard !isTearingDown else { return }
         isTearingDown = true
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
         _ = await stopCaptures()
+        completeInterruptedTeardown(reason: terminalFailure ?? reason)
+    }
+
+    private func completeInterruptedTeardown(reason: String) {
         if let activeProject {
             try? projectStore.markInterrupted(activeProject, detail: reason)
         }
@@ -279,8 +292,9 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             if let project = self.activeProject {
                 try? self.projectStore.markFailure(displayID: displayID, detail: error.localizedDescription, in: project)
             }
+            self.terminalFailure = self.terminalFailure ?? error.localizedDescription
             self.finishOutput(recordingOutput)
-            await self.finalizeInterruptedRecording(reason: error.localizedDescription)
+            await self.beginInterruptedTeardown(reason: error.localizedDescription)
         }
     }
 }
