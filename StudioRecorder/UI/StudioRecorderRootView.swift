@@ -125,8 +125,8 @@ struct StudioRecorderRootView: View {
                     GroupBox("Tracks") {
                         VStack(alignment: .leading, spacing: 10) {
                             TrackRow(icon: "display", title: "Screen", detail: "One raw .mov per selected display")
-                            TrackRow(icon: "waveform", title: "System audio", detail: "Embedded in raw capture")
-                            TrackRow(icon: "mic", title: "Microphone", detail: "Embedded in raw capture")
+                            TrackRow(icon: "waveform", title: "System audio", detail: "Embedded once in the primary screen capture")
+                            TrackRow(icon: "mic", title: "Microphone", detail: "Embedded once in the primary screen capture")
                             TrackRow(icon: "video", title: "Camera", detail: "Next capture slice")
                         }
                         .padding(.vertical, 4)
@@ -173,11 +173,25 @@ struct StudioRecorderRootView: View {
     }
 
     private var recoveryView: some View {
-        ContentUnavailableView(
-            "No interrupted projects found",
-            systemImage: "checkmark.shield",
-            description: Text("Recovery scans will use the project journal and finalized raw tracks. This first build writes the required journal events during capture.")
-        )
+        Group {
+            if coordinator.interruptedProjects.isEmpty {
+                ContentUnavailableView(
+                    "No interrupted projects found",
+                    systemImage: "checkmark.shield",
+                    description: Text("The project directory was scanned for recording packages that did not close cleanly.")
+                )
+            } else {
+                List(coordinator.interruptedProjects) { project in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(project.rootURL.lastPathComponent)
+                            .fontWeight(.medium)
+                        Text("\(project.displays.count) display track(s) · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
         .navigationTitle("Recovery")
     }
 

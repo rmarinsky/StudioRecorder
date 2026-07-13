@@ -18,5 +18,11 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Studio Recorder will use your camera for an optional camera track.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Studio Recorder records your selected microphone as part of the primary raw capture.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Studio Recorder records the displays you select into recoverable raw tracks.</string>
 </dict>
 </plist>

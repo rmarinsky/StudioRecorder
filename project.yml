@@ -16,6 +16,10 @@ targets:
       - path: Recording
     info:
       path: StudioRecorder/Resources/Info.plist
+      properties:
+        NSCameraUsageDescription: Studio Recorder will use your camera for an optional camera track.
+        NSMicrophoneUsageDescription: Studio Recorder records your selected microphone as part of the primary raw capture.
+        NSScreenCaptureUsageDescription: Studio Recorder records the displays you select into recoverable raw tracks.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ua.com.rmarinsky.studiorecorder
