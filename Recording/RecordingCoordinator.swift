@@ -1,6 +1,5 @@
 @preconcurrency import ScreenCaptureKit
 import AVFoundation
-import AppKit
 import CoreGraphics
 import Foundation
 import SwiftUI
@@ -81,14 +80,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         interruptedProjects = snapshots.filter(\.isInterrupted)
     }
 
-    func openScreenRecordingSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
-    }
-
-    func startRecording(selectedDisplayIDs: Set<UInt32>) async {
+    func startRecording(selectedDisplayIDs: Set<UInt32>, capturesMicrophone: Bool = true) async {
         guard state == .ready else { return }
         state = .preparing
         terminalFailure = nil
@@ -112,7 +104,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         metadataState: .known
                     )
                 },
-                primaryAudioDisplayID: primaryAudioDisplayID
+                primaryAudioDisplayID: primaryAudioDisplayID,
+                capturesMicrophone: capturesMicrophone
             )
             activeProject = project
             let ownApplication = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
@@ -126,7 +119,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 let configuration = makeStreamConfiguration(
                     for: display,
                     filter: filter,
-                    capturesAudio: display.displayID == primaryAudioDisplayID
+                    capturesAudio: display.displayID == primaryAudioDisplayID,
+                    capturesMicrophone: capturesMicrophone
                 )
                 guard let outputURL = projectStore.rawTrackURL(for: display.displayID, in: project) else {
                     throw RecordingProjectStoreError.missingTrackDescriptor(displayID: display.displayID)
@@ -181,7 +175,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func makeStreamConfiguration(
         for display: SCDisplay,
         filter: SCContentFilter,
-        capturesAudio: Bool
+        capturesAudio: Bool,
+        capturesMicrophone: Bool
     ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.width = Int(CGFloat(display.width) * CGFloat(filter.pointPixelScale))
@@ -190,7 +185,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         configuration.queueDepth = 5
         configuration.showsCursor = true
         configuration.capturesAudio = capturesAudio
-        configuration.captureMicrophone = capturesAudio
+        configuration.captureMicrophone = capturesAudio && capturesMicrophone
         configuration.excludesCurrentProcessAudio = true
         configuration.streamName = "Raw screen \(display.displayID)"
         return configuration

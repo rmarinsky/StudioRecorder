@@ -29,7 +29,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         let store = RecordingProjectStore(baseDirectory: rootURL)
         let project = try store.createProject(
             sources: [.init(displayID: 1, name: "Built-in Retina Display", pixelWidth: 3_024, pixelHeight: 1_964, metadataState: .known)],
-            primaryAudioDisplayID: 1
+            primaryAudioDisplayID: 1,
+            capturesMicrophone: false
         )
         try await writeReadableMovie(to: try outputURL(for: 1, in: project, store: store))
         try store.markStarted(displayID: 1, in: project)
@@ -41,6 +42,7 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(manifest.schemaVersion, 2)
         XCTAssertNotNil(manifest.captureRequest)
+        XCTAssertEqual(manifest.captureRequest?.capturesMicrophone, false)
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-1.mov"])
         XCTAssertEqual(manifest.captureRequest?.sources.single?.metadataState, .known)
         XCTAssertEqual(snapshots.single?.lifecycle, .finalized)

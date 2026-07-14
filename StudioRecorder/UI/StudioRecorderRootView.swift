@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import SwiftUI
 
@@ -54,6 +55,9 @@ struct StudioRecorderRootView: View {
         .task {
             await model.launch()
             liveScene.startCameraPreview()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await model.appBecameActive() }
         }
     }
 
@@ -161,7 +165,7 @@ struct StudioRecorderRootView: View {
 
     @ViewBuilder
     private var studioDestination: some View {
-        if snapshot.availableDisplays.isEmpty, case .failed = snapshot.captureState {
+        if snapshot.showsCaptureRepair {
             permissionRepairView
         } else {
             studioView
@@ -176,7 +180,7 @@ struct StudioRecorderRootView: View {
                     .foregroundStyle(coral)
                 Text("Your recording desk needs access.")
                     .font(.largeTitle.weight(.semibold))
-                Text("Screen Recording is required to discover and record selected displays. Nothing starts in the background.")
+                Text(permissionRepair.explanation)
                     .foregroundStyle(.secondary)
                 Spacer()
                 RoundedRectangle(cornerRadius: 12)
@@ -189,32 +193,95 @@ struct StudioRecorderRootView: View {
 
             VStack(alignment: .leading, spacing: 18) {
                 Text("CAPTURE CHECK").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("Allow Screen Recording")
-                    .font(.title2.weight(.semibold))
-                Text("When you return, choose Check Again to refresh access before recording.")
-                    .foregroundStyle(.secondary)
-                Divider()
-                Label("Screen Recording is unavailable", systemImage: "display")
-                Label("Microphone is configured in the capture stream", systemImage: "mic")
-                    .foregroundStyle(.secondary)
-                Label("Camera is a later capture slice", systemImage: "video")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Open System Settings") {
-                    model.openScreenRecordingSettings()
+                if permissionRepair.showsLoadingSkeleton {
+                    Text("Checking permissions")
+                        .font(.title2.weight(.semibold))
+                    ProgressView()
+                        .controlSize(.large)
+                        .accessibilityLabel("Checking capture permissions")
+                    VStack(alignment: .leading, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 5).fill(.quaternary).frame(height: 18)
+                        RoundedRectangle(cornerRadius: 5).fill(.quaternary).frame(width: 230, height: 18)
+                    }
+                    .redacted(reason: .placeholder)
+                    Spacer()
+                } else {
+                    Text(permissionRepair.title)
+                        .font(.title2.weight(.semibold))
+                    Text(permissionRepair.detail)
+                        .foregroundStyle(.secondary)
+                    Divider()
+                    permissionStatusRow(
+                        "Screen Recording",
+                        label: permissionRepair.screenStatusLabel,
+                        isGranted: snapshot.permissionSnapshot.screenRecording.isGranted,
+                        icon: "display"
+                    )
+                    permissionStatusRow(
+                        "Microphone",
+                        label: permissionRepair.microphoneStatusLabel,
+                        isGranted: snapshot.permissionSnapshot.microphone.isGranted,
+                        icon: "mic"
+                    )
+                    Label("Camera is a later capture slice", systemImage: "video")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+
+                    if permissionRepair.actions.contains(.requestAccess) {
+                        Button(permissionRepair.permission == .microphone ? "Allow Microphone" : "Allow Screen Recording") {
+                            Task { await model.requestPermission(permissionRepair.permission) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(coral)
+                    }
+
+                    if permissionRepair.actions.contains(.openSystemSettings) {
+                        Button("Open System Settings") {
+                            model.openSystemSettings(for: permissionRepair.permission)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if permissionRepair.actions.contains(.recordWithoutMicrophone) {
+                        Button("Record Without Microphone") {
+                            model.send(.recordWithoutMicrophone)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if permissionRepair.actions.contains(.checkAgain) {
+                        Button("Check Again") {
+                            Task { await model.refreshCaptureSources() }
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(coral)
-                Button("Check Again") {
-                    Task { await model.refreshCaptureSources() }
+
+                if permissionRepair.actions.contains(.browseProjects) {
+                    Button("Browse Existing Projects") {
+                        model.send(.selectRoute(.projects))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.bordered)
             }
             .frame(width: 390, alignment: .leading)
             .padding(40)
             .background(.thinMaterial)
         }
         .navigationTitle("Capture access")
+    }
+
+    private var permissionRepair: PermissionRepairPresentation {
+        guard let presentation = snapshot.permissionRepairPresentation else {
+            preconditionFailure("Permission repair presentation requested outside repair state")
+        }
+        return presentation
+    }
+
+    private func permissionStatusRow(_ title: String, label: String, isGranted: Bool, icon: String) -> some View {
+        Label("\(title): \(label)", systemImage: icon)
+            .foregroundStyle(isGranted ? .green : .secondary)
+            .accessibilityLabel("\(title), \(label)")
     }
 
     private var studioView: some View {
@@ -258,6 +325,10 @@ struct StudioRecorderRootView: View {
                         get: { liveScene.selectedCameraID },
                         set: { liveScene.selectCamera($0) }
                     ),
+                    capturesMicrophone: Binding(
+                        get: { snapshot.capturesMicrophone },
+                        set: { model.send(.setCapturesMicrophone($0)) }
+                    ),
                     isLocked: snapshot.captureState == .recording || snapshot.captureState == .stopping
                 )
                 .frame(width: 304)
@@ -266,7 +337,10 @@ struct StudioRecorderRootView: View {
 
             Divider()
             HStack(spacing: 16) {
-                Label("Microphone is clear", systemImage: "mic")
+                Label(
+                    snapshot.capturesMicrophone ? "Microphone is included" : "Recording without microphone",
+                    systemImage: "mic"
+                )
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 Button(action: toggleRecording) {
@@ -311,7 +385,9 @@ struct StudioRecorderRootView: View {
     }
 
     private var canToggleRecording: Bool {
-        !snapshot.isCaptureCommandInFlight && (snapshot.captureState == .ready || snapshot.captureState == .recording)
+        guard !snapshot.isCaptureCommandInFlight else { return false }
+        if snapshot.captureState == .recording { return true }
+        return snapshot.captureState == .ready && snapshot.requiredCapturePermission == nil
     }
 
     private var recordButtonTitle: String {
@@ -319,11 +395,14 @@ struct StudioRecorderRootView: View {
     }
 
     private var statusColor: Color {
+        if snapshot.showsCaptureRepair {
+            return .orange
+        }
         switch snapshot.captureState {
-        case .recording: .red
-        case .failed: .orange
-        case .ready: .green
-        case .preparing, .stopping: .secondary
+        case .recording: return .red
+        case .failed: return .orange
+        case .ready: return .green
+        case .preparing, .stopping: return .secondary
         }
     }
 
@@ -398,6 +477,7 @@ private struct StudioInspector: View {
     @Binding var selectedDisplayIDs: Set<UInt32>
     let cameras: [AvailableCamera]
     @Binding var selectedCameraID: String?
+    @Binding var capturesMicrophone: Bool
     let isLocked: Bool
 
     var body: some View {
@@ -419,7 +499,17 @@ private struct StudioInspector: View {
                 }
 
                 sourceRow("System audio", detail: "Primary display track", icon: "speaker.wave.2")
-                sourceRow("Microphone", detail: "Embedded once in primary capture", icon: "mic")
+                Toggle(isOn: $capturesMicrophone) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Microphone").font(.subheadline.weight(.medium))
+                        Text(capturesMicrophone ? "Embedded once in primary capture" : "Off for this Studio Draft")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .overlay(alignment: .bottom) { Divider() }
                 cameraRow
 
                 Divider().padding(.top, 4)

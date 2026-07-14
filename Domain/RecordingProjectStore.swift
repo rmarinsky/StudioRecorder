@@ -38,6 +38,7 @@ struct CaptureRequestSnapshot: Codable, Equatable, Sendable {
     let sources: [RecordingSourceSnapshot]
     let captureProfile: String
     let primaryAudioDisplayID: UInt32?
+    let capturesMicrophone: Bool?
     let includesCursor: Bool
     let excludesStudioRecorderAudio: Bool
 }
@@ -277,14 +278,23 @@ final class RecordingProjectStore {
         encoder = Self.makeEncoder(prettyPrinted: true)
     }
 
-    func createProject(displays: [UInt32], primaryAudioDisplayID: UInt32?) throws -> RecordingProject {
+    func createProject(
+        displays: [UInt32],
+        primaryAudioDisplayID: UInt32?,
+        capturesMicrophone: Bool = true
+    ) throws -> RecordingProject {
         try createProject(
             sources: displays.map { RecordingSourceSnapshot.display(id: $0) },
-            primaryAudioDisplayID: primaryAudioDisplayID
+            primaryAudioDisplayID: primaryAudioDisplayID,
+            capturesMicrophone: capturesMicrophone
         )
     }
 
-    func createProject(sources: [RecordingSourceSnapshot], primaryAudioDisplayID: UInt32?) throws -> RecordingProject {
+    func createProject(
+        sources: [RecordingSourceSnapshot],
+        primaryAudioDisplayID: UInt32?,
+        capturesMicrophone: Bool = true
+    ) throws -> RecordingProject {
         let projectsDirectory = try resolvedProjectsDirectory()
         let createdAt = Date()
         let projectID = UUID()
@@ -303,6 +313,7 @@ final class RecordingProjectStore {
             sources: sources,
             captureProfile: "1080p-adaptive-30fps",
             primaryAudioDisplayID: primaryAudioDisplayID,
+            capturesMicrophone: capturesMicrophone,
             includesCursor: true,
             excludesStudioRecorderAudio: true
         )
