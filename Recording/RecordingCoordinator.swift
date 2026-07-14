@@ -1,5 +1,7 @@
 @preconcurrency import ScreenCaptureKit
 import AVFoundation
+import AppKit
+import CoreGraphics
 import Foundation
 import SwiftUI
 
@@ -33,7 +35,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var availableDisplays: [AvailableDisplay] = []
     @Published private(set) var activeProject: RecordingProject?
     @Published private(set) var recordedDuration: TimeInterval = 0
-    @Published private(set) var interruptedProjects: [InterruptedRecordingProject] = []
+    @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
+    @Published private(set) var projects: [RecordingProjectSnapshot] = []
 
     private struct Capture {
         let displayID: UInt32
@@ -56,6 +59,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func refreshDisplays() async {
         state = .preparing
+        await refreshProjects()
         do {
             let content = try await SCShareableContent.current
             availableDisplays = content.displays.map {
@@ -66,10 +70,22 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 )
             }
             state = availableDisplays.isEmpty ? .failed("No displays are available to capture.") : .ready
-            interruptedProjects = projectStore.interruptedProjects()
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    func refreshProjects() async {
+        let snapshots = await projectStore.discoverProjects()
+        projects = snapshots
+        interruptedProjects = snapshots.filter(\.isInterrupted)
+    }
+
+    func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     func startRecording(selectedDisplayIDs: Set<UInt32>) async {
@@ -87,7 +103,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
             let primaryAudioDisplayID = selected.first?.displayID
             let project = try projectStore.createProject(
-                displays: selected.map(\.displayID),
+                sources: selected.map {
+                    RecordingSourceSnapshot(
+                        displayID: $0.displayID,
+                        name: "Display \($0.displayID)",
+                        pixelWidth: Int($0.width),
+                        pixelHeight: Int($0.height),
+                        metadataState: .known
+                    )
+                },
                 primaryAudioDisplayID: primaryAudioDisplayID
             )
             activeProject = project
@@ -104,7 +128,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     filter: filter,
                     capturesAudio: display.displayID == primaryAudioDisplayID
                 )
-                let output = try makeRecordingOutput(url: project.rawScreenURL(for: display.displayID))
+                guard let outputURL = projectStore.rawTrackURL(for: display.displayID, in: project) else {
+                    throw RecordingProjectStoreError.missingTrackDescriptor(displayID: display.displayID)
+                }
+                let output = try makeRecordingOutput(url: outputURL)
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
                 try stream.addRecordingOutput(output)
                 captures[display.displayID] = Capture(displayID: display.displayID, stream: stream, output: output)
@@ -132,7 +159,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         let stopErrors = await stopCaptures()
 
         if let reason = terminalFailure ?? stopErrors.first {
-            completeInterruptedTeardown(reason: reason)
+            await completeInterruptedTeardown(reason: reason)
             return
         }
 
@@ -140,14 +167,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             do {
                 try projectStore.close(activeProject)
             } catch {
-                completeInterruptedTeardown(reason: error.localizedDescription)
+                await completeInterruptedTeardown(reason: error.localizedDescription)
                 return
             }
         }
 
         clearCaptureState()
         state = .ready
-        interruptedProjects = projectStore.interruptedProjects()
+        await refreshProjects()
         isTearingDown = false
     }
 
@@ -248,15 +275,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         durationTask?.cancel()
         durationTask = nil
         _ = await stopCaptures()
-        completeInterruptedTeardown(reason: terminalFailure ?? reason)
+        await completeInterruptedTeardown(reason: terminalFailure ?? reason)
     }
 
-    private func completeInterruptedTeardown(reason: String) {
+    private func completeInterruptedTeardown(reason: String) async {
         if let activeProject {
             try? projectStore.markInterrupted(activeProject, detail: reason)
         }
         clearCaptureState()
-        interruptedProjects = projectStore.interruptedProjects()
+        await refreshProjects()
         state = .failed(reason)
         isTearingDown = false
     }

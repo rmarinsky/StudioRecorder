@@ -1,194 +1,312 @@
+import AVFoundation
 import SwiftUI
 
 private enum StudioSection: Hashable {
-    case record
-    case layouts
+    case projects
+    case studio
     case recovery
-}
-
-private enum LayoutPreset: String, CaseIterable, Identifiable {
-    case screenFocus = "Screen focus"
-    case cameraOverlay = "Camera overlay"
-    case split = "Split 70 / 30"
-    case equal = "50 / 50"
-    case presenter = "Presenter"
-
-    var id: String { rawValue }
 }
 
 struct StudioRecorderRootView: View {
     @StateObject private var coordinator = RecordingCoordinator()
-    @State private var section: StudioSection? = .record
+    @StateObject private var liveScene = LiveSceneCoordinator()
+    @State private var section: StudioSection? = .projects
     @State private var selectedDisplayIDs: Set<UInt32> = []
-    @State private var preset: LayoutPreset = .cameraOverlay
+
+    private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
-                Section("Studio") {
-                    Label("Record", systemImage: "record.circle")
-                        .tag(StudioSection.record)
-                    Label("Layouts", systemImage: "rectangle.3.group")
-                        .tag(StudioSection.layouts)
+                Section {
+                    Label("Studio Recorder", systemImage: "pause.rectangle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .listRowBackground(Color.clear)
                 }
-                Section("Project") {
-                    Label("Recovery", systemImage: "lifepreserver")
-                        .tag(StudioSection.recovery)
+
+                Section {
+                    Label("Projects", systemImage: "folder")
+                        .tag(StudioSection.projects)
+                    Label("Studio", systemImage: "record.circle")
+                        .tag(StudioSection.studio)
+                }
+
+                if !coordinator.interruptedProjects.isEmpty {
+                    Section("Attention") {
+                        Label("Recovery", systemImage: "lifepreserver")
+                            .badge(coordinator.interruptedProjects.count)
+                            .tag(StudioSection.recovery)
+                    }
                 }
             }
-            .navigationTitle("Studio Recorder")
             .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 210, ideal: 224, max: 260)
         } detail: {
             Group {
-                switch section ?? .record {
-                case .record:
-                    recordView
-                case .layouts:
-                    layoutsView
+                switch section ?? .projects {
+                case .projects:
+                    projectsView
+                case .studio:
+                    studioDestination
                 case .recovery:
                     recoveryView
                 }
             }
             .toolbar { toolbarContent }
         }
+        .tint(coral)
+        .preferredColorScheme(.dark)
         .task {
             await coordinator.refreshDisplays()
-            selectedDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
+            if selectedDisplayIDs.isEmpty {
+                selectedDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
+            }
+            liveScene.startCameraPreview()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleRecording)) { _ in
             toggleRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newRecording)) { _ in
+            section = .studio
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text(coordinator.state.label)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            if section == .studio {
+                HStack(spacing: 7) {
+                    Circle().fill(statusColor).frame(width: 7, height: 7)
+                    Text(coordinator.state.label).foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+            } else {
+                Text(section == .recovery ? "Recovery" : "Projects")
+                    .font(.headline)
             }
         }
-        ToolbarItem(placement: .primaryAction) {
-            Button(action: toggleRecording) {
-                Label(recordButtonTitle, systemImage: coordinator.state == .recording ? "stop.fill" : "record.circle.fill")
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            if section == .projects {
+                Button {
+                    section = .studio
+                } label: {
+                    Label("New Recording", systemImage: "plus")
+                }
+                .keyboardShortcut("n", modifiers: .command)
             }
-            .tint(coordinator.state == .recording ? .red : .accentColor)
-            .disabled(!canToggleRecording)
         }
     }
 
-    private var recordView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Recording desk")
-                            .font(.largeTitle.weight(.semibold))
-                        Text("Raw display tracks are saved natively; the program edit stays non-destructive.")
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if coordinator.state == .recording {
-                        Text(durationText)
-                            .font(.title2.monospacedDigit().weight(.medium))
-                    }
+    private var projectsView: some View {
+        Group {
+            if coordinator.projects.isEmpty {
+                ContentUnavailableView {
+                    Label("No projects yet", systemImage: "record.circle")
+                } description: {
+                    Text("Each recording becomes a recoverable package with raw tracks and an append-only journal.")
+                } actions: {
+                    Button("New Recording") { section = .studio }
+                        .buttonStyle(.borderedProminent)
+                        .tint(coral)
                 }
-
-                ProgramPreview(preset: preset, isRecording: coordinator.state == .recording)
-
-                HStack(alignment: .top, spacing: 16) {
-                    GroupBox("Captured displays") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if coordinator.availableDisplays.isEmpty {
-                                Text("Checking Screen Recording access…")
-                                    .foregroundStyle(.secondary)
-                            }
-                            ForEach(coordinator.availableDisplays) { display in
-                                Toggle(isOn: displayBinding(for: display.id)) {
-                                    VStack(alignment: .leading) {
-                                        Text(display.title)
-                                        Text("\(Int(display.pixelSize.width)) × \(Int(display.pixelSize.height)) native capture")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .disabled(coordinator.state == .recording || coordinator.state == .stopping)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-
-                    GroupBox("Tracks") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TrackRow(icon: "display", title: "Screen", detail: "One raw .mov per selected display")
-                            TrackRow(icon: "waveform", title: "System audio", detail: "Embedded once in the primary screen capture")
-                            TrackRow(icon: "mic", title: "Microphone", detail: "Embedded once in the primary screen capture")
-                            TrackRow(icon: "video", title: "Camera", detail: "Next capture slice")
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-
-                GroupBox("Recording resilience") {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "externaldrive.badge.checkmark")
-                            .foregroundStyle(.green)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Project journal enabled")
-                                .fontWeight(.medium)
-                            Text("Each raw track starts in a .recordingproject package under Movies/Studio Recorder. The journal records started, completed, and failed tracks for recovery review.")
-                                .font(.callout)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Your projects").font(.largeTitle.weight(.semibold))
+                            Text("Raw tracks stay recoverable. Layout and cuts remain non-destructive.")
                                 .foregroundStyle(.secondary)
                         }
+
+                        if !coordinator.interruptedProjects.isEmpty {
+                            Button {
+                                section = .recovery
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "exclamationmark.triangle")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(coordinator.interruptedProjects.count) recording needs recovery review")
+                                            .fontWeight(.semibold)
+                                        Text("The package is preserved and ready for inspection.")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption.weight(.bold))
+                                }
+                                .padding(14)
+                                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.orange)
+                        }
+
+                        Text("Recent recordings")
+                            .font(.headline)
+                            .padding(.top, 2)
+
+                        VStack(spacing: 0) {
+                            ForEach(Array(coordinator.projects.enumerated()), id: \.element.id) { index, project in
+                                ProjectRow(project: project)
+                                if index < coordinator.projects.count - 1 {
+                                    Divider().padding(.leading, 108)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .padding(.vertical, 4)
+                    .padding(24)
                 }
+                .navigationTitle("Projects")
             }
-            .padding(24)
         }
-        .navigationTitle("Record")
     }
 
-    private var layoutsView: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Layouts")
-                .font(.largeTitle.weight(.semibold))
-            Text("Choose a program preset now; later editing changes only the composed program output, never the raw tracks.")
-                .foregroundStyle(.secondary)
-            Picker("Program layout", selection: $preset) {
-                ForEach(LayoutPreset.allCases) { preset in
-                    Text(preset.rawValue).tag(preset)
+    @ViewBuilder
+    private var studioDestination: some View {
+        if coordinator.availableDisplays.isEmpty, case .failed = coordinator.state {
+            permissionRepairView
+        } else {
+            studioView
+        }
+    }
+
+    private var permissionRepairView: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                Image(systemName: "pause.rectangle.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(coral)
+                Text("Your recording desk needs access.")
+                    .font(.largeTitle.weight(.semibold))
+                Text("Screen Recording is required to discover and record selected displays. Nothing starts in the background.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.quaternary)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .overlay(Image(systemName: "rectangle.inset.filled").font(.largeTitle).foregroundStyle(.secondary))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(40)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Text("CAPTURE CHECK").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Allow Screen Recording")
+                    .font(.title2.weight(.semibold))
+                Text("When you return, Studio Recorder checks access again and reveals the Record control only when capture can start.")
+                    .foregroundStyle(.secondary)
+                Divider()
+                Label("Screen Recording is unavailable", systemImage: "display")
+                Label("Microphone is configured in the capture stream", systemImage: "mic")
+                    .foregroundStyle(.secondary)
+                Label("Camera is a later capture slice", systemImage: "video")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Open System Settings") {
+                    coordinator.openScreenRecordingSettings()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(coral)
+                Button("Check Again") {
+                    Task { await coordinator.refreshDisplays() }
+                }
+                .buttonStyle(.bordered)
+            }
+            .frame(width: 390, alignment: .leading)
+            .padding(40)
+            .background(.thinMaterial)
+        }
+        .navigationTitle("Capture access")
+    }
+
+    private var studioView: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Program preview").font(.headline)
+                        Spacer()
+                        Text("1920 × 1080  ·  30 fps")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Text("Preview contract")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(.quaternary, in: Capsule())
+                    }
+                    LiveProgramPreview(
+                        screenImage: liveScene.screenImage,
+                        cameraSession: liveScene.cameraSession,
+                        selectedDisplayName: selectedDisplayName,
+                        isRecording: coordinator.state == .recording
+                    )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .task(id: primarySelectedDisplayID) {
+                            guard let primarySelectedDisplayID else { return }
+                            await liveScene.startScreenPreview(for: primarySelectedDisplayID)
+                        }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                StudioInspector(
+                    displays: coordinator.availableDisplays,
+                    selectedDisplayIDs: $selectedDisplayIDs,
+                    cameras: liveScene.cameras,
+                    selectedCameraID: Binding(
+                        get: { liveScene.selectedCameraID },
+                        set: { liveScene.selectCamera($0) }
+                    ),
+                    isLocked: coordinator.state == .recording || coordinator.state == .stopping
+                )
+                .frame(width: 304)
+                .background(.bar)
+            }
+
+            Divider()
+            HStack(spacing: 16) {
+                Label("Microphone is clear", systemImage: "mic")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Button(action: toggleRecording) {
+                    Label(recordButtonTitle, systemImage: coordinator.state == .recording ? "stop.fill" : "record.circle.fill")
+                        .frame(minWidth: 122)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(coordinator.state == .recording ? .red : coral)
+                .disabled(!canToggleRecording)
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Movies/Studio Recorder").font(.caption.weight(.medium))
+                    Text("Recoverable project packages").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .pickerStyle(.radioGroup)
-            ProgramPreview(preset: preset, isRecording: false)
-            Spacer()
+            .padding(.horizontal, 22)
+            .padding(.vertical, 14)
+            .background(.bar)
         }
-        .padding(24)
-        .navigationTitle("Layouts")
+        .navigationTitle("Studio")
     }
 
     private var recoveryView: some View {
         Group {
             if coordinator.interruptedProjects.isEmpty {
-                ContentUnavailableView(
-                    "No interrupted projects found",
-                    systemImage: "checkmark.shield",
-                    description: Text("The project directory was scanned for recording packages that did not close cleanly.")
-                )
+                ContentUnavailableView("No recovery needed", systemImage: "checkmark.shield", description: Text("All discovered projects closed cleanly."))
             } else {
                 List(coordinator.interruptedProjects) { project in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(project.rootURL.lastPathComponent)
-                            .fontWeight(.medium)
-                        Text("\(project.displays.count) display track(s) · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(project.rootURL.deletingPathExtension().lastPathComponent).fontWeight(.semibold)
+                        Text("\(project.displayCount) display track(s) · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("The package is preserved for per-track review in the next recovery slice.")
+                            .font(.caption).foregroundStyle(.orange)
                     }
+                    .padding(.vertical, 4)
                 }
             }
         }
@@ -212,22 +330,12 @@ struct StudioRecorderRootView: View {
         }
     }
 
-    private var durationText: String {
-        let total = Int(coordinator.recordedDuration)
-        return String(format: "%02d:%02d:%02d", total / 3_600, (total / 60) % 60, total % 60)
+    private var primarySelectedDisplayID: UInt32? {
+        coordinator.availableDisplays.first(where: { selectedDisplayIDs.contains($0.id) })?.id
     }
 
-    private func displayBinding(for id: UInt32) -> Binding<Bool> {
-        Binding(
-            get: { selectedDisplayIDs.contains(id) },
-            set: { isSelected in
-                if isSelected {
-                    selectedDisplayIDs.insert(id)
-                } else {
-                    selectedDisplayIDs.remove(id)
-                }
-            }
-        )
+    private var selectedDisplayName: String {
+        coordinator.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
     }
 
     private func toggleRecording() {
@@ -239,54 +347,216 @@ struct StudioRecorderRootView: View {
     }
 }
 
-private struct ProgramPreview: View {
-    let preset: LayoutPreset
+private struct ProjectRow: View {
+    let project: RecordingProjectSnapshot
+
+    var body: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(statusColor.opacity(0.18))
+                .frame(width: 92, height: 54)
+                .overlay(Image(systemName: statusIcon).foregroundStyle(statusColor))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recording · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                    .fontWeight(.medium)
+                Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s") · \(project.captureProfile)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(statusLabel)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(statusColor)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private var statusLabel: String {
+        switch project.lifecycle {
+        case .recording: "Recording"
+        case .finalizing: "Finalizing"
+        case .finalized: "Finalized"
+        case .needsRecovery: "Needs recovery"
+        case .unreadable: "Unreadable"
+        }
+    }
+
+    private var statusColor: Color {
+        switch project.lifecycle {
+        case .finalized: .green
+        case .needsRecovery, .unreadable: .orange
+        case .recording, .finalizing: .secondary
+        }
+    }
+
+    private var statusIcon: String {
+        switch project.lifecycle {
+        case .finalized: "display.2"
+        case .needsRecovery, .unreadable: "exclamationmark.triangle"
+        case .recording: "record.circle"
+        case .finalizing: "clock"
+        }
+    }
+}
+
+private struct StudioInspector: View {
+    let displays: [AvailableDisplay]
+    @Binding var selectedDisplayIDs: Set<UInt32>
+    let cameras: [AvailableCamera]
+    @Binding var selectedCameraID: String?
+    let isLocked: Bool
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                inspectorHeader("Sources")
+                ForEach(displays) { display in
+                    Toggle(isOn: binding(for: display.id)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(display.title).font(.subheadline.weight(.medium))
+                            Text("\(Int(display.pixelSize.width)) × \(Int(display.pixelSize.height)) native capture")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14).padding(.vertical, 11)
+                    Divider()
+                }
+
+                sourceRow("System audio", detail: "Primary display track", icon: "speaker.wave.2")
+                sourceRow("Microphone", detail: "Embedded once in primary capture", icon: "mic")
+                cameraRow
+
+                Divider().padding(.top, 4)
+                inspectorHeader("Capture")
+                contractRow("Frame rate", value: "30 fps")
+                contractRow("Codec", value: "HEVC · H.264 fallback")
+                contractRow("Cursor", value: "Included")
+
+                Divider().padding(.top, 4)
+                inspectorHeader("Resilience")
+                Text("Raw tracks and an append-only journal are written into one recoverable project package.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.bottom, 18)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var cameraRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "video").foregroundStyle(.secondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Camera").font(.subheadline.weight(.medium))
+                Text(cameras.isEmpty ? "No camera available" : "Live preview only — capture next slice")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if cameras.isEmpty {
+                Text("Unavailable").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            } else {
+                Picker("Camera", selection: $selectedCameraID) {
+                    ForEach(cameras) { camera in
+                        Text(camera.name).tag(Optional(camera.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 122)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func inspectorHeader(_ title: String) -> some View {
+        Text(title).font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 14)
+    }
+
+    private func sourceRow(_ title: String, detail: String, icon: String, trailing: String? = nil) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let trailing {
+                Text(trailing).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            } else {
+                Circle().fill(title == "Microphone" ? .green : .secondary).frame(width: 7, height: 7)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func contractRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption.monospacedDigit())
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    private func binding(for id: UInt32) -> Binding<Bool> {
+        Binding(
+            get: { selectedDisplayIDs.contains(id) },
+            set: { isSelected in
+                if isSelected { selectedDisplayIDs.insert(id) }
+                else { selectedDisplayIDs.remove(id) }
+            }
+        )
+    }
+}
+
+private struct LiveProgramPreview: View {
+    let screenImage: NSImage?
+    let cameraSession: AVCaptureSession?
+    let selectedDisplayName: String
     let isRecording: Bool
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.black.gradient)
-                .overlay {
-                    VStack(spacing: 10) {
-                        Image(systemName: "display.2")
-                            .font(.system(size: 38))
-                        Text("1080p program preview")
-                            .font(.headline)
-                        Text(isRecording ? "Program layout is preview-only in this capture slice" : preset.rawValue)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.65))
-                    }
-                    .foregroundStyle(.white)
+            RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.72))
+            if let screenImage {
+                Image(nsImage: screenImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(6)
+            } else {
+                VStack(spacing: 14) {
+                    Image(systemName: "rectangle.on.rectangle.angled")
+                        .font(.system(size: 44))
+                    Text("Loading (selectedDisplayName)…").font(.headline)
+                    Text("The selected screen will appear before recording starts.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
+            }
 
-            if preset != .screenFocus {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.gray.opacity(0.8))
-                    .overlay(Image(systemName: "person.fill").foregroundStyle(.white))
-                    .frame(width: 160, height: 90)
-                    .padding(16)
+            if let cameraSession {
+                CameraLivePreview(session: cameraSession)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.5), lineWidth: 1))
+                    .frame(width: 180, height: 102)
+                    .padding(20)
+                    .accessibilityLabel("Selected camera preview")
+            }
+
+            if isRecording {
+                Label("REC", systemImage: "record.circle.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.red)
+                    .padding(10)
             }
         }
         .aspectRatio(16 / 9, contentMode: .fit)
-        .accessibilityLabel("1080p program preview")
-    }
-}
-
-private struct TrackRow: View {
-    let icon: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-                .frame(width: 16)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).fontWeight(.medium)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(isRecording ? Color.red : Color.clear, lineWidth: 1)
         }
+        .accessibilityLabel("Live selected screen and camera preview")
     }
 }
