@@ -1,23 +1,17 @@
 import AVFoundation
 import SwiftUI
 
-private enum StudioSection: Hashable {
-    case projects
-    case studio
-    case recovery
-}
-
 struct StudioRecorderRootView: View {
-    @StateObject private var coordinator = RecordingCoordinator()
+    @ObservedObject var model: StudioRecorderModel
     @StateObject private var liveScene = LiveSceneCoordinator()
-    @State private var section: StudioSection? = .projects
-    @State private var selectedDisplayIDs: Set<UInt32> = []
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
+    private var snapshot: StudioRecorderSnapshot { model.snapshot }
+
     var body: some View {
         NavigationSplitView {
-            List(selection: $section) {
+            List(selection: routeSelection) {
                 Section {
                     Label("Studio Recorder", systemImage: "pause.rectangle.fill")
                         .font(.headline)
@@ -27,16 +21,16 @@ struct StudioRecorderRootView: View {
 
                 Section {
                     Label("Projects", systemImage: "folder")
-                        .tag(StudioSection.projects)
+                        .tag(MainRoute.projects)
                     Label("Studio", systemImage: "record.circle")
-                        .tag(StudioSection.studio)
+                        .tag(MainRoute.studio)
                 }
 
-                if !coordinator.interruptedProjects.isEmpty {
+                if !snapshot.interruptedProjects.isEmpty {
                     Section("Attention") {
                         Label("Recovery", systemImage: "lifepreserver")
-                            .badge(coordinator.interruptedProjects.count)
-                            .tag(StudioSection.recovery)
+                            .badge(snapshot.interruptedProjects.count)
+                            .tag(MainRoute.recovery)
                     }
                 }
             }
@@ -44,7 +38,7 @@ struct StudioRecorderRootView: View {
             .navigationSplitViewColumnWidth(min: 210, ideal: 224, max: 260)
         } detail: {
             Group {
-                switch section ?? .projects {
+                switch snapshot.route {
                 case .projects:
                     projectsView
                 case .studio:
@@ -58,56 +52,57 @@ struct StudioRecorderRootView: View {
         .tint(coral)
         .preferredColorScheme(.dark)
         .task {
-            await coordinator.refreshDisplays()
-            if selectedDisplayIDs.isEmpty {
-                selectedDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
-            }
+            await model.launch()
             liveScene.startCameraPreview()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleRecording)) { _ in
-            toggleRecording()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newRecording)) { _ in
-            section = .studio
-        }
+    }
+
+    private var routeSelection: Binding<MainRoute?> {
+        Binding(
+            get: { snapshot.route },
+            set: { route in
+                if let route {
+                    model.send(.selectRoute(route))
+                }
+            }
+        )
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            if section == .studio {
+            if snapshot.route == .studio {
                 HStack(spacing: 7) {
                     Circle().fill(statusColor).frame(width: 7, height: 7)
-                    Text(coordinator.state.label).foregroundStyle(.secondary)
+                    Text(snapshot.captureState.label).foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
             } else {
-                Text(section == .recovery ? "Recovery" : "Projects")
+                Text(snapshot.route == .recovery ? "Recovery" : "Projects")
                     .font(.headline)
             }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            if section == .projects {
+            if snapshot.route == .projects {
                 Button {
-                    section = .studio
+                    model.send(.newRecording)
                 } label: {
                     Label("New Recording", systemImage: "plus")
                 }
-                .keyboardShortcut("n", modifiers: .command)
             }
         }
     }
 
     private var projectsView: some View {
         Group {
-            if coordinator.projects.isEmpty {
+            if snapshot.projects.isEmpty {
                 ContentUnavailableView {
                     Label("No projects yet", systemImage: "record.circle")
                 } description: {
                     Text("Each recording becomes a recoverable package with raw tracks and an append-only journal.")
                 } actions: {
-                    Button("New Recording") { section = .studio }
+                    Button("New Recording") { model.send(.newRecording) }
                         .buttonStyle(.borderedProminent)
                         .tint(coral)
                 }
@@ -120,14 +115,14 @@ struct StudioRecorderRootView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        if !coordinator.interruptedProjects.isEmpty {
+                        if !snapshot.interruptedProjects.isEmpty {
                             Button {
-                                section = .recovery
+                                model.send(.selectRoute(.recovery))
                             } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "exclamationmark.triangle")
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(coordinator.interruptedProjects.count) recording needs recovery review")
+                                        Text("\(snapshot.interruptedProjects.count) recording needs recovery review")
                                             .fontWeight(.semibold)
                                         Text("The package is preserved and ready for inspection.")
                                             .font(.caption).foregroundStyle(.secondary)
@@ -147,9 +142,9 @@ struct StudioRecorderRootView: View {
                             .padding(.top, 2)
 
                         VStack(spacing: 0) {
-                            ForEach(Array(coordinator.projects.enumerated()), id: \.element.id) { index, project in
+                            ForEach(Array(snapshot.projects.enumerated()), id: \.element.id) { index, project in
                                 ProjectRow(project: project)
-                                if index < coordinator.projects.count - 1 {
+                                if index < snapshot.projects.count - 1 {
                                     Divider().padding(.leading, 108)
                                 }
                             }
@@ -166,7 +161,7 @@ struct StudioRecorderRootView: View {
 
     @ViewBuilder
     private var studioDestination: some View {
-        if coordinator.availableDisplays.isEmpty, case .failed = coordinator.state {
+        if snapshot.availableDisplays.isEmpty, case .failed = snapshot.captureState {
             permissionRepairView
         } else {
             studioView
@@ -196,7 +191,7 @@ struct StudioRecorderRootView: View {
                 Text("CAPTURE CHECK").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Text("Allow Screen Recording")
                     .font(.title2.weight(.semibold))
-                Text("When you return, Studio Recorder checks access again and reveals the Record control only when capture can start.")
+                Text("When you return, choose Check Again to refresh access before recording.")
                     .foregroundStyle(.secondary)
                 Divider()
                 Label("Screen Recording is unavailable", systemImage: "display")
@@ -206,12 +201,12 @@ struct StudioRecorderRootView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Open System Settings") {
-                    coordinator.openScreenRecordingSettings()
+                    model.openScreenRecordingSettings()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(coral)
                 Button("Check Again") {
-                    Task { await coordinator.refreshDisplays() }
+                    Task { await model.refreshCaptureSources() }
                 }
                 .buttonStyle(.bordered)
             }
@@ -241,7 +236,7 @@ struct StudioRecorderRootView: View {
                         screenImage: liveScene.screenImage,
                         cameraSession: liveScene.cameraSession,
                         selectedDisplayName: selectedDisplayName,
-                        isRecording: coordinator.state == .recording
+                        isRecording: snapshot.captureState == .recording
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .task(id: primarySelectedDisplayID) {
@@ -253,14 +248,17 @@ struct StudioRecorderRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 StudioInspector(
-                    displays: coordinator.availableDisplays,
-                    selectedDisplayIDs: $selectedDisplayIDs,
+                    displays: snapshot.availableDisplays,
+                    selectedDisplayIDs: Binding(
+                        get: { snapshot.selectedDisplayIDs },
+                        set: { model.send(.setSelectedDisplayIDs($0)) }
+                    ),
                     cameras: liveScene.cameras,
                     selectedCameraID: Binding(
                         get: { liveScene.selectedCameraID },
                         set: { liveScene.selectCamera($0) }
                     ),
-                    isLocked: coordinator.state == .recording || coordinator.state == .stopping
+                    isLocked: snapshot.captureState == .recording || snapshot.captureState == .stopping
                 )
                 .frame(width: 304)
                 .background(.bar)
@@ -272,13 +270,12 @@ struct StudioRecorderRootView: View {
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 Button(action: toggleRecording) {
-                    Label(recordButtonTitle, systemImage: coordinator.state == .recording ? "stop.fill" : "record.circle.fill")
+                    Label(recordButtonTitle, systemImage: snapshot.captureState == .recording ? "stop.fill" : "record.circle.fill")
                         .frame(minWidth: 122)
                 }
-                .keyboardShortcut("r", modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .tint(coordinator.state == .recording ? .red : coral)
+                .tint(snapshot.captureState == .recording ? .red : coral)
                 .disabled(!canToggleRecording)
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
@@ -295,10 +292,10 @@ struct StudioRecorderRootView: View {
 
     private var recoveryView: some View {
         Group {
-            if coordinator.interruptedProjects.isEmpty {
+            if snapshot.interruptedProjects.isEmpty {
                 ContentUnavailableView("No recovery needed", systemImage: "checkmark.shield", description: Text("All discovered projects closed cleanly."))
             } else {
-                List(coordinator.interruptedProjects) { project in
+                List(snapshot.interruptedProjects) { project in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(project.rootURL.deletingPathExtension().lastPathComponent).fontWeight(.semibold)
                         Text("\(project.displayCount) display track(s) · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
@@ -314,15 +311,15 @@ struct StudioRecorderRootView: View {
     }
 
     private var canToggleRecording: Bool {
-        coordinator.state == .ready || coordinator.state == .recording
+        !snapshot.isCaptureCommandInFlight && (snapshot.captureState == .ready || snapshot.captureState == .recording)
     }
 
     private var recordButtonTitle: String {
-        coordinator.state == .recording ? "Stop" : "Record"
+        snapshot.captureState == .recording ? "Stop" : "Record"
     }
 
     private var statusColor: Color {
-        switch coordinator.state {
+        switch snapshot.captureState {
         case .recording: .red
         case .failed: .orange
         case .ready: .green
@@ -331,19 +328,15 @@ struct StudioRecorderRootView: View {
     }
 
     private var primarySelectedDisplayID: UInt32? {
-        coordinator.availableDisplays.first(where: { selectedDisplayIDs.contains($0.id) })?.id
+        snapshot.availableDisplays.first(where: { snapshot.selectedDisplayIDs.contains($0.id) })?.id
     }
 
     private var selectedDisplayName: String {
-        coordinator.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
+        snapshot.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
     }
 
     private func toggleRecording() {
-        if coordinator.state == .recording {
-            Task { await coordinator.stopRecording() }
-        } else if coordinator.state == .ready {
-            Task { await coordinator.startRecording(selectedDisplayIDs: selectedDisplayIDs) }
-        }
+        model.send(.toggleRecording)
     }
 }
 

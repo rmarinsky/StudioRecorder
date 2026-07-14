@@ -15,7 +15,9 @@
 		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
+		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
 		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
+		E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,7 +40,9 @@
 		9A418726188BA1186770D369 /* RecordingProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStore.swift; sourceTree = "<group>"; };
 		B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCoordinator.swift; sourceTree = "<group>"; };
 		C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlanner.swift; sourceTree = "<group>"; };
+		D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderModelTests.swift; sourceTree = "<group>"; };
 		D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlannerTests.swift; sourceTree = "<group>"; };
+		EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderModel.swift; sourceTree = "<group>"; };
 		FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudioRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -95,6 +99,7 @@
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
 				4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */,
 				3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */,
+				D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */,
 			);
 			path = StudioRecorderTests;
 			sourceTree = "<group>";
@@ -119,6 +124,7 @@
 			isa = PBXGroup;
 			children = (
 				FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */,
+				EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -211,6 +217,7 @@
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
 				09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */,
 				1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */,
+				C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -223,6 +230,7 @@
 				0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */,
 				C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */,
 				DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */,
+				E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */,
 				A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
