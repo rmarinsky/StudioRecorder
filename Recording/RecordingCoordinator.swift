@@ -32,7 +32,9 @@ enum RecordingState: Equatable {
 final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var state: RecordingState = .preparing
     @Published private(set) var availableDisplays: [AvailableDisplay] = []
+    @Published private(set) var availableMicrophones: [AvailableMicrophone] = []
     @Published private(set) var activeProject: RecordingProject?
+    @Published private(set) var activeCaptureRequest: CaptureRequest?
     @Published private(set) var recordedDuration: TimeInterval = 0
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
@@ -51,6 +53,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var outputCompletion: CheckedContinuation<Bool, Never>?
     private var isTearingDown = false
     private var terminalFailure: String?
+    private var configuredProjectDirectories: Set<URL> = []
 
     override init() {
         super.init()
@@ -74,58 +77,73 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
+    func refreshMicrophones() {
+        let defaultID = AVCaptureDevice.default(for: .audio)?.uniqueID
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+        availableMicrophones = devices.map {
+            AvailableMicrophone(
+                id: $0.uniqueID,
+                name: $0.localizedName,
+                isSystemDefault: $0.uniqueID == defaultID
+            )
+        }
+    }
+
+    func configureProjectDestination(_ url: URL) {
+        configuredProjectDirectories.insert(url.standardizedFileURL)
+    }
+
     func refreshProjects() async {
-        let snapshots = await projectStore.discoverProjects()
+        let snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
         projects = snapshots
         interruptedProjects = snapshots.filter(\.isInterrupted)
     }
 
-    func startRecording(selectedDisplayIDs: Set<UInt32>, capturesMicrophone: Bool = true) async {
+    func startRecording(_ request: CaptureRequest) async {
         guard state == .ready else { return }
         state = .preparing
         terminalFailure = nil
+        if let destinationURL = request.storage.destinationURL {
+            configureProjectDestination(destinationURL)
+        }
 
         do {
             let content = try await SCShareableContent.current
-            let selected = content.displays.filter { selectedDisplayIDs.contains($0.displayID) }
-            guard !selected.isEmpty else {
-                state = .failed("Select at least one display to start recording.")
+            let displaysByID = Dictionary(uniqueKeysWithValues: content.displays.map { ($0.displayID, $0) })
+            let selected = request.displaySources.compactMap { displaysByID[$0.id] }
+            guard selected.count == request.displaySources.count, !selected.isEmpty else {
+                state = .failed("A selected display is no longer available. Refresh sources before recording.")
                 return
             }
 
-            let primaryAudioDisplayID = selected.first?.displayID
-            let project = try projectStore.createProject(
-                sources: selected.map {
-                    RecordingSourceSnapshot(
-                        displayID: $0.displayID,
-                        name: "Display \($0.displayID)",
-                        pixelWidth: Int($0.width),
-                        pixelHeight: Int($0.height),
-                        metadataState: .known
-                    )
-                },
-                primaryAudioDisplayID: primaryAudioDisplayID,
-                capturesMicrophone: capturesMicrophone
-            )
+            let project = try projectStore.createProject(request: request)
             activeProject = project
+            activeCaptureRequest = request
             let ownApplication = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
 
             for display in selected {
+                let isPrimaryAudioDisplay = display.displayID == request.audio.primaryAudioDisplayID
                 let filter = SCContentFilter(
                     display: display,
-                    excludingApplications: ownApplication.map { [$0] } ?? [],
+                    excludingApplications: request.profile.excludeStudioRecorder ? (ownApplication.map { [$0] } ?? []) : [],
                     exceptingWindows: []
                 )
                 let configuration = makeStreamConfiguration(
                     for: display,
                     filter: filter,
-                    capturesAudio: display.displayID == primaryAudioDisplayID,
-                    capturesMicrophone: capturesMicrophone
+                    capturesSystemAudio: isPrimaryAudioDisplay && request.audio.capturesSystemAudio,
+                    capturesMicrophone: isPrimaryAudioDisplay && request.audio.capturesMicrophone,
+                    microphoneDeviceID: request.audio.microphone?.id,
+                    request: request
                 )
                 guard let outputURL = projectStore.rawTrackURL(for: display.displayID, in: project) else {
                     throw RecordingProjectStoreError.missingTrackDescriptor(displayID: display.displayID)
                 }
-                let output = try makeRecordingOutput(url: outputURL)
+                let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
                 try stream.addRecordingOutput(output)
                 captures[display.displayID] = Capture(displayID: display.displayID, stream: stream, output: output)
@@ -175,26 +193,34 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func makeStreamConfiguration(
         for display: SCDisplay,
         filter: SCContentFilter,
-        capturesAudio: Bool,
-        capturesMicrophone: Bool
+        capturesSystemAudio: Bool,
+        capturesMicrophone: Bool,
+        microphoneDeviceID: String?,
+        request: CaptureRequest
     ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.width = Int(CGFloat(display.width) * CGFloat(filter.pointPixelScale))
         configuration.height = Int(CGFloat(display.height) * CGFloat(filter.pointPixelScale))
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(request.profile.frameRate))
         configuration.queueDepth = 5
-        configuration.showsCursor = true
-        configuration.capturesAudio = capturesAudio
-        configuration.captureMicrophone = capturesAudio && capturesMicrophone
-        configuration.excludesCurrentProcessAudio = true
+        configuration.showsCursor = request.profile.includeCursor
+        configuration.capturesAudio = capturesSystemAudio
+        configuration.captureMicrophone = capturesMicrophone
+        configuration.microphoneCaptureDeviceID = capturesMicrophone ? microphoneDeviceID : nil
+        configuration.excludesCurrentProcessAudio = request.audio.excludesStudioRecorderAudio
         configuration.streamName = "Raw screen \(display.displayID)"
         return configuration
     }
 
-    private func makeRecordingOutput(url: URL) throws -> SCRecordingOutput {
+    private func makeRecordingOutput(url: URL, codecPolicy: RecordingCodecPolicy) throws -> SCRecordingOutput {
         let configuration = SCRecordingOutputConfiguration()
         configuration.outputURL = url
-        configuration.videoCodecType = configuration.availableVideoCodecTypes.contains(.hevc) ? .hevc : .h264
+        configuration.videoCodecType = switch codecPolicy {
+        case .automatic:
+            configuration.availableVideoCodecTypes.contains(.hevc) ? .hevc : .h264
+        case .h264:
+            .h264
+        }
         configuration.outputFileType = configuration.availableOutputFileTypes.contains(.mov) ? .mov : .mp4
         return SCRecordingOutput(configuration: configuration, delegate: self)
     }
@@ -288,6 +314,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         startedOutputIDs.removeAll()
         pendingOutputIDs.removeAll()
         activeProject = nil
+        activeCaptureRequest = nil
     }
 }
 

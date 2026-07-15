@@ -163,10 +163,11 @@ final class StudioRecorderModelTests: XCTestCase {
         readySnapshot.selectedDisplayIDs = [7]
         let readyModel = StudioRecorderModel(coordinator: nil, initialSnapshot: readySnapshot)
 
-        XCTAssertEqual(
-            readyModel.send(.toggleRecording),
-            .recordingStartRequested(displayIDs: [7], capturesMicrophone: false)
-        )
+        guard case .recordingStartRequested(let request) = readyModel.send(.toggleRecording) else {
+            return XCTFail("Expected a Capture Request")
+        }
+        XCTAssertEqual(request.displaySources.map(\.id), [7])
+        XCTAssertFalse(request.audio.capturesMicrophone)
     }
 
     func testRecordWithoutMicrophoneCannotMutateAnActiveSession() {
@@ -243,13 +244,15 @@ final class StudioRecorderModelTests: XCTestCase {
             microphone: .granted
         )
         snapshot.availableDisplays = [AvailableDisplay(id: 7, title: "Test Display", pixelSize: .zero)]
+        snapshot.availableMicrophones = [AvailableMicrophone(id: "mic", name: "Microphone", isSystemDefault: true)]
         snapshot.selectedDisplayIDs = [7]
         let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
 
-        XCTAssertEqual(
-            model.send(.toggleRecording),
-            .recordingStartRequested(displayIDs: [7], capturesMicrophone: true)
-        )
+        guard case .recordingStartRequested(let request) = model.send(.toggleRecording) else {
+            return XCTFail("Expected a Capture Request")
+        }
+        XCTAssertEqual(request.displaySources.map(\.id), [7])
+        XCTAssertTrue(request.audio.capturesMicrophone)
         XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
         XCTAssertEqual(model.send(.toggleRecording), .ignored)
 
@@ -279,6 +282,119 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
     }
 
+    func testSelectingStudioCreatesAFreshDraftWhenNoneExists() {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.availableDisplays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        snapshot.availableMicrophones = [AvailableMicrophone(id: "mic", name: "Microphone", isSystemDefault: true)]
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.selectRoute(.studio)), .routeChanged(.studio))
+        XCTAssertEqual(model.snapshot.studioDraft?.selectedDisplayIDs, [7])
+        XCTAssertEqual(model.send(.setDraftIncludeCursor(false)), .draftChanged)
+    }
+
+    func testSettingsChangesDoNotMutateAnExistingDraftAndTheNextDraftUsesThem() {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.availableDisplays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        snapshot.availableMicrophones = [AvailableMicrophone(id: "mic", name: "Microphone", isSystemDefault: true)]
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            permissionCenter: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.newRecording), .routeChanged(.studio))
+        XCTAssertTrue(model.snapshot.studioDraft?.capturesMicrophone == true)
+
+        XCTAssertEqual(
+            model.send(.changePreference(.capturesMicrophone(false))),
+            .preferenceChanged
+        )
+        XCTAssertFalse(store.preferences.audio.capturesMicrophone)
+        XCTAssertTrue(model.snapshot.studioDraft?.capturesMicrophone == true)
+
+        XCTAssertEqual(model.send(.newRecording), .routeChanged(.studio))
+        XCTAssertFalse(model.snapshot.studioDraft?.capturesMicrophone == true)
+    }
+
+    func testCaptureAudioAndStorageSettingsLockFromPreparingThroughFinalizing() {
+        for state in [RecordingState.preparing, .recording, .stopping] {
+            let store = makePreferencesStore()
+            var snapshot = StudioRecorderSnapshot()
+            snapshot.captureState = state
+            let model = StudioRecorderModel(
+                coordinator: nil,
+                permissionCenter: nil,
+                preferencesStore: store,
+                initialSnapshot: snapshot
+            )
+
+            XCTAssertTrue(model.snapshot.areRecordingSettingsLocked)
+            XCTAssertEqual(model.send(.changePreference(.includeCursor(false))), .ignored)
+            XCTAssertTrue(store.preferences.capture.includeCursor)
+            XCTAssertEqual(model.send(.changePreference(.appearance(.dark))), .preferenceChanged)
+            XCTAssertEqual(store.preferences.appearance, .dark)
+        }
+    }
+
+    func testRecordIntentFreezesOneRequestAndLocksItAgainstSettingsChanges() throws {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .ready
+        snapshot.permissionSnapshot = PermissionSnapshot(screenRecording: .granted, microphone: .granted)
+        snapshot.availableDisplays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        snapshot.availableMicrophones = [AvailableMicrophone(id: "mic", name: "Microphone", isSystemDefault: true)]
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            permissionCenter: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+        model.send(.newRecording)
+
+        guard case .recordingStartRequested(let request) = model.send(.toggleRecording) else {
+            return XCTFail("Expected a frozen Capture Request")
+        }
+
+        XCTAssertEqual(model.snapshot.activeCaptureRequest, request)
+        XCTAssertTrue(model.snapshot.areRecordingSettingsLocked)
+        XCTAssertEqual(model.send(.toggleRecording), .ignored)
+        XCTAssertEqual(model.send(.changePreference(.capturesMicrophone(false))), .ignored)
+        XCTAssertTrue(request.audio.capturesMicrophone)
+        XCTAssertTrue(store.preferences.audio.capturesMicrophone)
+    }
+
+    func testDraftOverridesNeverRewriteSavedDefaults() {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.availableDisplays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        snapshot.availableMicrophones = [AvailableMicrophone(id: "mic", name: "Microphone", isSystemDefault: true)]
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+        model.send(.newRecording)
+
+        XCTAssertEqual(model.send(.setDraftIncludeCursor(false)), .draftChanged)
+        XCTAssertEqual(model.send(.setDraftCapturesSystemAudio(false)), .draftChanged)
+        XCTAssertFalse(model.snapshot.studioDraft?.includeCursor == true)
+        XCTAssertFalse(model.snapshot.studioDraft?.capturesSystemAudio == true)
+        XCTAssertTrue(store.preferences.capture.includeCursor)
+        XCTAssertTrue(store.preferences.audio.capturesSystemAudio)
+    }
+
     private func interruptedProject() -> RecordingProjectSnapshot {
         RecordingProjectSnapshot(
             identity: RecordingProjectIdentity(
@@ -292,6 +408,17 @@ final class StudioRecorderModelTests: XCTestCase {
             sources: [],
             tracks: [],
             recoveryReport: RecordingProjectRecoveryReport(tracks: [], diagnostics: ["Interrupted"])
+        )
+    }
+
+    private func makePreferencesStore() -> PreferencesStore {
+        let suiteName = "StudioRecorderModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        return PreferencesStore(
+            defaults: defaults,
+            defaultDestination: URL(filePath: "/tmp/Movies/Studio Recorder", directoryHint: .isDirectory),
+            destinationIsWritable: { _ in true }
         )
     }
 }

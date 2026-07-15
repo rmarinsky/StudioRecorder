@@ -49,6 +49,73 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(snapshots.single?.recoveryReport.tracks.single?.state, .finalized)
     }
 
+    func testLegacyV2CaptureRequestDecodesWithExplicitUnknownNewFieldsWithoutRewrite() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let packageURL = try makePackage(named: "legacy-v2", in: rootURL)
+        let manifestURL = packageURL.appending(path: "manifest.json")
+        let id = UUID()
+        let date = "2026-07-14T10:00:00Z"
+        let data = Data(
+            """
+            {"schemaVersion":2,"id":"\(id.uuidString)","createdAt":"\(date)","stoppedAt":null,"captureProfile":"legacy-1080p-30fps","displays":[7],"primaryAudioDisplayID":7,"captureRequest":{"id":"\(id.uuidString)","createdAt":"\(date)","sources":[{"displayID":7,"name":"Legacy Display","pixelWidth":1920,"pixelHeight":1080,"metadataState":"known"}],"captureProfile":"legacy-1080p-30fps","primaryAudioDisplayID":7,"capturesMicrophone":true,"includesCursor":false,"excludesStudioRecorderAudio":true}}
+            """.utf8
+        )
+        try data.write(to: manifestURL)
+
+        let snapshots = await RecordingProjectStore(baseDirectory: rootURL).discoverProjects()
+        let manifest = try decodeManifest(at: packageURL)
+
+        XCTAssertEqual(snapshots.single?.captureProfile, "legacy-1080p-30fps")
+        XCTAssertEqual(snapshots.single?.sources.single?.name, "Legacy Display")
+        XCTAssertNil(manifest.captureRequest?.storage.destinationURL)
+        XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "unknown")
+        XCTAssertEqual(manifest.captureRequest?.profile.programResolutionTarget, "unknown")
+        XCTAssertEqual(try Data(contentsOf: manifestURL), data)
+    }
+
+    func testProjectCreationPersistsTheFrozenRequestAtItsResolvedDestination() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let request = CaptureRequest(
+            id: UUID(),
+            createdAt: Date(timeIntervalSinceReferenceDate: 42),
+            displaySources: [
+                DisplaySourceSnapshot(id: 9, name: "Studio Display", pixelWidth: 2_560, pixelHeight: 1_440, metadataState: .known),
+            ],
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: false,
+                capturesMicrophone: true,
+                microphone: MicrophoneSourceSnapshot(id: "usb-mic", name: "USB Microphone"),
+                primaryAudioDisplayID: 9,
+                excludesStudioRecorderAudio: false
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .h264,
+                includeCursor: false,
+                excludeStudioRecorder: false,
+                programResolutionTarget: "1920x1080"
+            ),
+            storage: StorageCaptureSnapshot(
+                destinationURL: destination,
+                destinationBookmarkID: "bookmark-9",
+                fallbackPath: destination.path
+            )
+        )
+
+        let project = try RecordingProjectStore().createProject(request: request)
+        let manifest = try decodeManifest(at: project.rootURL)
+
+        XCTAssertEqual(project.rootURL.deletingLastPathComponent(), destination)
+        XCTAssertEqual(manifest.captureRequest, request)
+        XCTAssertEqual(manifest.captureRequest?.profile.codecPolicy, .h264)
+        XCTAssertEqual(manifest.captureRequest?.profile.includeCursor, false)
+        XCTAssertEqual(manifest.captureRequest?.audio.capturesSystemAudio, false)
+        XCTAssertEqual(manifest.captureRequest?.audio.excludesStudioRecorderAudio, false)
+        XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "bookmark-9")
+    }
+
     func testDiscoveryOrdersProjectsNewestFirstDeterministically() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -62,6 +129,48 @@ final class RecordingProjectStoreTests: XCTestCase {
         let snapshots = await RecordingProjectStore(baseDirectory: rootURL).discoverProjects()
 
         XCTAssertEqual(snapshots.map { $0.rootURL.lastPathComponent }, ["new.recordingproject", "old.recordingproject"])
+    }
+
+    func testDiscoveryIncludesConfiguredCustomDestinationWithoutDuplicatingRoots() async throws {
+        let defaultRoot = temporaryRootURL()
+        let customRoot = temporaryRootURL()
+        defer {
+            try? FileManager.default.removeItem(at: defaultRoot)
+            try? FileManager.default.removeItem(at: customRoot)
+        }
+        let defaultStore = RecordingProjectStore(baseDirectory: defaultRoot)
+        let customStore = RecordingProjectStore(baseDirectory: customRoot)
+        let defaultProject = try defaultStore.createProject(displays: [1], primaryAudioDisplayID: 1)
+        let customProject = try customStore.createProject(displays: [2], primaryAudioDisplayID: 2)
+
+        let snapshots = await defaultStore.discoverProjects(in: [customRoot, defaultRoot])
+
+        XCTAssertEqual(Set(snapshots.compactMap(\.identity.manifestID)), [defaultProject.id, customProject.id])
+        XCTAssertEqual(snapshots.count, 2)
+    }
+
+    func testDiscoveryPrefersDefaultRootForDuplicateManifestIDs() async throws {
+        let defaultRoot = temporaryRootURL()
+        let customRoot = temporaryRootURL()
+        defer {
+            try? FileManager.default.removeItem(at: defaultRoot)
+            try? FileManager.default.removeItem(at: customRoot)
+        }
+        let store = RecordingProjectStore(baseDirectory: defaultRoot)
+        let project = try store.createProject(displays: [1], primaryAudioDisplayID: 1)
+        try FileManager.default.createDirectory(at: customRoot, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: project.rootURL,
+            to: customRoot.appending(path: project.rootURL.lastPathComponent, directoryHint: .isDirectory)
+        )
+
+        let snapshots = await store.discoverProjects(in: [customRoot])
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(
+            snapshots.single?.rootURL.resolvingSymlinksInPath(),
+            project.rootURL.resolvingSymlinksInPath()
+        )
     }
 
     func testProjectLifecycleClassificationUsesJournalAndTrackEvidence() async throws {

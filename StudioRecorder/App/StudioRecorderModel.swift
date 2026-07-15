@@ -139,7 +139,25 @@ enum AppIntent: Equatable {
     case toggleRecording
     case setSelectedDisplayIDs(Set<UInt32>)
     case setCapturesMicrophone(Bool)
+    case setDraftCapturesSystemAudio(Bool)
+    case setDraftMicrophoneDeviceID(String?)
+    case setDraftIncludeCursor(Bool)
+    case setDraftExcludeStudioRecorder(Bool)
+    case setDraftExcludeStudioRecorderAudio(Bool)
     case recordWithoutMicrophone
+    case changePreference(PreferenceChange)
+    case setProjectDestination(URL)
+}
+
+enum PreferenceChange: Equatable {
+    case appearance(AppearancePreference)
+    case codecPolicy(RecordingCodecPolicy)
+    case includeCursor(Bool)
+    case excludeStudioRecorder(Bool)
+    case capturesSystemAudio(Bool)
+    case capturesMicrophone(Bool)
+    case microphoneDeviceID(String?)
+    case excludeStudioRecorderAudio(Bool)
 }
 
 enum AppIntentResult: Equatable {
@@ -147,11 +165,14 @@ enum AppIntentResult: Equatable {
     case routeChanged(MainRoute)
     case projectOpened(String)
     case projectSearchRequested
-    case recordingStartRequested(displayIDs: Set<UInt32>, capturesMicrophone: Bool)
+    case recordingStartRequested(CaptureRequest)
     case recordingStopRequested
     case displaySelectionChanged
     case microphoneCaptureChanged
     case microphoneDisabledForDraft
+    case draftChanged
+    case preferenceChanged
+    case preferenceChangeFailed(String)
 }
 
 enum PendingCaptureCommand: Equatable {
@@ -165,20 +186,37 @@ struct StudioRecorderSnapshot: Equatable {
     var selectedProjectID: String?
     var captureState: RecordingState = .preparing
     var availableDisplays: [AvailableDisplay] = []
+    var availableMicrophones: [AvailableMicrophone] = []
     var projects: [RecordingProjectSnapshot] = []
     var interruptedProjects: [RecordingProjectSnapshot] = []
     var selectedDisplayIDs: Set<UInt32> = []
     var permissionSnapshot: PermissionSnapshot = .checking
     var capturesMicrophone = true
+    var studioDraft: StudioDraft?
+    var activeCaptureRequest: CaptureRequest?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
+    var areRecordingSettingsLocked: Bool {
+        if pendingCaptureCommand == .start || activeCaptureRequest != nil { return true }
+        return switch captureState {
+        case .preparing, .recording, .stopping: true
+        case .ready, .failed: false
+        }
+    }
     var requiredCapturePermission: CapturePermission? {
         permissionSnapshot.requiredPermission(capturesMicrophone: capturesMicrophone)
     }
     var showsCaptureRepair: Bool {
         guard requiredCapturePermission != nil else { return false }
         return captureState != .recording && captureState != .stopping
+    }
+    var draftValidationIssues: [StudioDraftValidationIssue] {
+        studioDraft?.validationIssues(
+            displays: availableDisplays,
+            microphones: availableMicrophones,
+            permissions: permissionSnapshot
+        ) ?? [.noDisplaySelected]
     }
 
     mutating func beginCaptureCommand(_ command: PendingCaptureCommand) {
@@ -299,12 +337,14 @@ final class StudioRecorderModel: ObservableObject {
 
     private let coordinator: RecordingCoordinator?
     private let permissionCenter: PermissionCenter?
+    private let preferencesStore: PreferencesStore
     private var coordinatorObservation: AnyCancellable?
 
     convenience init() {
         self.init(
             coordinator: RecordingCoordinator(),
             permissionCenter: PermissionCenter(),
+            preferencesStore: PreferencesStore(),
             initialSnapshot: StudioRecorderSnapshot()
         )
     }
@@ -312,10 +352,12 @@ final class StudioRecorderModel: ObservableObject {
     init(
         coordinator: RecordingCoordinator?,
         permissionCenter: PermissionCenter? = nil,
+        preferencesStore: PreferencesStore? = nil,
         initialSnapshot: StudioRecorderSnapshot
     ) {
         self.coordinator = coordinator
         self.permissionCenter = permissionCenter
+        self.preferencesStore = preferencesStore ?? PreferencesStore()
         self.snapshot = initialSnapshot
         observeCoordinator()
     }
@@ -326,6 +368,9 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.permissionSnapshot = await permissionCenter.refresh()
         }
         guard let coordinator else { return }
+        coordinator.configureProjectDestination(preferencesStore.destination.url)
+        coordinator.refreshMicrophones()
+        snapshot.availableMicrophones = coordinator.availableMicrophones
 
         guard snapshot.permissionSnapshot.screenRecording.isGranted else {
             await coordinator.refreshProjects()
@@ -374,7 +419,7 @@ final class StudioRecorderModel: ObservableObject {
         case .newRecording:
             snapshot.route = .studio
             snapshot.selectedProjectID = nil
-            snapshot.capturesMicrophone = true
+            createFreshStudioDraft()
             result = .routeChanged(.studio)
 
         case .selectRoute(let route):
@@ -382,6 +427,9 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.route = route
+            if route == .studio, snapshot.studioDraft == nil, snapshot.activeCaptureRequest == nil {
+                createFreshStudioDraft()
+            }
             result = .routeChanged(route)
 
         case .openProject(let projectID):
@@ -401,6 +449,7 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.selectedDisplayIDs = displayIDs.intersection(Set(snapshot.availableDisplays.map(\.id)))
+            snapshot.studioDraft?.selectedDisplayIDs = snapshot.selectedDisplayIDs
             result = .displaySelectionChanged
 
         case .setCapturesMicrophone(let capturesMicrophone):
@@ -410,7 +459,37 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.capturesMicrophone = capturesMicrophone
+            snapshot.studioDraft?.capturesMicrophone = capturesMicrophone
             result = .microphoneCaptureChanged
+
+        case .setDraftCapturesSystemAudio(let captures):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.capturesSystemAudio = captures
+            result = .draftChanged
+
+        case .setDraftMicrophoneDeviceID(let deviceID):
+            guard canEditDraft,
+                  deviceID == nil || snapshot.availableMicrophones.contains(where: { $0.id == deviceID }) else {
+                return .ignored
+            }
+            snapshot.studioDraft?.microphoneDeviceID = deviceID
+            snapshot.studioDraft?.microphoneFallback = nil
+            result = .draftChanged
+
+        case .setDraftIncludeCursor(let includesCursor):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.includeCursor = includesCursor
+            result = .draftChanged
+
+        case .setDraftExcludeStudioRecorder(let excluded):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.excludeStudioRecorder = excluded
+            result = .draftChanged
+
+        case .setDraftExcludeStudioRecorderAudio(let excluded):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.excludeStudioRecorderAudio = excluded
+            result = .draftChanged
 
         case .recordWithoutMicrophone:
             guard snapshot.route == .studio,
@@ -420,7 +499,35 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.capturesMicrophone = false
+            snapshot.studioDraft?.capturesMicrophone = false
             result = .microphoneDisabledForDraft
+
+        case .changePreference(let change):
+            let isAppearanceChange: Bool = if case .appearance = change { true } else { false }
+            guard isAppearanceChange || !snapshot.areRecordingSettingsLocked else { return .ignored }
+            preferencesStore.update { preferences in
+                switch change {
+                case .appearance(let appearance): preferences.appearance = appearance
+                case .codecPolicy(let policy): preferences.capture.codecPolicy = policy
+                case .includeCursor(let includeCursor): preferences.capture.includeCursor = includeCursor
+                case .excludeStudioRecorder(let excluded): preferences.capture.excludeStudioRecorder = excluded
+                case .capturesSystemAudio(let captures): preferences.audio.capturesSystemAudio = captures
+                case .capturesMicrophone(let captures): preferences.audio.capturesMicrophone = captures
+                case .microphoneDeviceID(let id): preferences.audio.microphoneDeviceID = id
+                case .excludeStudioRecorderAudio(let excluded): preferences.audio.excludeStudioRecorderAudio = excluded
+                }
+            }
+            result = .preferenceChanged
+
+        case .setProjectDestination(let url):
+            guard !snapshot.areRecordingSettingsLocked else { return .ignored }
+            do {
+                try preferencesStore.setDestination(url)
+                coordinator?.configureProjectDestination(preferencesStore.destination.url)
+                result = .preferenceChanged
+            } catch {
+                result = .preferenceChangeFailed(error.localizedDescription)
+            }
 
         case .toggleRecording:
             guard !snapshot.isCaptureCommandInFlight else {
@@ -431,11 +538,23 @@ final class StudioRecorderModel: ObservableObject {
                 guard snapshot.route == .studio else { return .ignored }
                 guard snapshot.requiredCapturePermission == nil else { return .ignored }
                 guard !snapshot.selectedDisplayIDs.isEmpty else { return .ignored }
-                snapshot.beginCaptureCommand(.start)
-                result = .recordingStartRequested(
-                    displayIDs: snapshot.selectedDisplayIDs,
-                    capturesMicrophone: snapshot.capturesMicrophone
+                var draft = snapshot.studioDraft ?? preferencesStore.makeStudioDraft(
+                    displays: snapshot.availableDisplays,
+                    microphones: snapshot.availableMicrophones
                 )
+                draft.selectedDisplayIDs = snapshot.selectedDisplayIDs
+                draft.capturesMicrophone = snapshot.capturesMicrophone
+                guard let request = try? draft.freeze(
+                    displays: snapshot.availableDisplays,
+                    microphones: snapshot.availableMicrophones,
+                    permissions: snapshot.permissionSnapshot
+                ) else {
+                    return .ignored
+                }
+                snapshot.studioDraft = draft
+                snapshot.activeCaptureRequest = request
+                snapshot.beginCaptureCommand(.start)
+                result = .recordingStartRequested(request)
 
             case .recording:
                 snapshot.beginCaptureCommand(.stop)
@@ -448,6 +567,23 @@ final class StudioRecorderModel: ObservableObject {
 
         execute(result)
         return result
+    }
+
+    private var canEditDraft: Bool {
+        snapshot.route == .studio &&
+            snapshot.captureState == .ready &&
+            !snapshot.isCaptureCommandInFlight &&
+            snapshot.studioDraft != nil
+    }
+
+    private func createFreshStudioDraft() {
+        let draft = preferencesStore.makeStudioDraft(
+            displays: snapshot.availableDisplays,
+            microphones: snapshot.availableMicrophones
+        )
+        snapshot.studioDraft = draft
+        snapshot.selectedDisplayIDs = draft.selectedDisplayIDs
+        snapshot.capturesMicrophone = draft.capturesMicrophone
     }
 
     private func observeCoordinator() {
@@ -464,12 +600,9 @@ final class StudioRecorderModel: ObservableObject {
         guard let coordinator else { return }
 
         switch result {
-        case .recordingStartRequested(let displayIDs, let capturesMicrophone):
+        case .recordingStartRequested(let request):
             Task { @MainActor [weak self] in
-                await coordinator.startRecording(
-                    selectedDisplayIDs: displayIDs,
-                    capturesMicrophone: capturesMicrophone
-                )
+                await coordinator.startRecording(request)
                 self?.synchronizeFromCoordinator()
             }
 
@@ -480,7 +613,9 @@ final class StudioRecorderModel: ObservableObject {
             }
 
         case .ignored, .routeChanged, .projectOpened, .projectSearchRequested, .displaySelectionChanged,
-             .microphoneCaptureChanged, .microphoneDisabledForDraft:
+             .microphoneCaptureChanged, .microphoneDisabledForDraft, .draftChanged:
+            break
+        case .preferenceChanged, .preferenceChangeFailed:
             break
         }
     }
@@ -490,13 +625,26 @@ final class StudioRecorderModel: ObservableObject {
 
         snapshot.applyCaptureState(coordinator.state)
         snapshot.availableDisplays = coordinator.availableDisplays
+        snapshot.availableMicrophones = coordinator.availableMicrophones
         snapshot.projects = coordinator.projects
         snapshot.interruptedProjects = coordinator.interruptedProjects
 
-        let availableDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
-        snapshot.selectedDisplayIDs.formIntersection(availableDisplayIDs)
-        if snapshot.selectedDisplayIDs.isEmpty, !availableDisplayIDs.isEmpty {
-            snapshot.selectedDisplayIDs = availableDisplayIDs
+        if snapshot.studioDraft != nil {
+            snapshot.studioDraft?.reconcile(
+                displays: coordinator.availableDisplays,
+                microphones: coordinator.availableMicrophones
+            )
+            snapshot.selectedDisplayIDs = snapshot.studioDraft?.selectedDisplayIDs ?? []
+            snapshot.capturesMicrophone = snapshot.studioDraft?.capturesMicrophone ?? false
+        } else {
+            let availableDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
+            snapshot.selectedDisplayIDs.formIntersection(availableDisplayIDs)
+            if snapshot.selectedDisplayIDs.isEmpty, let firstDisplayID = coordinator.availableDisplays.first?.id {
+                snapshot.selectedDisplayIDs = [firstDisplayID]
+            }
+        }
+        if coordinator.activeCaptureRequest == nil {
+            snapshot.activeCaptureRequest = nil
         }
 
         if snapshot.requiredCapturePermission != nil {

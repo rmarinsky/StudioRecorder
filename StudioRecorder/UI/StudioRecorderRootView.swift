@@ -51,7 +51,6 @@ struct StudioRecorderRootView: View {
             .toolbar { toolbarContent }
         }
         .tint(coral)
-        .preferredColorScheme(.dark)
         .task {
             await model.launch()
             liveScene.startCameraPreview()
@@ -320,6 +319,11 @@ struct StudioRecorderRootView: View {
                         get: { snapshot.selectedDisplayIDs },
                         set: { model.send(.setSelectedDisplayIDs($0)) }
                     ),
+                    microphones: snapshot.availableMicrophones,
+                    capturesSystemAudio: Binding(
+                        get: { snapshot.studioDraft?.capturesSystemAudio ?? true },
+                        set: { model.send(.setDraftCapturesSystemAudio($0)) }
+                    ),
                     cameras: liveScene.cameras,
                     selectedCameraID: Binding(
                         get: { liveScene.selectedCameraID },
@@ -329,7 +333,25 @@ struct StudioRecorderRootView: View {
                         get: { snapshot.capturesMicrophone },
                         set: { model.send(.setCapturesMicrophone($0)) }
                     ),
-                    isLocked: snapshot.captureState == .recording || snapshot.captureState == .stopping
+                    microphoneDeviceID: Binding(
+                        get: { snapshot.studioDraft?.microphoneDeviceID },
+                        set: { model.send(.setDraftMicrophoneDeviceID($0)) }
+                    ),
+                    microphoneFallback: snapshot.studioDraft?.microphoneFallback,
+                    includeCursor: Binding(
+                        get: { snapshot.studioDraft?.includeCursor ?? true },
+                        set: { model.send(.setDraftIncludeCursor($0)) }
+                    ),
+                    excludeStudioRecorder: Binding(
+                        get: { snapshot.studioDraft?.excludeStudioRecorder ?? true },
+                        set: { model.send(.setDraftExcludeStudioRecorder($0)) }
+                    ),
+                    excludeStudioRecorderAudio: Binding(
+                        get: { snapshot.studioDraft?.excludeStudioRecorderAudio ?? true },
+                        set: { model.send(.setDraftExcludeStudioRecorderAudio($0)) }
+                    ),
+                    codecPolicy: snapshot.studioDraft?.codecPolicy ?? .automatic,
+                    isLocked: snapshot.areRecordingSettingsLocked
                 )
                 .frame(width: 304)
                 .background(.bar)
@@ -353,9 +375,10 @@ struct StudioRecorderRootView: View {
                 .disabled(!canToggleRecording)
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("Movies/Studio Recorder").font(.caption.weight(.medium))
-                    Text("Recoverable project packages").font(.caption2).foregroundStyle(.secondary)
+                    Text(studioDestinationPath).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                    Text(studioDestinationDetail).font(.caption2).foregroundStyle(studioDestinationColor)
                 }
+                .frame(maxWidth: 250, alignment: .trailing)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
@@ -387,7 +410,7 @@ struct StudioRecorderRootView: View {
     private var canToggleRecording: Bool {
         guard !snapshot.isCaptureCommandInFlight else { return false }
         if snapshot.captureState == .recording { return true }
-        return snapshot.captureState == .ready && snapshot.requiredCapturePermission == nil
+        return snapshot.captureState == .ready && snapshot.draftValidationIssues.isEmpty
     }
 
     private var recordButtonTitle: String {
@@ -412,6 +435,21 @@ struct StudioRecorderRootView: View {
 
     private var selectedDisplayName: String {
         snapshot.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
+    }
+
+    private var studioDestinationPath: String {
+        snapshot.studioDraft?.destination.url.path(percentEncoded: false) ?? "Movies/Studio Recorder"
+    }
+
+    private var studioDestinationDetail: String {
+        if snapshot.studioDraft?.destination.warning == .unwritable {
+            return "Choose a writable folder in Settings"
+        }
+        return "Recoverable project packages"
+    }
+
+    private var studioDestinationColor: Color {
+        snapshot.studioDraft?.destination.warning == .unwritable ? .red : .secondary
     }
 
     private func toggleRecording() {
@@ -475,9 +513,17 @@ private struct ProjectRow: View {
 private struct StudioInspector: View {
     let displays: [AvailableDisplay]
     @Binding var selectedDisplayIDs: Set<UInt32>
+    let microphones: [AvailableMicrophone]
+    @Binding var capturesSystemAudio: Bool
     let cameras: [AvailableCamera]
     @Binding var selectedCameraID: String?
     @Binding var capturesMicrophone: Bool
+    @Binding var microphoneDeviceID: String?
+    let microphoneFallback: MicrophoneFallback?
+    @Binding var includeCursor: Bool
+    @Binding var excludeStudioRecorder: Bool
+    @Binding var excludeStudioRecorderAudio: Bool
+    let codecPolicy: RecordingCodecPolicy
     let isLocked: Bool
 
     var body: some View {
@@ -498,7 +544,17 @@ private struct StudioInspector: View {
                     Divider()
                 }
 
-                sourceRow("System audio", detail: "Primary display track", icon: "speaker.wave.2")
+                Toggle(isOn: $capturesSystemAudio) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("System audio").font(.subheadline.weight(.medium))
+                        Text(capturesSystemAudio ? "Embedded once in the primary display track" : "Off for this Studio Draft")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .overlay(alignment: .bottom) { Divider() }
                 Toggle(isOn: $capturesMicrophone) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Microphone").font(.subheadline.weight(.medium))
@@ -510,13 +566,46 @@ private struct StudioInspector: View {
                 .disabled(isLocked)
                 .padding(.horizontal, 14).padding(.vertical, 11)
                 .overlay(alignment: .bottom) { Divider() }
+                if capturesMicrophone {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Microphone device", selection: $microphoneDeviceID) {
+                            ForEach(microphones) { microphone in
+                                Text(microphone.name).tag(Optional(microphone.id))
+                            }
+                        }
+                        .disabled(isLocked || microphones.isEmpty)
+                        if case let .savedDeviceMissing(_, fallbackID) = microphoneFallback {
+                            Text(
+                                fallbackID == nil
+                                    ? "Saved microphone unavailable; no fallback microphone is currently available."
+                                    : "Saved microphone unavailable; using the current system default."
+                            )
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        } else if microphones.isEmpty {
+                            Text("No microphone is currently available.")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .overlay(alignment: .bottom) { Divider() }
+                }
                 cameraRow
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Capture")
                 contractRow("Frame rate", value: "30 fps")
-                contractRow("Codec", value: "HEVC · H.264 fallback")
-                contractRow("Cursor", value: "Included")
+                contractRow("Codec", value: codecPolicy == .automatic ? "HEVC · H.264 fallback" : "H.264")
+                Toggle("Include cursor", isOn: $includeCursor)
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                Toggle("Exclude app audio", isOn: $excludeStudioRecorderAudio)
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Resilience")

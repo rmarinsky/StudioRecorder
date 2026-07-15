@@ -32,16 +32,7 @@ struct RecordingSourceSnapshot: Codable, Equatable, Sendable {
     }
 }
 
-struct CaptureRequestSnapshot: Codable, Equatable, Sendable {
-    let id: UUID
-    let createdAt: Date
-    let sources: [RecordingSourceSnapshot]
-    let captureProfile: String
-    let primaryAudioDisplayID: UInt32?
-    let capturesMicrophone: Bool?
-    let includesCursor: Bool
-    let excludesStudioRecorderAudio: Bool
-}
+typealias CaptureRequestSnapshot = CaptureRequest
 
 enum RecordingTrackKind: String, Codable, Equatable, Sendable {
     case screen
@@ -254,12 +245,15 @@ struct ProjectJournalEvent: Codable, Equatable, Sendable {
 
 enum RecordingProjectStoreError: LocalizedError {
     case missingMoviesDirectory
+    case missingCaptureDestination
     case missingTrackDescriptor(displayID: UInt32)
 
     var errorDescription: String? {
         switch self {
         case .missingMoviesDirectory:
             "Studio Recorder could not locate the Movies directory."
+        case .missingCaptureDestination:
+            "Studio Recorder could not resolve the project destination."
         case .missingTrackDescriptor(let displayID):
             "Studio Recorder could not prepare a raw track for display \(displayID)."
         }
@@ -295,37 +289,67 @@ final class RecordingProjectStore {
         primaryAudioDisplayID: UInt32?,
         capturesMicrophone: Bool = true
     ) throws -> RecordingProject {
-        let projectsDirectory = try resolvedProjectsDirectory()
         let createdAt = Date()
         let projectID = UUID()
+        let request = CaptureRequest(
+            id: projectID,
+            createdAt: createdAt,
+            displaySources: sources.compactMap { source in
+                guard let id = source.displayID else { return nil }
+                return DisplaySourceSnapshot(
+                    id: id,
+                    name: source.name,
+                    pixelWidth: source.pixelWidth ?? 0,
+                    pixelHeight: source.pixelHeight ?? 0,
+                    metadataState: source.metadataState
+                )
+            },
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: primaryAudioDisplayID != nil,
+                capturesMicrophone: capturesMicrophone,
+                microphone: nil,
+                primaryAudioDisplayID: primaryAudioDisplayID,
+                excludesStudioRecorderAudio: true
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .automatic,
+                includeCursor: true,
+                excludeStudioRecorder: true,
+                programResolutionTarget: "1920x1080"
+            ),
+            storage: StorageCaptureSnapshot(
+                destinationURL: baseDirectory ?? (try? resolvedProjectsDirectory()),
+                destinationBookmarkID: baseDirectory == nil ? "default-movies" : "test-destination",
+                fallbackPath: (baseDirectory ?? (try? resolvedProjectsDirectory()))?.path ?? ""
+            )
+        )
+        return try createProject(request: request)
+    }
+
+    func createProject(request: CaptureRequest) throws -> RecordingProject {
+        let projectsDirectory = baseDirectory ?? request.storage.destinationURL
+        guard let projectsDirectory else { throw RecordingProjectStoreError.missingCaptureDestination }
+        let createdAt = request.createdAt
+        let projectID = request.id
         let timestamp = ISO8601DateFormatter().string(from: createdAt).replacingOccurrences(of: ":", with: "-")
         let rootURL = projectsDirectory.appending(path: "\(timestamp)-\(projectID.uuidString.prefix(8)).recordingproject", directoryHint: .isDirectory)
         let rawTracksURL = rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: rawTracksURL, withIntermediateDirectories: true)
 
-        let displays = sources.compactMap(\.displayID)
+        let displays = request.displaySources.map(\.id)
         let tracks = displays.map {
             RecordingTrackDescriptor(id: "screen-\($0)", kind: .screen, displayID: $0, relativePath: "raw-tracks/screen-\($0).mov")
         }
-        let captureRequest = CaptureRequestSnapshot(
-            id: projectID,
-            createdAt: createdAt,
-            sources: sources,
-            captureProfile: "1080p-adaptive-30fps",
-            primaryAudioDisplayID: primaryAudioDisplayID,
-            capturesMicrophone: capturesMicrophone,
-            includesCursor: true,
-            excludesStudioRecorderAudio: true
-        )
         let manifest = RecordingProjectManifest(
             schemaVersion: 2,
             id: projectID,
             createdAt: createdAt,
             stoppedAt: nil,
-            captureProfile: captureRequest.captureProfile,
+            captureProfile: request.captureProfile,
             displays: displays,
-            primaryAudioDisplayID: primaryAudioDisplayID,
-            captureRequest: captureRequest,
+            primaryAudioDisplayID: request.primaryAudioDisplayID,
+            captureRequest: request,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
             appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "development",
             tracks: tracks
@@ -374,11 +398,23 @@ final class RecordingProjectStore {
         project.rootURL.appending(path: "journal.ndjson")
     }
 
-    func discoverProjects() async -> [RecordingProjectSnapshot] {
-        guard let directory = try? resolvedProjectsDirectory() else { return [] }
-        return await Task.detached(priority: .utility) {
-            await Self.scanProjects(in: directory)
-        }.value
+    func discoverProjects(in additionalDirectories: [URL] = []) async -> [RecordingProjectSnapshot] {
+        guard let defaultDirectory = try? resolvedProjectsDirectory() else { return [] }
+        var seenPaths: Set<String> = []
+        let directories = ([defaultDirectory] + additionalDirectories.sorted { $0.path < $1.path }).filter {
+            seenPaths.insert($0.standardizedFileURL.path).inserted
+        }
+        var discovered: [RecordingProjectSnapshot] = []
+        for directory in directories {
+            discovered.append(contentsOf: await Self.scanProjects(in: directory))
+        }
+        var seenProjectIDs: Set<String> = []
+        return discovered
+            .filter { seenProjectIDs.insert($0.id).inserted }
+            .sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+                return $0.rootURL.path < $1.rootURL.path
+            }
     }
 
     private func resolvedProjectsDirectory() throws -> URL {

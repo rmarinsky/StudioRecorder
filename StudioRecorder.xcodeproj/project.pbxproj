@@ -10,6 +10,9 @@
 		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
 		09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
+		31A000000000000000000001 /* RecordingPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41A000000000000000000001 /* RecordingPreferences.swift */; };
+		31B000000000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B000000000000000000001 /* SettingsView.swift */; };
+		31C000000000000000000001 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41C000000000000000000001 /* PreferencesStoreTests.swift */; };
 		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
 		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
 		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
@@ -34,6 +37,9 @@
 		027D0183284B828436F04225 /* StudioRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
 		3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlannerTests.swift; sourceTree = "<group>"; };
+		41A000000000000000000001 /* RecordingPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPreferences.swift; sourceTree = "<group>"; };
+		41B000000000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		41C000000000000000000001 /* PreferencesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesStoreTests.swift; sourceTree = "<group>"; };
 		4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderRootView.swift; sourceTree = "<group>"; };
 		4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStoreTests.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -51,6 +57,7 @@
 		0AA0B2638E89C4D301F652D5 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				41B000000000000000000001 /* SettingsView.swift */,
 				4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */,
 			);
 			path = UI;
@@ -97,6 +104,7 @@
 			isa = PBXGroup;
 			children = (
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
+				41C000000000000000000001 /* PreferencesStoreTests.swift */,
 				4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */,
 				3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */,
 				D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */,
@@ -116,6 +124,7 @@
 			isa = PBXGroup;
 			children = (
 				9A418726188BA1186770D369 /* RecordingProjectStore.swift */,
+				41A000000000000000000001 /* RecordingPreferences.swift */,
 			);
 			path = Domain;
 			sourceTree = "<group>";
@@ -215,6 +224,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
+				31C000000000000000000001 /* PreferencesStoreTests.swift in Sources */,
 				09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */,
 				1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */,
 				C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */,
@@ -225,6 +235,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				31A000000000000000000001 /* RecordingPreferences.swift in Sources */,
+				31B000000000000000000001 /* SettingsView.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
 				8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */,
 				0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */,

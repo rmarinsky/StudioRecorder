@@ -2,12 +2,27 @@ import SwiftUI
 
 @main
 struct StudioRecorderApp: App {
-    @StateObject private var model = StudioRecorderModel()
+    @StateObject private var preferencesStore: PreferencesStore
+    @StateObject private var model: StudioRecorderModel
+
+    init() {
+        let preferencesStore = PreferencesStore()
+        _preferencesStore = StateObject(wrappedValue: preferencesStore)
+        _model = StateObject(
+            wrappedValue: StudioRecorderModel(
+                coordinator: RecordingCoordinator(),
+                permissionCenter: PermissionCenter(),
+                preferencesStore: preferencesStore,
+                initialSnapshot: StudioRecorderSnapshot()
+            )
+        )
+    }
 
     var body: some Scene {
         WindowGroup {
             StudioRecorderRootView(model: model)
                 .frame(minWidth: 1_080, minHeight: 700)
+                .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
         .defaultSize(width: 1_260, height: 820)
         .commands {
@@ -27,6 +42,11 @@ struct StudioRecorderApp: App {
                 }
                 .keyboardShortcut("f", modifiers: .command)
             }
+        }
+
+        Settings {
+            SettingsView(model: model, preferencesStore: preferencesStore)
+                .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
     }
 }
