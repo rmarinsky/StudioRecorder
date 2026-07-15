@@ -15,7 +15,7 @@ enum LiveStreamState: Equatable, Sendable {
         switch self {
         case .idle: "Not live"
         case .connecting: "Connecting"
-        case .live: "Live"
+        case .live: "Sending"
         case .reconnecting(let attempt, let maximumAttempts):
             "Reconnecting \(attempt)/\(maximumAttempts)"
         case .stopping: "Stopping"

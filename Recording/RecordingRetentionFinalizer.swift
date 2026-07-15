@@ -34,7 +34,8 @@ final class RecordingRetentionFinalizer {
         project: RecordingProject,
         request: CaptureRequest,
         projectStore: RecordingProjectStore,
-        cursorTimeline: CursorSceneTimeline?
+        cursorTimeline: CursorSceneTimeline?,
+        sceneTimeline: StudioSceneTimeline? = nil
     ) async throws {
         guard request.storage.resolvedRetentionPolicy == .programOnly else {
             try projectStore.close(project)
@@ -66,6 +67,8 @@ final class RecordingRetentionFinalizer {
                 audioURL: audioURL,
                 screenDisplayID: screen.displayID,
                 cursorTimeline: cursorTimeline,
+                sceneTimeline: sceneTimeline,
+                screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
                 cameraTimeOffset: camera.map {
                     ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
                 } ?? 0,

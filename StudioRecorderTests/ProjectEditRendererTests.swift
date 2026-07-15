@@ -86,6 +86,53 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertLessThan(after.blue, 80)
     }
 
+    func testProgramRendererReplaysSceneSwitchesAtTheirRecordedTimes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let cameraURL = directory.appending(path: "camera.mov")
+        let outputURL = directory.appending(path: "scene-switch.mov")
+        let firstFrameURL = directory.appending(path: "first-scene.png")
+        let secondFrameURL = directory.appending(path: "second-scene.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFF0000FF, count: 5))
+        try await writeReadableMovie(to: cameraURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+
+        var cameraScene = CapturePresentationSnapshot.default
+        cameraScene.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        cameraScene.camera = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 1,
+            height: 1,
+            shape: .rectangle
+        )
+        var screenScene = cameraScene
+        screenScene.camera.isVisible = false
+        var sceneTimeline = StudioSceneTimeline(initialPresentation: cameraScene)
+        sceneTimeline.append(screenScene, at: 1)
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: cameraURL,
+                sceneTimeline: sceneTimeline
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: cameraScene,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: firstFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.5, to: secondFrameURL)
+
+        let first = try color(in: firstFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let second = try color(in: secondFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(first.red, 180)
+        XCTAssertLessThan(first.blue, 80)
+        XCTAssertGreaterThan(second.blue, 180)
+        XCTAssertLessThan(second.red, 80)
+    }
+
     func testProgramRendererRemovesGreenCameraBackgroundOverTheScreen() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

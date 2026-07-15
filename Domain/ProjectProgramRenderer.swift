@@ -9,6 +9,8 @@ struct ProjectProgramSources: Sendable {
     let audioURL: URL?
     let screenDisplayID: UInt32?
     let cursorTimeline: CursorSceneTimeline?
+    let sceneTimeline: StudioSceneTimeline?
+    let screenWasCapturedAsFixedRegion: Bool
     let cameraTimeOffset: TimeInterval
     let rendersCursor: Bool
 
@@ -18,6 +20,8 @@ struct ProjectProgramSources: Sendable {
         audioURL: URL? = nil,
         screenDisplayID: UInt32? = nil,
         cursorTimeline: CursorSceneTimeline? = nil,
+        sceneTimeline: StudioSceneTimeline? = nil,
+        screenWasCapturedAsFixedRegion: Bool = false,
         cameraTimeOffset: TimeInterval = 0,
         rendersCursor: Bool = false
     ) {
@@ -26,6 +30,8 @@ struct ProjectProgramSources: Sendable {
         self.audioURL = audioURL
         self.screenDisplayID = screenDisplayID
         self.cursorTimeline = cursorTimeline
+        self.sceneTimeline = sceneTimeline
+        self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.cameraTimeOffset = cameraTimeOffset
         self.rendersCursor = rendersCursor
     }
@@ -166,6 +172,8 @@ final class ProjectProgramRenderer {
             cursorSamples: sources.cursorTimeline?.samples.filter {
                 sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
             } ?? [],
+            sceneTimeline: sources.sceneTimeline,
+            screenWasCapturedAsFixedRegion: sources.screenWasCapturedAsFixedRegion,
             privacyOverlays: privacyOverlays,
             rendersCursor: sources.rendersCursor,
             screenTransform: try await sourceScreenTrack.load(.preferredTransform),
@@ -240,6 +248,8 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let presentation: CapturePresentationSnapshot
     let timeline: ProjectEditTimeline
     let cursorTimeline: CursorSceneTimeline?
+    let sceneTimeline: StudioSceneTimeline?
+    let screenWasCapturedAsFixedRegion: Bool
     let privacyOverlays: [ProjectPrivacyOverlay]
     let rendersCursor: Bool
     let screenTransform: CGAffineTransform
@@ -252,6 +262,8 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         presentation: CapturePresentationSnapshot,
         timeline: ProjectEditTimeline,
         cursorSamples: [CursorSceneSample],
+        sceneTimeline: StudioSceneTimeline?,
+        screenWasCapturedAsFixedRegion: Bool,
         privacyOverlays: [ProjectPrivacyOverlay],
         rendersCursor: Bool,
         screenTransform: CGAffineTransform,
@@ -263,6 +275,8 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         self.presentation = presentation
         self.timeline = timeline
         cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        self.sceneTimeline = sceneTimeline
+        self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.privacyOverlays = privacyOverlays
         self.rendersCursor = rendersCursor
         self.screenTransform = screenTransform
@@ -273,17 +287,36 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     }
 
     func screenFraming(at compositionTime: CMTime) -> ScreenFramingSnapshot? {
-        guard presentation.framing.mode == .followCursor,
-              let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
-              let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
+        let activePresentation = presentation(at: compositionTime)
+        // Fixed-region ScreenCaptureKit tracks are already cropped at capture time.
+        // Live switching rejects region changes for those tracks, so cropping again
+        // here would incorrectly zoom the saved program twice.
+        if screenWasCapturedAsFixedRegion {
             return nil
         }
-        return ScreenFramingSnapshot(
-            mode: .fixedRegion,
-            centerX: sample.normalizedX,
-            centerY: sample.normalizedY,
-            scale: presentation.framing.scale
-        ).validated()
+        switch activePresentation.framing.mode {
+        case .fullDisplay:
+            return nil
+        case .fixedRegion:
+            return activePresentation.framing
+        case .followCursor:
+            guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
+                  let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
+                return activePresentation.framing
+            }
+            return ScreenFramingSnapshot(
+                mode: .fixedRegion,
+                centerX: sample.normalizedX,
+                centerY: sample.normalizedY,
+                scale: activePresentation.framing.scale
+            ).validated()
+        }
+    }
+
+    func presentation(at compositionTime: CMTime) -> CapturePresentationSnapshot {
+        guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
+              let sceneTimeline else { return presentation }
+        return sceneTimeline.presentation(at: sourceTime)
     }
 
     func cursorState(at compositionTime: CMTime) -> ProgramCursorState? {
@@ -328,12 +361,13 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         let camera = instruction.cameraTrackID
             .flatMap { request.sourceFrame(byTrackID: $0) }
             .map(CIImage.init(cvPixelBuffer:))
+        let presentation = instruction.presentation(at: request.compositionTime)
         compositor.render(
             screen: screen,
             camera: camera,
             screenTransform: instruction.screenTransform,
             cameraTransform: instruction.cameraTransform,
-            presentation: instruction.presentation,
+            presentation: presentation,
             screenFraming: instruction.screenFraming(at: request.compositionTime),
             cursor: instruction.cursorState(at: request.compositionTime),
             privacyOverlays: instruction.activePrivacyOverlays(at: request.compositionTime),

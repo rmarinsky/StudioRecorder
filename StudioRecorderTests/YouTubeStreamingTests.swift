@@ -24,6 +24,37 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(retryWindow, 60)
     }
 
+    func testTransportBecomesSendingOnlyAfterTheFirstConfiguredVideoAndAudioPackets() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var observedStates: [LiveStreamState] = []
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: LiveStreamAudioConfiguration(
+                capturesSystemAudio: true,
+                capturesMicrophone: false,
+                microphoneDeviceID: nil,
+                excludesStudioRecorderAudio: true
+            )
+        ) { observedStates.append($0) }
+
+        XCTAssertFalse(observedStates.contains(.live))
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil
+        )
+        XCTAssertFalse(observedStates.contains(.live))
+        await pipeline.appendAudio(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .black)),
+            track: 0
+        )
+
+        XCTAssertEqual(observedStates.last, .live)
+        XCTAssertEqual(LiveStreamState.live.label, "Sending")
+        await pipeline.stop()
+    }
+
     func testConfigurationRequiresRTMPSAndAStreamKey() {
         let credentials = MemoryStreamCredentials()
         let defaults = UserDefaults(suiteName: UUID().uuidString)!

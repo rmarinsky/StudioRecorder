@@ -576,6 +576,18 @@ final class RecordingProjectStore {
         try write(timeline, to: sceneURL.appending(path: "cursor.json"))
     }
 
+    func writeStudioSceneTimeline(_ timeline: StudioSceneTimeline, in project: RecordingProject) throws {
+        let sceneURL = project.rootURL.appending(path: "scene", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: sceneURL, withIntermediateDirectories: true)
+        try write(timeline, to: sceneURL.appending(path: "layout.json"))
+    }
+
+    func studioSceneTimeline(in project: RecordingProject) -> StudioSceneTimeline? {
+        let url = project.rootURL.appending(path: "scene/layout.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(StudioSceneTimeline.self, from: data)
+    }
+
     func discoverProjects(in additionalDirectories: [URL] = []) async -> [RecordingProjectSnapshot] {
         guard let defaultDirectory = try? resolvedProjectsDirectory() else { return [] }
         var seenPaths: Set<String> = []

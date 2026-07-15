@@ -54,6 +54,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
+    private var studioSceneTimeline: StudioSceneTimeline?
+    private var recordingStartedAt: TimeInterval?
+    private var hasAuthoritativeRecordingStart = false
     nonisolated private let cursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
@@ -147,6 +150,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         state = .preparing
         terminalFailure = nil
         finalizationWarning = nil
+        recordingStartedAt = nil
+        hasAuthoritativeRecordingStart = false
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
         }
@@ -163,6 +168,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             let project = try projectStore.createProject(request: request)
             activeProject = project
             activeCaptureRequest = request
+            studioSceneTimeline = StudioSceneTimeline(initialPresentation: request.presentation)
+            if let studioSceneTimeline {
+                try projectStore.writeStudioSceneTimeline(studioSceneTimeline, in: project)
+            }
             let ownApplication = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
             startCursorTelemetry(request: request)
 
@@ -231,6 +240,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
 
             recordedDuration = 0
+            recordingStartedAt = recordingStartedAt ?? ProcessInfo.processInfo.systemUptime
             startDurationTimer()
             state = .recording
         } catch {
@@ -259,7 +269,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     project: activeProject,
                     request: activeCaptureRequest,
                     projectStore: projectStore,
-                    cursorTimeline: recordedCursorTimeline
+                    cursorTimeline: recordedCursorTimeline,
+                    sceneTimeline: studioSceneTimeline
                 )
             } catch {
                 do {
@@ -333,6 +344,33 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 guard !Task.isCancelled else { return }
                 self?.recordedDuration += 1
             }
+        }
+    }
+
+    @discardableResult
+    func updateLivePresentation(_ presentation: CapturePresentationSnapshot) -> Bool {
+        guard state == .recording,
+              let request = activeCaptureRequest,
+              let project = activeProject,
+              let recordingStartedAt else { return false }
+        let contract = StudioSceneLiveContract(
+            initialPresentation: request.presentation,
+            capturesCamera: request.camera != nil,
+            recordsCursorTelemetry: needsCursorTelemetry(request)
+        )
+        guard contract.incompatibility(for: presentation) == nil else { return false }
+        var timeline = studioSceneTimeline
+            ?? StudioSceneTimeline(initialPresentation: request.presentation)
+        timeline.append(
+            presentation,
+            at: max(ProcessInfo.processInfo.systemUptime - recordingStartedAt, 0)
+        )
+        do {
+            try projectStore.writeStudioSceneTimeline(timeline, in: project)
+            studioSceneTimeline = timeline
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -507,13 +545,39 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         pendingOutputIDs.removeAll()
         activeProject = nil
         activeCaptureRequest = nil
+        studioSceneTimeline = nil
+        recordingStartedAt = nil
+        hasAuthoritativeRecordingStart = false
+    }
+
+    private func adoptAuthoritativeRecordingStart(_ startedAt: TimeInterval, in project: RecordingProject) {
+        guard !hasAuthoritativeRecordingStart else { return }
+        let provisionalStart = recordingStartedAt
+        recordingStartedAt = startedAt
+        hasAuthoritativeRecordingStart = true
+
+        guard let provisionalStart,
+              var timeline = studioSceneTimeline else { return }
+        timeline.offsetSceneSwitches(by: provisionalStart - startedAt)
+        studioSceneTimeline = timeline
+        do {
+            try projectStore.writeStudioSceneTimeline(timeline, in: project)
+        } catch {
+            finalizationWarning = "The recording is safe, but scene switch timing could not be updated. \(error.localizedDescription)"
+        }
     }
 }
 
 extension RecordingCoordinator: SCRecordingOutputDelegate {
     nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
+        let outputStartedAt = ProcessInfo.processInfo.systemUptime
         Task { @MainActor [weak self] in
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
+            let primaryDisplayID = self.activeCaptureRequest?.primaryAudioDisplayID
+                ?? self.activeCaptureRequest?.displaySources.first?.id
+            if capture.displayID == primaryDisplayID {
+                self.adoptAuthoritativeRecordingStart(outputStartedAt, in: project)
+            }
             try? self.projectStore.markStarted(displayID: capture.displayID, in: project)
         }
     }

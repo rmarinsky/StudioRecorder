@@ -10,6 +10,7 @@ struct StudioRecorderRootView: View {
     @StateObject private var liveScene = LiveSceneCoordinator()
     @StateObject private var streaming = YouTubeStreamingCoordinator()
     @StateObject private var streamArchive = LiveProgramArchiveCoordinator()
+    @StateObject private var sceneLibrary = StudioSceneLibraryStore()
     @State private var deliveryMode = StreamDeliveryMode.record
     @State private var importedGIFSource: GIFMakerSource?
     @State private var gifImportError: String?
@@ -19,12 +20,21 @@ struct StudioRecorderRootView: View {
     @State private var isCapturingSnapshot = false
     @State private var lastSnapshotURL: URL?
     @State private var snapshotError: String?
+    @State private var isRunningStreamPreflight = false
+    @State private var streamPreflightReport: StreamPreflightReport?
+    @State private var streamPreflightRevision = 0
+    @State private var selectedSceneID: UUID?
+    @State private var sceneSwitchError: String?
+    @State private var sceneLibraryError: String?
+    @State private var streamingSceneContract: StudioSceneLiveContract?
+
+    private let streamPreflightRunner = StreamPreflightRunner()
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
     private var snapshot: StudioRecorderSnapshot { model.snapshot }
 
-    var body: some View {
+    private var presentedRoot: some View {
         NavigationSplitView {
             List(selection: routeSelection) {
                 Section {
@@ -92,6 +102,16 @@ struct StudioRecorderRootView: View {
         } message: {
             Text(snapshotError ?? "The current stage could not be saved.")
         }
+        .alert("Scene Could Not Switch", isPresented: sceneSwitchErrorPresented) {
+            Button("OK", role: .cancel) { sceneSwitchError = nil }
+        } message: {
+            Text(sceneSwitchError ?? "This scene is not compatible with the active session.")
+        }
+        .alert("Scene Library Error", isPresented: sceneLibraryErrorPresented) {
+            Button("OK", role: .cancel) { sceneLibraryError = nil }
+        } message: {
+            Text(sceneLibraryError ?? "The scene library could not be updated.")
+        }
         .confirmationDialog(
             "Move this recording project to Trash?",
             isPresented: recoveryTrashConfirmationPresented,
@@ -105,6 +125,10 @@ struct StudioRecorderRootView: View {
         } message: {
             Text("The complete .recordingproject package will be moved to macOS Trash. No media is deleted automatically.")
         }
+    }
+
+    private var lifecycleRoot: some View {
+        presentedRoot
         .task {
             await model.launch()
             await updateLiveScene(for: snapshot.route)
@@ -130,8 +154,18 @@ struct StudioRecorderRootView: View {
                 Task { await streaming.pipeline.updatePresentation(presentation) }
             }
         }
+    }
+
+    private var preflightObservedRoot: some View {
+        lifecycleRoot
+        .onChange(of: snapshot.studioDraft) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: deliveryMode) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: streamingSettings.serverURL) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: streamingSettings.streamKey) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: streamingSettings.videoBitRate) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streaming.state) { _, state in
             guard !state.isActive else { return }
+            streamingSceneContract = nil
             Task { await liveScene.setStreamPipeline(nil, audio: nil) }
         }
         .onChange(of: streamArchive.state) { _, state in
@@ -145,6 +179,10 @@ struct StudioRecorderRootView: View {
         .onChange(of: snapshot.capturesCamera) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
+    }
+
+    var body: some View {
+        preflightObservedRoot
         .onDisappear {
             streaming.stop()
             Task {
@@ -212,6 +250,20 @@ struct StudioRecorderRootView: View {
         Binding(
             get: { snapshotError != nil },
             set: { if !$0 { snapshotError = nil } }
+        )
+    }
+
+    private var sceneSwitchErrorPresented: Binding<Bool> {
+        Binding(
+            get: { sceneSwitchError != nil },
+            set: { if !$0 { sceneSwitchError = nil } }
+        )
+    }
+
+    private var sceneLibraryErrorPresented: Binding<Bool> {
+        Binding(
+            get: { sceneLibraryError != nil },
+            set: { if !$0 { sceneLibraryError = nil } }
         )
     }
 
@@ -485,6 +537,17 @@ struct StudioRecorderRootView: View {
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(.quaternary, in: Capsule())
                     }
+                    SceneSwitcherBar(
+                        scenes: sceneLibrary.scenes,
+                        selectedSceneID: selectedSceneID,
+                        isLive: isDeliveryActive,
+                        canManage: !isDeliveryActive,
+                        incompatibility: { liveSceneContract?.incompatibility(for: $0.presentation) },
+                        onSelect: applyScene,
+                        onSave: saveCurrentScene,
+                        onCreate: createScene,
+                        onDelete: deleteSelectedScene
+                    )
                     LiveProgramPreview(
                         screenImage: liveScene.screenImage,
                         cameraSession: liveScene.cameraSession,
@@ -597,6 +660,14 @@ struct StudioRecorderRootView: View {
                         Text("Add the YouTube RTMPS key in Settings → Streaming")
                             .font(.caption2)
                             .foregroundStyle(.orange)
+                    }
+                    if deliveryMode.includesStreaming, !streaming.state.isActive {
+                        StreamPreflightSummaryView(
+                            report: streamPreflightReport,
+                            isRunning: isRunningStreamPreflight,
+                            onRun: { Task { await runStreamPreflight() } }
+                        )
+                        .frame(width: 286, alignment: .leading)
                     }
                 }
                 Spacer()
@@ -874,13 +945,11 @@ struct StudioRecorderRootView: View {
     }
 
     private var canToggleDelivery: Bool {
-        guard !snapshot.isCaptureCommandInFlight else { return false }
+        guard !snapshot.isCaptureCommandInFlight,
+              !isRunningStreamPreflight else { return false }
         if isDeliveryActive { return true }
         guard snapshot.captureState == .ready,
               snapshot.draftValidationIssues.isEmpty else { return false }
-        if deliveryMode.includesStreaming {
-            return streamConfiguration != nil
-        }
         return true
     }
 
@@ -895,7 +964,8 @@ struct StudioRecorderRootView: View {
     }
 
     private var deliveryButtonTitle: String {
-        isDeliveryActive ? "Stop" : deliveryMode.label
+        if isRunningStreamPreflight, !isDeliveryActive { return "Checking…" }
+        return isDeliveryActive ? "Stop" : deliveryMode.label
     }
 
     private var statusColor: Color {
@@ -950,6 +1020,29 @@ struct StudioRecorderRootView: View {
         )
     }
 
+    private var streamPreflightRequest: StreamPreflightRequest? {
+        guard let draft = snapshot.studioDraft else { return nil }
+        return StreamPreflightRequest(
+            deliveryMode: deliveryMode,
+            serverURL: streamingSettings.serverURL,
+            hasStreamKey: !streamingSettings.streamKey
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty,
+            canvasSize: draft.presentation.canvas.pixelSize,
+            frameRate: draft.frameRate,
+            videoBitRate: streamingSettings.videoBitRate,
+            destinationURL: draft.destination.url,
+            capturesSystemAudio: draft.capturesSystemAudio,
+            capturesMicrophone: draft.capturesMicrophone,
+            capturesCamera: draft.capturesCamera,
+            cameraBackground: draft.presentation.resolvedCameraBackground,
+            selectedDisplaySizes: snapshot.availableDisplays
+                .filter { draft.selectedDisplayIDs.contains($0.id) }
+                .map(\.pixelSize),
+            revision: streamPreflightRevision
+        )
+    }
+
     private func streamHealthOutputSummary(_ health: LiveStreamHealthSnapshot) -> String {
         let width = Int(health.canvasSize.width)
         let height = Int(health.canvasSize.height)
@@ -981,40 +1074,138 @@ struct StudioRecorderRootView: View {
             }
             return
         }
-        Task {
-            guard let draft = snapshot.studioDraft else { return }
-            if deliveryMode.includesStreaming, let streamConfiguration {
-                let audio = LiveStreamAudioConfiguration(
-                    capturesSystemAudio: draft.capturesSystemAudio,
-                    capturesMicrophone: draft.capturesMicrophone,
-                    microphoneDeviceID: draft.microphoneDeviceID,
-                    excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
-                )
-                let localArchive: LiveProgramArchiveSession?
-                if deliveryMode == .stream {
-                    guard let request = model.makeCaptureRequest(retentionPolicy: .programOnly),
-                          let archive = streamArchive.start(
-                            request: request,
-                            streamConfiguration: streamConfiguration,
-                            audioConfiguration: audio
-                          ) else { return }
-                    localArchive = archive
-                } else {
-                    localArchive = nil
-                }
-                await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
-                streaming.start(
-                    configuration: streamConfiguration,
-                    presentation: draft.presentation,
-                    includesCursor: draft.includeCursor,
-                    audioConfiguration: audio,
-                    localArchive: localArchive
-                )
+        Task { await startDelivery() }
+    }
+
+    @MainActor
+    private func startDelivery() async {
+        guard snapshot.route == .studio,
+              let draft = snapshot.studioDraft else { return }
+        if deliveryMode.includesStreaming {
+            guard let report = await runStreamPreflight(),
+                  report.canStart,
+                  snapshot.route == .studio,
+                  let streamConfiguration else { return }
+            let audio = LiveStreamAudioConfiguration(
+                capturesSystemAudio: draft.capturesSystemAudio,
+                capturesMicrophone: draft.capturesMicrophone,
+                microphoneDeviceID: draft.microphoneDeviceID,
+                excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
+            )
+            let localArchive: LiveProgramArchiveSession?
+            if deliveryMode == .stream {
+                guard let request = model.makeCaptureRequest(retentionPolicy: .programOnly),
+                      let archive = streamArchive.start(
+                        request: request,
+                        streamConfiguration: streamConfiguration,
+                        audioConfiguration: audio
+                      ) else { return }
+                localArchive = archive
+            } else {
+                localArchive = nil
             }
-            if deliveryMode.includesRecording {
-                model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
-                model.send(.toggleRecording)
-            }
+            await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
+            streamingSceneContract = StudioSceneLiveContract(
+                initialPresentation: draft.presentation,
+                capturesCamera: draft.capturesCamera,
+                recordsCursorTelemetry: draft.includeCursor || draft.presentation.framing.mode == .followCursor
+            )
+            streaming.start(
+                configuration: streamConfiguration,
+                presentation: draft.presentation,
+                includesCursor: draft.includeCursor,
+                audioConfiguration: audio,
+                localArchive: localArchive
+            )
+        }
+        if deliveryMode.includesRecording {
+            model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
+            model.send(.toggleRecording)
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    private func runStreamPreflight() async -> StreamPreflightReport? {
+        guard !isRunningStreamPreflight,
+              let request = streamPreflightRequest else { return nil }
+        isRunningStreamPreflight = true
+        streamPreflightReport = nil
+        let report = await streamPreflightRunner.run(request: request)
+        guard streamPreflightRequest == request else {
+            isRunningStreamPreflight = false
+            return nil
+        }
+        streamPreflightReport = report
+        isRunningStreamPreflight = false
+        return report
+    }
+
+    private func invalidateStreamPreflight() {
+        streamPreflightRevision &+= 1
+        streamPreflightReport = nil
+    }
+
+    private var liveSceneContract: StudioSceneLiveContract? {
+        if let request = snapshot.activeCaptureRequest {
+            return StudioSceneLiveContract(
+                initialPresentation: request.presentation,
+                capturesCamera: request.camera != nil,
+                recordsCursorTelemetry: request.includesCursor
+                    || request.presentation.framing.mode == .followCursor
+            )
+        }
+        return streamingSceneContract
+    }
+
+    private func applyScene(_ scene: StudioScenePreset) {
+        if let incompatibility = liveSceneContract?.incompatibility(for: scene.presentation) {
+            sceneSwitchError = incompatibility.message
+            return
+        }
+        guard model.send(.setDraftPresentation(scene.presentation)) != .ignored else {
+            sceneSwitchError = "Studio Recorder could not apply this scene to the current session."
+            return
+        }
+        selectedSceneID = scene.id
+    }
+
+    private func saveCurrentScene() {
+        guard let presentation = snapshot.studioDraft?.presentation else { return }
+        let scene = selectedSceneID.flatMap(sceneLibrary.scene(id:)).map {
+            StudioScenePreset(id: $0.id, presentation: presentation)
+        } ?? StudioScenePreset(presentation: presentation)
+        do {
+            try sceneLibrary.save(scene)
+            selectedSceneID = scene.id
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func createScene() {
+        guard var presentation = snapshot.studioDraft?.presentation else { return }
+        let usedNames = Set(sceneLibrary.scenes.map(\.name))
+        var index = sceneLibrary.scenes.count + 1
+        while usedNames.contains("Scene \(index)") { index += 1 }
+        presentation.name = "Scene \(index)"
+        let scene = StudioScenePreset(presentation: presentation)
+        do {
+            try sceneLibrary.save(scene)
+            selectedSceneID = scene.id
+            model.send(.setDraftPresentation(scene.presentation))
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func deleteSelectedScene() {
+        guard let selectedSceneID else { return }
+        do {
+            try sceneLibrary.remove(selectedSceneID)
+            self.selectedSceneID = nil
+        } catch {
+            sceneLibraryError = error.localizedDescription
         }
     }
 
@@ -1140,6 +1331,14 @@ private struct ProjectRow: View {
 }
 
 private struct StudioInspector: View {
+    private enum SourceSettings: String, Identifiable {
+        case screens
+        case camera
+        case microphone
+
+        var id: String { rawValue }
+    }
+
     let displays: [AvailableDisplay]
     @Binding var selectedDisplayIDs: Set<UInt32>
     let microphones: [AvailableMicrophone]
@@ -1157,6 +1356,7 @@ private struct StudioInspector: View {
     @Binding var retentionPolicy: MediaRetentionPolicy
     @Binding var presentation: CapturePresentationSnapshot
     let isLocked: Bool
+    @State private var activeSourceSettings: SourceSettings?
 
     var body: some View {
         ScrollView {
@@ -1213,86 +1413,26 @@ private struct StudioInspector: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
 
-                DisclosureGroup("Screen layout") {
-                    sourceLayoutControls(placement: screenPlacementBinding)
-                }
-                .disabled(isLocked)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-
-                if capturesCamera {
-                    DisclosureGroup("Camera layout") {
-                        sourceLayoutControls(placement: cameraPlacementBinding, includesMirror: true)
-                    }
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
-                }
-
                 Divider()
                 inspectorHeader("Sources")
-                ForEach(displays) { display in
-                    Toggle(isOn: binding(for: display.id)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(display.title).font(.subheadline.weight(.medium))
-                            Text("\(Int(display.pixelSize.width)) × \(Int(display.pixelSize.height)) native capture")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
-                    .toggleStyle(.switch)
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14).padding(.vertical, 11)
-                    Divider()
-                }
-
-                Toggle(isOn: $capturesSystemAudio) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("System audio").font(.subheadline.weight(.medium))
-                        Text(capturesSystemAudio ? "Embedded once in the primary display track" : "Off for this Studio Draft")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .disabled(isLocked)
-                .padding(.horizontal, 14).padding(.vertical, 11)
-                .overlay(alignment: .bottom) { Divider() }
-                Toggle(isOn: $capturesMicrophone) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Microphone").font(.subheadline.weight(.medium))
-                        Text(capturesMicrophone ? "Embedded once in primary capture" : "Off for this Studio Draft")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .disabled(isLocked)
-                .padding(.horizontal, 14).padding(.vertical, 11)
-                .overlay(alignment: .bottom) { Divider() }
-                if capturesMicrophone {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("Microphone device", selection: $microphoneDeviceID) {
-                            ForEach(microphones) { microphone in
-                                Text(microphone.name).tag(Optional(microphone.id))
-                            }
-                        }
-                        .disabled(isLocked || microphones.isEmpty)
-                        if case let .savedDeviceMissing(_, fallbackID) = microphoneFallback {
-                            Text(
-                                fallbackID == nil
-                                    ? "Saved microphone unavailable; no fallback microphone is currently available."
-                                    : "Saved microphone unavailable; using the current system default."
-                            )
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        } else if microphones.isEmpty {
-                            Text("No microphone is currently available.")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .overlay(alignment: .bottom) { Divider() }
-                }
-                cameraRow
+                sourceSettingsButton(
+                    .screens,
+                    title: "Screens",
+                    detail: "\(selectedDisplayIDs.count) selected",
+                    icon: "display.2"
+                )
+                sourceSettingsButton(
+                    .camera,
+                    title: "Camera",
+                    detail: capturesCamera ? selectedCameraName : "Off",
+                    icon: "video"
+                )
+                sourceSettingsButton(
+                    .microphone,
+                    title: "Microphone & audio",
+                    detail: audioSourceSummary,
+                    icon: "waveform"
+                )
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Capture")
@@ -1321,9 +1461,6 @@ private struct StudioInspector: View {
                 Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
                     .disabled(isLocked)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                Toggle("Exclude app audio", isOn: $excludeStudioRecorderAudio)
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Resilience")
@@ -1347,30 +1484,144 @@ private struct StudioInspector: View {
         }
     }
 
-    @ViewBuilder
-    private var cameraRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $capturesCamera) {
+    private func sourceSettingsButton(
+        _ settings: SourceSettings,
+        title: String,
+        detail: String,
+        icon: String
+    ) -> some View {
+        Button {
+            activeSourceSettings = settings
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Camera").font(.subheadline.weight(.medium))
-                    Text(cameras.isEmpty ? "No camera available" : (capturesCamera ? "Independent recoverable raw track" : "Off for this Studio Draft"))
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(title).font(.subheadline.weight(.medium))
+                    Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(activeSourceSettings == settings ? Color.accentColor.opacity(0.10) : Color.clear)
+        .overlay(alignment: .bottom) { Divider() }
+        .popover(
+            isPresented: Binding(
+                get: { activeSourceSettings == settings },
+                set: { if !$0 { activeSourceSettings = nil } }
+            ),
+            arrowEdge: .trailing
+        ) {
+            sourceSettingsPanel(settings)
+                .frame(width: 330)
+                .padding(16)
+        }
+    }
+
+    @ViewBuilder
+    private func sourceSettingsPanel(_ settings: SourceSettings) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(settingsTitle(settings)).font(.headline)
+                Spacer()
+                if isLocked {
+                    Label("Locked", systemImage: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .toggleStyle(.switch)
-            .disabled(isLocked || cameras.isEmpty)
 
-            if capturesCamera, !cameras.isEmpty {
-                Picker("Camera", selection: $selectedCameraID) {
-                    ForEach(cameras) { camera in
-                        Text(camera.name).tag(Optional(camera.id))
+            switch settings {
+            case .screens:
+                ForEach(displays) { display in
+                    Toggle(isOn: binding(for: display.id)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(display.title).font(.subheadline.weight(.medium))
+                            Text("\(Int(display.pixelSize.width)) × \(Int(display.pixelSize.height))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
+                    .frame(minHeight: 44)
                 }
-                .disabled(isLocked)
+                Divider()
+                sourceLayoutControls(placement: screenPlacementBinding)
+
+            case .camera:
+                Toggle("Use camera", isOn: $capturesCamera)
+                    .disabled(cameras.isEmpty)
+                if capturesCamera, !cameras.isEmpty {
+                    Picker("Device", selection: $selectedCameraID) {
+                        ForEach(cameras) { camera in
+                            Text(camera.name).tag(Optional(camera.id))
+                        }
+                    }
+                    Divider()
+                    sourceLayoutControls(placement: cameraPlacementBinding, includesMirror: true)
+                } else if cameras.isEmpty {
+                    Text("No camera is currently available.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+
+            case .microphone:
+                Toggle("Use microphone", isOn: $capturesMicrophone)
+                if capturesMicrophone {
+                    Picker("Device", selection: $microphoneDeviceID) {
+                        ForEach(microphones) { microphone in
+                            Text(microphone.name).tag(Optional(microphone.id))
+                        }
+                    }
+                    .disabled(microphones.isEmpty)
+                    microphoneAvailabilityMessage
+                }
+                Divider()
+                Toggle("Capture system audio", isOn: $capturesSystemAudio)
+                Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 11)
-        .overlay(alignment: .bottom) { Divider() }
+        .disabled(isLocked)
+    }
+
+    @ViewBuilder
+    private var microphoneAvailabilityMessage: some View {
+        if case let .savedDeviceMissing(_, fallbackID) = microphoneFallback {
+            Text(fallbackID == nil
+                ? "Saved microphone unavailable; no fallback is available."
+                : "Saved microphone unavailable; using the system default.")
+                .font(.caption2).foregroundStyle(.orange)
+        } else if microphones.isEmpty {
+            Text("No microphone is currently available.")
+                .font(.caption2).foregroundStyle(.orange)
+        }
+    }
+
+    private var selectedCameraName: String {
+        cameras.first { $0.id == selectedCameraID }?.name ?? "Camera enabled"
+    }
+
+    private var audioSourceSummary: String {
+        switch (capturesMicrophone, capturesSystemAudio) {
+        case (true, true): "Microphone + system audio"
+        case (true, false): "Microphone"
+        case (false, true): "System audio"
+        case (false, false): "Off"
+        }
+    }
+
+    private func settingsTitle(_ settings: SourceSettings) -> String {
+        switch settings {
+        case .screens: "Screen sources & layout"
+        case .camera: "Camera source & layout"
+        case .microphone: "Microphone & audio"
+        }
     }
 
     private func inspectorHeader(_ title: String) -> some View {
@@ -1850,6 +2101,214 @@ private struct LiveProgramPreview: View {
                 presentation.camera.centerY += value.translation.height / size.height
                 presentation = presentation.validated()
             }
+    }
+}
+
+private struct SceneSwitcherBar: View {
+    let scenes: [StudioScenePreset]
+    let selectedSceneID: UUID?
+    let isLive: Bool
+    let canManage: Bool
+    let incompatibility: (StudioScenePreset) -> StudioSceneLiveIncompatibility?
+    let onSelect: (StudioScenePreset) -> Void
+    let onSave: () -> Void
+    let onCreate: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label("Scenes", systemImage: "rectangle.3.group")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if scenes.isEmpty {
+                Button("Save current scene", action: onSave)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canManage)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(scenes) { scene in
+                            let issue = incompatibility(scene)
+                            Button { onSelect(scene) } label: {
+                                HStack(spacing: 6) {
+                                    if scene.id == selectedSceneID, isLive {
+                                        Circle().fill(.red).frame(width: 6, height: 6)
+                                    }
+                                    Text(scene.name).lineLimit(1)
+                                    if issue != nil {
+                                        Image(systemName: "lock.fill").font(.caption2)
+                                    }
+                                }
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 10)
+                                .frame(minHeight: 34)
+                                .contentShape(Rectangle())
+                                .background(
+                                    scene.id == selectedSceneID
+                                        ? Color.accentColor.opacity(0.16)
+                                        : Color.primary.opacity(0.06),
+                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help(issue?.message ?? "Switch to \(scene.name)")
+                        }
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if canManage {
+                Button(action: onSave) {
+                    Image(systemName: selectedSceneID == nil ? "square.and.arrow.down" : "arrow.triangle.2.circlepath")
+                }
+                .help(selectedSceneID == nil ? "Save current scene" : "Update selected scene")
+                .disabled(scenes.isEmpty && selectedSceneID != nil)
+
+                Button(action: onCreate) {
+                    Image(systemName: "plus")
+                }
+                .help("Create scene from current layout")
+
+                if selectedSceneID != nil {
+                    Menu {
+                        Button("Delete Scene", systemImage: "trash", role: .destructive, action: onDelete)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 28)
+                }
+            } else {
+                Text("LIVE")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.red)
+            }
+        }
+        .frame(minHeight: 36)
+        .padding(.horizontal, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct StreamPreflightSummaryView: View {
+    let report: StreamPreflightReport?
+    let isRunning: Bool
+    let onRun: () -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                statusIcon
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Stream check")
+                        .font(.caption.weight(.semibold))
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(summaryColor)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button(report == nil ? "Run" : "Rerun", action: onRun)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isRunning)
+            }
+            .frame(minHeight: 34)
+            .contentShape(Rectangle())
+
+            if let blocker = report?.blockers.first {
+                Label(blocker.title, systemImage: "xmark.octagon.fill")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+
+            if let report {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(report.checks) { check in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: iconName(for: check.state))
+                                    .foregroundStyle(color(for: check.state))
+                                    .frame(width: 16)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(check.title)
+                                        .font(.caption.weight(.medium))
+                                    Text(check.detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 7)
+                            .contentShape(Rectangle())
+                        }
+                    }
+                } label: {
+                    Text(isExpanded ? "Hide details" : "Show \(report.checks.count) checks")
+                        .font(.caption2.weight(.medium))
+                }
+                .tint(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        if isRunning {
+            ProgressView().controlSize(.small)
+        } else if let report {
+            Image(systemName: report.canStart ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                .foregroundStyle(report.canStart ? .green : .red)
+        } else {
+            Image(systemName: "checklist")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var summary: String {
+        if isRunning { return "Checking configuration…" }
+        guard let report else { return "Required before streaming" }
+        if !report.blockers.isEmpty {
+            return "\(report.blockers.count) blocker\(report.blockers.count == 1 ? "" : "s")"
+        }
+        if !report.warnings.isEmpty {
+            return "Ready · \(report.warnings.count) warning\(report.warnings.count == 1 ? "" : "s")"
+        }
+        return "Ready"
+    }
+
+    private var summaryColor: Color {
+        guard let report else { return .secondary }
+        return report.canStart ? (report.warnings.isEmpty ? .green : .orange) : .red
+    }
+
+    private func iconName(for state: StreamPreflightCheckState) -> String {
+        switch state {
+        case .passed: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        }
+    }
+
+    private func color(for state: StreamPreflightCheckState) -> Color {
+        switch state {
+        case .passed: .green
+        case .warning: .orange
+        case .blocked: .red
+        }
     }
 }
 

@@ -157,6 +157,9 @@ actor LiveProgramPipeline {
     private var pixelBufferPool: CVPixelBufferPool?
     private var isRunning = false
     private var isTransportLive = false
+    private var hasSubmittedVideo = false
+    private var hasSubmittedAudio = false
+    private var hasReportedSending = false
     private var streamGeneration = 0
     private var activeConfiguration: YouTubeStreamConfiguration?
     private var activeAudioConfiguration: LiveStreamAudioConfiguration?
@@ -195,6 +198,7 @@ actor LiveProgramPipeline {
         activeStateHandler = stateHandler
         activeArchive = localArchive
         isTransportLive = false
+        resetTransportEvidence()
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
         healthStartedAt = nil
         composedVideoFrames = 0
@@ -215,11 +219,12 @@ actor LiveProgramPipeline {
             }
             if reconnectTask == nil {
                 isTransportLive = true
-                await stateHandler(.live)
+                resetTransportEvidence()
             }
         } catch {
             isRunning = false
             isTransportLive = false
+            resetTransportEvidence()
             latestCamera = nil
             pixelBufferPool = nil
             activeConfiguration = nil
@@ -238,6 +243,7 @@ actor LiveProgramPipeline {
         streamGeneration += 1
         isRunning = false
         isTransportLive = false
+        resetTransportEvidence()
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectRequestedWhileRetrying = false
@@ -298,6 +304,8 @@ actor LiveProgramPipeline {
         let composedBuffer = SendableSampleBuffer(value: composed)
         if isTransportLive {
             await sink.appendVideo(composedBuffer)
+            hasSubmittedVideo = true
+            await reportSendingIfReady()
         } else {
             droppedVideoFrames += 1
         }
@@ -332,6 +340,8 @@ actor LiveProgramPipeline {
         guard isRunning else { return }
         if isTransportLive {
             await sink.appendAudio(sampleBuffer, track: track)
+            hasSubmittedAudio = true
+            await reportSendingIfReady()
         }
         if let archive = activeArchive {
             if let archiveBuffer = copySampleBuffer(sampleBuffer.value) {
@@ -391,6 +401,7 @@ actor LiveProgramPipeline {
         guard isRunning,
               streamGeneration == generation else { return }
         isTransportLive = false
+        resetTransportEvidence()
         guard reconnectTask == nil else {
             reconnectRequestedWhileRetrying = true
             return
@@ -442,7 +453,7 @@ actor LiveProgramPipeline {
                     continue
                 }
                 isTransportLive = true
-                await stateHandler(.live)
+                resetTransportEvidence()
                 if reconnectRequestedWhileRetrying {
                     isTransportLive = false
                     await sink.disconnect()
@@ -468,6 +479,7 @@ actor LiveProgramPipeline {
         }
         isRunning = false
         isTransportLive = false
+        resetTransportEvidence()
         latestCamera = nil
         pixelBufferPool = nil
         activeConfiguration = nil
@@ -482,6 +494,24 @@ actor LiveProgramPipeline {
         await stateHandler(.failed(
             "YouTube reconnect failed after \(reconnectPolicy.maximumAttempts) attempts. \(detail)"
         ))
+    }
+
+    private func resetTransportEvidence() {
+        hasSubmittedVideo = false
+        hasSubmittedAudio = false
+        hasReportedSending = false
+    }
+
+    private func reportSendingIfReady() async {
+        guard isTransportLive,
+              !hasReportedSending,
+              hasSubmittedVideo,
+              let audioConfiguration = activeAudioConfiguration,
+              let stateHandler = activeStateHandler else { return }
+        let requiresAudio = audioConfiguration.capturesSystemAudio || audioConfiguration.capturesMicrophone
+        guard !requiresAudio || hasSubmittedAudio else { return }
+        hasReportedSending = true
+        await stateHandler(.live)
     }
 
     private func streamFraming(cursorPosition: CGPoint?) -> ScreenFramingSnapshot? {

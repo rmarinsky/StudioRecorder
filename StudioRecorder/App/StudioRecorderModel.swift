@@ -614,8 +614,18 @@ final class StudioRecorderModel: ObservableObject {
             result = .draftChanged
 
         case .setDraftPresentation(let presentation):
-            guard canEditDraft else { return .ignored }
-            snapshot.studioDraft?.presentation = presentation.validated()
+            let validated = presentation.validated()
+            if canEditDraft {
+                snapshot.studioDraft?.presentation = validated
+            } else {
+                guard snapshot.route == .studio,
+                      snapshot.captureState == .recording,
+                      !snapshot.isCaptureCommandInFlight,
+                      coordinator?.updateLivePresentation(validated) == true else {
+                    return .ignored
+                }
+                snapshot.studioDraft?.presentation = validated
+            }
             result = .draftChanged
 
         case .setDraftRetentionPolicy(let policy):

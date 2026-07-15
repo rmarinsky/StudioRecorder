@@ -396,6 +396,8 @@ struct ProjectDetailView: View {
             audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) },
             screenDisplayID: screen.displayID,
             cursorTimeline: cursorTimeline,
+            sceneTimeline: studioSceneTimeline?.hasSceneSwitches == true ? studioSceneTimeline : nil,
+            screenWasCapturedAsFixedRegion: project.presentation?.framing.mode == .fixedRegion,
             cameraTimeOffset: camera.map {
                 ProjectTrackTiming.offset(
                     from: screen.id,
@@ -422,6 +424,12 @@ struct ProjectDetailView: View {
         let url = project.rootURL.appending(path: "scene/cursor.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(CursorSceneTimeline.self, from: data)
+    }
+
+    private var studioSceneTimeline: StudioSceneTimeline? {
+        let url = project.rootURL.appending(path: "scene/layout.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(StudioSceneTimeline.self, from: data)
     }
 
     private func exportScreenshot() {
