@@ -549,6 +549,15 @@ struct StudioRecorderRootView: View {
                     Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                         .font(.caption)
                         .foregroundStyle(streaming.state == .live ? .red : .secondary)
+                    if let health = streaming.health, streaming.state.isActive {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(streamHealthOutputSummary(health))
+                            Text(streamHealthPerformanceSummary(health))
+                                .foregroundStyle(streamHealthColor(health))
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
                     if deliveryMode.includesStreaming, streamConfiguration == nil {
                         Text("Add the YouTube RTMPS key in Settings → Streaming")
                             .font(.caption2)
@@ -867,6 +876,26 @@ struct StudioRecorderRootView: View {
             canvasSize: CGSize(width: canvasWidth, height: canvasHeight),
             frameRate: snapshot.studioDraft?.frameRate ?? 30
         )
+    }
+
+    private func streamHealthOutputSummary(_ health: LiveStreamHealthSnapshot) -> String {
+        let width = Int(health.canvasSize.width)
+        let height = Int(health.canvasSize.height)
+        let bitrate = Double(health.videoBitRate) / 1_000_000
+        return "\(width)×\(height) · \(String(format: "%.0f", bitrate)) Mbps"
+    }
+
+    private func streamHealthPerformanceSummary(_ health: LiveStreamHealthSnapshot) -> String {
+        let measuredFPS = health.measuredFrameRate
+        let fps = measuredFPS > 0 ? String(format: "%.1f fps", measuredFPS) : "warming up"
+        return "\(fps) · \(String(format: "%.1f", health.averageRenderMilliseconds)) ms render · \(health.droppedVideoFrames) dropped"
+    }
+
+    private func streamHealthColor(_ health: LiveStreamHealthSnapshot) -> Color {
+        if health.droppedVideoFrames > 0 { return .orange }
+        if health.measuredFrameRate > 0,
+           health.measuredFrameRate < Double(health.targetFrameRate) * 0.80 { return .orange }
+        return .secondary
     }
 
     private func toggleDelivery() {

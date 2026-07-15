@@ -10,12 +10,28 @@ struct LiveStreamAudioConfiguration: Equatable, Sendable {
     let excludesStudioRecorderAudio: Bool
 }
 
+struct LiveStreamHealthSnapshot: Equatable, Sendable {
+    let canvasSize: CGSize
+    let targetFrameRate: Int
+    let videoBitRate: Int
+    let elapsed: TimeInterval
+    let composedVideoFrames: Int
+    let droppedVideoFrames: Int
+    let averageRenderMilliseconds: Double
+
+    var measuredFrameRate: Double {
+        elapsed > 0 ? Double(composedVideoFrames) / elapsed : 0
+    }
+}
+
 @MainActor
 final class YouTubeStreamingCoordinator: ObservableObject {
     @Published private(set) var state: LiveStreamState = .idle
+    @Published private(set) var health: LiveStreamHealthSnapshot?
 
     let pipeline = LiveProgramPipeline()
     private var startTask: Task<Void, Never>?
+    private var healthTask: Task<Void, Never>?
     private var activeAttemptID: UUID?
 
     func start(
@@ -28,6 +44,7 @@ final class YouTubeStreamingCoordinator: ObservableObject {
         let attemptID = UUID()
         activeAttemptID = attemptID
         state = .connecting
+        beginHealthMonitoring(configuration: configuration, attemptID: attemptID)
         startTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -40,6 +57,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
                     guard let self, self.activeAttemptID == attemptID else { return }
                     self.state = state
                     if case .failed = state {
+                        self.healthTask?.cancel()
+                        self.healthTask = nil
                         Task { await self.pipeline.stop() }
                     }
                 }
@@ -49,6 +68,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
             } catch {
                 guard activeAttemptID == attemptID else { return }
                 state = .failed(error.localizedDescription)
+                healthTask?.cancel()
+                healthTask = nil
             }
             if activeAttemptID == attemptID {
                 startTask = nil
@@ -59,6 +80,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
     func stop() {
         guard state.isActive else { return }
         activeAttemptID = nil
+        healthTask?.cancel()
+        healthTask = nil
         startTask?.cancel()
         startTask = nil
         state = .stopping
@@ -67,6 +90,27 @@ final class YouTubeStreamingCoordinator: ObservableObject {
             await pipeline.stop()
             guard activeAttemptID == nil else { return }
             state = .idle
+            health = nil
+        }
+    }
+
+    private func beginHealthMonitoring(configuration: YouTubeStreamConfiguration, attemptID: UUID) {
+        healthTask?.cancel()
+        health = LiveStreamHealthSnapshot(
+            canvasSize: configuration.canvasSize,
+            targetFrameRate: configuration.frameRate,
+            videoBitRate: configuration.videoBitRate,
+            elapsed: 0,
+            composedVideoFrames: 0,
+            droppedVideoFrames: 0,
+            averageRenderMilliseconds: 0
+        )
+        healthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self, self.activeAttemptID == attemptID else { return }
+                self.health = await self.pipeline.healthSnapshot(configuration: configuration)
+            }
         }
     }
 }
@@ -81,6 +125,10 @@ actor LiveProgramPipeline {
     private var latestCamera: SendableSampleBuffer?
     private var pixelBufferPool: CVPixelBufferPool?
     private var isRunning = false
+    private var healthStartedAt: TimeInterval?
+    private var composedVideoFrames = 0
+    private var droppedVideoFrames = 0
+    private var totalRenderDuration: TimeInterval = 0
 
     init(sink: any LiveProgramSink = YouTubeStreamSink()) {
         self.sink = sink
@@ -97,6 +145,10 @@ actor LiveProgramPipeline {
         self.presentation = presentation.validated()
         rendersCursor = includesCursor
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
+        healthStartedAt = nil
+        composedVideoFrames = 0
+        droppedVideoFrames = 0
+        totalRenderDuration = 0
         isRunning = true
         do {
             try await sink.connect(
@@ -133,9 +185,14 @@ actor LiveProgramPipeline {
         _ sampleBuffer: SendableSampleBuffer,
         cursor: ProgramCursorState?
     ) async {
-        guard isRunning,
-              let sourceBuffer = sampleBuffer.value.imageBuffer,
-              let outputBuffer = makePixelBuffer() else { return }
+        guard isRunning else { return }
+        let renderStartedAt = ProcessInfo.processInfo.systemUptime
+        healthStartedAt = healthStartedAt ?? renderStartedAt
+        guard let sourceBuffer = sampleBuffer.value.imageBuffer,
+              let outputBuffer = makePixelBuffer() else {
+            droppedVideoFrames += 1
+            return
+        }
         let cameraBuffer = latestCamera?.value.imageBuffer
         compositor.render(
             screen: CIImage(cvPixelBuffer: sourceBuffer),
@@ -150,8 +207,28 @@ actor LiveProgramPipeline {
         guard let composed = makeSampleBuffer(
             pixelBuffer: outputBuffer,
             timingSource: sampleBuffer.value
-        ) else { return }
+        ) else {
+            droppedVideoFrames += 1
+            return
+        }
         await sink.appendVideo(SendableSampleBuffer(value: composed))
+        composedVideoFrames += 1
+        totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
+    }
+
+    func healthSnapshot(configuration: YouTubeStreamConfiguration) -> LiveStreamHealthSnapshot {
+        let elapsed = healthStartedAt.map { max(ProcessInfo.processInfo.systemUptime - $0, 0) } ?? 0
+        return LiveStreamHealthSnapshot(
+            canvasSize: configuration.canvasSize,
+            targetFrameRate: configuration.frameRate,
+            videoBitRate: configuration.videoBitRate,
+            elapsed: elapsed,
+            composedVideoFrames: composedVideoFrames,
+            droppedVideoFrames: droppedVideoFrames,
+            averageRenderMilliseconds: composedVideoFrames > 0
+                ? totalRenderDuration / Double(composedVideoFrames) * 1_000
+                : 0
+        )
     }
 
     func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) async {

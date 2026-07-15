@@ -12,11 +12,11 @@ public brand.
 - requests system audio and microphone capture through ScreenCaptureKit;
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
-- provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
+- provides a native Projects/Studio shell, exact live display and camera preview, actionable per-track recovery review, and `⌘R` start/stop shortcut;
 - configures Full HD, horizontal or vertical 4K, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
 - previews draggable/resizable screen and camera placement, gives each source independent shape, corner radius, transform, and framing, freezes the scene into the Capture Request, and renders scalable cursor/click treatment through the shared compositor;
 - removes the camera background locally with a throttled Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; editable raw camera media remains unchanged;
-- offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; manual RTMPS credentials stay in macOS Keychain, and the stream uses the same screen/camera/background/follow compositor as local program output;
+- offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; manual RTMPS credentials stay in macOS Keychain, the stream uses the same screen/camera/background/follow compositor as local program output, and live health shows measured composition FPS, render latency, dropped frames, canvas, and bitrate;
 - offers per-Scene retention: Editable tracks preserves independent screen/camera media, while Program movie only renders and verifies the exact canvas, framing, Follow Cursor motion, camera shape, background treatment, and audio before removing raw tracks;
 - edits the output canvas and screen/camera placement, scale, shape, and mirroring after recordings that retain editable tracks; the program layout persists in `edit.json` without touching raw tracks;
 - plays and exports the moving screen+camera composition through one Core Image program renderer; PNG and GIF derivation use the same composed result;

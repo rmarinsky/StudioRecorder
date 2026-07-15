@@ -129,6 +129,11 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertLessThan(corner.red, 80)
         let connectedAudioConfiguration = await sink.connectedAudioConfiguration()
         XCTAssertEqual(connectedAudioConfiguration, audioConfiguration)
+        let health = await pipeline.healthSnapshot(configuration: configuration)
+        XCTAssertEqual(health.composedVideoFrames, 1)
+        XCTAssertEqual(health.droppedVideoFrames, 0)
+        XCTAssertGreaterThan(health.averageRenderMilliseconds, 0)
+        XCTAssertEqual(health.canvasSize, CGSize(width: 640, height: 360))
         await pipeline.stop()
     }
 
