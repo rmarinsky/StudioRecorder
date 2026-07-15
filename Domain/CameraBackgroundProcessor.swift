@@ -11,11 +11,15 @@ struct CameraBackgroundProcessingPlan: Equatable, Sendable {
 
     static func live(
         profile: CameraBackgroundPerformanceProfile,
-        averageProcessingDuration: TimeInterval
+        averageProcessingDuration: TimeInterval,
+        autoIsDegraded: Bool = false
     ) -> CameraBackgroundProcessingPlan {
-        let effectiveProfile: CameraBackgroundPerformanceProfile = if profile == .auto,
-                                                                      averageProcessingDuration > 0.045 {
-            .performance
+        let effectiveProfile: CameraBackgroundPerformanceProfile = if profile == .auto {
+            if autoIsDegraded {
+                averageProcessingDuration < 0.030 ? .auto : .performance
+            } else {
+                averageProcessingDuration > 0.050 ? .performance : .auto
+            }
         } else {
             profile
         }
@@ -59,6 +63,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
     private var cachedPersonMask: CIImage?
     private var cachedPersonMaskAt: TimeInterval = 0
     private var averagePersonProcessingDuration: TimeInterval = 0
+    private var autoIsDegraded = false
 
     init(personQuality: PersonQuality) {
         self.personQuality = personQuality
@@ -90,8 +95,10 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
             let now = ProcessInfo.processInfo.systemUptime
             let livePlan = CameraBackgroundProcessingPlan.live(
                 profile: profile,
-                averageProcessingDuration: averagePersonProcessingDuration
+                averageProcessingDuration: averagePersonProcessingDuration,
+                autoIsDegraded: autoIsDegraded
             )
+            autoIsDegraded = profile == .auto && livePlan.effectiveProfile == .performance
             if personQuality == .live,
                let cachedPersonMask,
                now - cachedPersonMaskAt < livePlan.minimumMaskInterval {

@@ -55,12 +55,24 @@ final class CapturePresentationTests: XCTestCase {
             profile: .auto,
             averageProcessingDuration: 0.08
         )
+        let stillDegraded = CameraBackgroundProcessingPlan.live(
+            profile: .auto,
+            averageProcessingDuration: 0.04,
+            autoIsDegraded: true
+        )
+        let recovered = CameraBackgroundProcessingPlan.live(
+            profile: .auto,
+            averageProcessingDuration: 0.02,
+            autoIsDegraded: true
+        )
 
         XCTAssertEqual(normal.effectiveProfile, .auto)
         XCTAssertEqual(normal.maximumInputDimension, 384)
         XCTAssertEqual(overloaded.effectiveProfile, .performance)
         XCTAssertEqual(overloaded.maximumInputDimension, 256)
         XCTAssertGreaterThan(overloaded.minimumMaskInterval, normal.minimumMaskInterval)
+        XCTAssertEqual(stillDegraded.effectiveProfile, .performance)
+        XCTAssertEqual(recovered.effectiveProfile, .auto)
     }
 
     func testExplicitCameraBackgroundProfilesRemainStableUnderLoad() {
