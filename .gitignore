@@ -2,3 +2,5 @@
 build/
 DerivedData/
 xcuserdata/
+graphify-out/
+outputs/verification/

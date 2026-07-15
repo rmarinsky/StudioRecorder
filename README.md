@@ -1,6 +1,8 @@
-# Studio Recorder — capture slice
+# Studio Recorder — native screen recorder and quick editor
 
-A native macOS 26 / Apple Silicon prototype for a solo recording studio.
+A local-first macOS 26 / Apple Silicon screen recorder for demos, tutorials,
+and bug reports. Studio Recorder is the working repository name, not a final
+public brand.
 
 ## What works now
 
@@ -9,12 +11,18 @@ A native macOS 26 / Apple Silicon prototype for a solo recording studio.
 - requests system audio and microphone capture through ScreenCaptureKit;
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
-- provides a native SwiftUI recording desk, display selection, program-layout preview, recovery status, and `⌘R` start/stop shortcut;
-- includes unit tests for cursor-following viewport decisions and finalized-segment recovery.
+- provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
+- opens finalized raw tracks with native playback controls and immediate Reveal, Open, Share, and drag actions;
+- exports the current playhead as a full-resolution PNG or a bounded five-second GIF without modifying raw media;
+- includes unit and media-integration tests for project recovery, capture preferences, navigation, screenshots, and multi-frame GIF output.
 
 ## Deliberately not claimed as complete
 
-Camera isolation, a separately encoded program `.mov`, camera placement/keyframes, transcript editing/Diduny integration, pause-cut suggestions, and RTMPS streaming are the next slices. The layout UI in this build is a preview/preset contract, not a compositor.
+Independent camera encoding, a separately encoded program `.mov`, quick trim/split,
+camera layout instructions, interaction metadata, and local transcripts remain future
+slices. The current program preview is an honest capture contract, not a compositor.
+Livestreaming, cloud hosting, and an OBS-style scene system are explicit non-goals for
+this product phase.
 
 ## Build and run
 

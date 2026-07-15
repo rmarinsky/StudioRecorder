@@ -53,7 +53,14 @@ struct StudioRecorderRootView: View {
         .tint(coral)
         .task {
             await model.launch()
-            liveScene.startCameraPreview()
+            await updateLiveScene(for: snapshot.route)
+        }
+        .onChange(of: snapshot.route) { _, route in
+            Task { await updateLiveScene(for: route) }
+        }
+        .onDisappear {
+            liveScene.stopCameraPreview()
+            Task { await liveScene.stopScreenPreview() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.appBecameActive() }
@@ -99,7 +106,13 @@ struct StudioRecorderRootView: View {
 
     private var projectsView: some View {
         Group {
-            if snapshot.projects.isEmpty {
+            if let selectedProject = snapshot.projects.first(where: { $0.id == snapshot.selectedProjectID }) {
+                ProjectDetailView(
+                    project: selectedProject,
+                    onClose: { model.send(.closeProject) }
+                )
+                .id(selectedProject.id)
+            } else if snapshot.projects.isEmpty {
                 ContentUnavailableView {
                     Label("No projects yet", systemImage: "record.circle")
                 } description: {
@@ -146,7 +159,13 @@ struct StudioRecorderRootView: View {
 
                         VStack(spacing: 0) {
                             ForEach(Array(snapshot.projects.enumerated()), id: \.element.id) { index, project in
-                                ProjectRow(project: project)
+                                Button {
+                                    model.send(.openProject(project.id))
+                                } label: {
+                                    ProjectRow(project: project)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                                 if index < snapshot.projects.count - 1 {
                                     Divider().padding(.leading, 108)
                                 }
@@ -302,6 +321,7 @@ struct StudioRecorderRootView: View {
                         screenImage: liveScene.screenImage,
                         cameraSession: liveScene.cameraSession,
                         selectedDisplayName: selectedDisplayName,
+                        screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -385,6 +405,15 @@ struct StudioRecorderRootView: View {
             .background(.bar)
         }
         .navigationTitle("Studio")
+    }
+
+    private func updateLiveScene(for route: MainRoute) async {
+        if route == .studio {
+            liveScene.startCameraPreview()
+        } else {
+            liveScene.stopCameraPreview()
+            await liveScene.stopScreenPreview()
+        }
     }
 
     private var recoveryView: some View {
@@ -688,6 +717,7 @@ private struct LiveProgramPreview: View {
     let screenImage: NSImage?
     let cameraSession: AVCaptureSession?
     let selectedDisplayName: String
+    let screenPreviewError: String?
     let isRecording: Bool
 
     var body: some View {
@@ -699,11 +729,23 @@ private struct LiveProgramPreview: View {
                     .aspectRatio(contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(6)
+            } else if let screenPreviewError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 38))
+                        .foregroundStyle(.orange)
+                    Text("Preview unavailable").font(.headline)
+                    Text(screenPreviewError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
             } else {
                 VStack(spacing: 14) {
                     Image(systemName: "rectangle.on.rectangle.angled")
                         .font(.system(size: 44))
-                    Text("Loading (selectedDisplayName)…").font(.headline)
+                    Text("Loading \(selectedDisplayName)…").font(.headline)
                     Text("The selected screen will appear before recording starts.")
                         .font(.caption).foregroundStyle(.secondary)
                 }

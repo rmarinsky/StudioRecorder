@@ -135,6 +135,7 @@ enum AppIntent: Equatable {
     case newRecording
     case selectRoute(MainRoute)
     case openProject(String)
+    case closeProject
     case focusProjectSearch
     case toggleRecording
     case setSelectedDisplayIDs(Set<UInt32>)
@@ -164,6 +165,7 @@ enum AppIntentResult: Equatable {
     case ignored
     case routeChanged(MainRoute)
     case projectOpened(String)
+    case projectClosed
     case projectSearchRequested
     case recordingStartRequested(CaptureRequest)
     case recordingStopRequested
@@ -440,6 +442,12 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.selectedProjectID = projectID
             result = .projectOpened(projectID)
 
+        case .closeProject:
+            guard snapshot.selectedProjectID != nil else { return .ignored }
+            snapshot.route = .projects
+            snapshot.selectedProjectID = nil
+            result = .projectClosed
+
         case .focusProjectSearch:
             snapshot.route = .projects
             result = .projectSearchRequested
@@ -612,7 +620,7 @@ final class StudioRecorderModel: ObservableObject {
                 self?.synchronizeFromCoordinator()
             }
 
-        case .ignored, .routeChanged, .projectOpened, .projectSearchRequested, .displaySelectionChanged,
+        case .ignored, .routeChanged, .projectOpened, .projectClosed, .projectSearchRequested, .displaySelectionChanged,
              .microphoneCaptureChanged, .microphoneDisabledForDraft, .draftChanged:
             break
         case .preferenceChanged, .preferenceChangeFailed:

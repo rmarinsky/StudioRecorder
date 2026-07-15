@@ -222,6 +222,20 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(model.snapshot.capturesMicrophone)
     }
 
+    func testProjectDetailCanBeOpenedAndClosedWithoutChangingTheProjectsRoute() {
+        let project = interruptedProject()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.projects = [project]
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.openProject(project.id)), .projectOpened(project.id))
+        XCTAssertEqual(model.snapshot.selectedProjectID, project.id)
+
+        XCTAssertEqual(model.send(.closeProject), .projectClosed)
+        XCTAssertNil(model.snapshot.selectedProjectID)
+        XCTAssertEqual(model.snapshot.route, .projects)
+    }
+
     func testRecoveryRouteRequiresAnInterruptedProject() {
         let emptyModel = StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot())
         XCTAssertEqual(emptyModel.send(.selectRoute(.recovery)), .ignored)

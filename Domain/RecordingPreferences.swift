@@ -91,6 +91,13 @@ struct ResolvedProjectDestination: Equatable, Sendable {
 struct BookmarkResolution: Equatable, Sendable {
     let url: URL
     let isStale: Bool
+    let didStartAccessing: Bool
+
+    init(url: URL, isStale: Bool, didStartAccessing: Bool = false) {
+        self.url = url
+        self.isStale = isStale
+        self.didStartAccessing = didStartAccessing
+    }
 }
 
 struct AvailableMicrophone: Identifiable, Equatable, Sendable {
@@ -404,6 +411,7 @@ final class PreferencesStore: ObservableObject {
     private let bookmarkResolver: (Data) throws -> BookmarkResolution
     private let destinationIsWritable: (URL) -> Bool
     private let availableCapacity: (URL) -> Int64?
+    private var securityScopedDestination: URL?
 
     init(
         defaults: UserDefaults = .standard,
@@ -432,10 +440,14 @@ final class PreferencesStore: ObservableObject {
 
         let fallbackPath = defaults.string(forKey: Self.destinationFallbackPathKey) ?? defaultDestination.path
         let storedBookmarkID = loadedPreferences.storage.destinationBookmarkID ?? "saved-destination"
+        var resolvedSecurityScopedDestination: URL?
         if let data = defaults.data(forKey: Self.destinationBookmarkKey) {
             do {
                 let resolution = try bookmarkResolver(data)
                 if resolution.isStale {
+                    if resolution.didStartAccessing {
+                        resolution.url.stopAccessingSecurityScopedResource()
+                    }
                     destination = Self.makeDestination(
                         url: defaultDestination,
                         bookmarkID: "default-movies",
@@ -445,6 +457,9 @@ final class PreferencesStore: ObservableObject {
                         availableCapacity: availableCapacity
                     )
                 } else {
+                    if resolution.didStartAccessing {
+                        resolvedSecurityScopedDestination = resolution.url
+                    }
                     destination = Self.makeDestination(
                         url: resolution.url,
                         bookmarkID: storedBookmarkID,
@@ -474,6 +489,11 @@ final class PreferencesStore: ObservableObject {
                 availableCapacity: availableCapacity
             )
         }
+        securityScopedDestination = resolvedSecurityScopedDestination
+    }
+
+    deinit {
+        securityScopedDestination?.stopAccessingSecurityScopedResource()
     }
 
     func update(_ changes: (inout RecordingPreferences) -> Void) {
@@ -528,6 +548,8 @@ final class PreferencesStore: ObservableObject {
 
     func setDestination(_ url: URL, bookmarkID: String = UUID().uuidString) throws {
         let bookmarkData = try bookmarkCreator(url)
+        securityScopedDestination?.stopAccessingSecurityScopedResource()
+        securityScopedDestination = url.startAccessingSecurityScopedResource() ? url : nil
         defaults.set(bookmarkData, forKey: Self.destinationBookmarkKey)
         defaults.set(url.path, forKey: Self.destinationFallbackPathKey)
         update { $0.storage.destinationBookmarkID = bookmarkID }
@@ -567,8 +589,11 @@ final class PreferencesStore: ObservableObject {
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
-        _ = url.startAccessingSecurityScopedResource()
-        return BookmarkResolution(url: url, isStale: isStale)
+        return BookmarkResolution(
+            url: url,
+            isStale: isStale,
+            didStartAccessing: url.startAccessingSecurityScopedResource()
+        )
     }
 
     nonisolated private static func createBookmark(_ url: URL) throws -> Data {
