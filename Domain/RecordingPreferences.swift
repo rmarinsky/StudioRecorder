@@ -38,9 +38,40 @@ enum MediaRetentionPolicy: String, Codable, CaseIterable, Identifiable, Equatabl
 struct CaptureDefaults: Codable, Equatable, Sendable {
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
+    var programPreset: CaptureCanvasPreset
     var includeCursor: Bool
     var excludeStudioRecorder: Bool
     var preferredDisplayIDs: Set<UInt32>
+
+    private enum CodingKeys: String, CodingKey {
+        case frameRate, codecPolicy, programPreset, includeCursor, excludeStudioRecorder, preferredDisplayIDs
+    }
+
+    init(
+        frameRate: Int,
+        codecPolicy: RecordingCodecPolicy,
+        programPreset: CaptureCanvasPreset,
+        includeCursor: Bool,
+        excludeStudioRecorder: Bool,
+        preferredDisplayIDs: Set<UInt32>
+    ) {
+        self.frameRate = frameRate
+        self.codecPolicy = codecPolicy
+        self.programPreset = programPreset
+        self.includeCursor = includeCursor
+        self.excludeStudioRecorder = excludeStudioRecorder
+        self.preferredDisplayIDs = preferredDisplayIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        frameRate = try container.decode(Int.self, forKey: .frameRate)
+        codecPolicy = try container.decode(RecordingCodecPolicy.self, forKey: .codecPolicy)
+        programPreset = try container.decodeIfPresent(CaptureCanvasPreset.self, forKey: .programPreset) ?? .fullHD
+        includeCursor = try container.decode(Bool.self, forKey: .includeCursor)
+        excludeStudioRecorder = try container.decode(Bool.self, forKey: .excludeStudioRecorder)
+        preferredDisplayIDs = try container.decode(Set<UInt32>.self, forKey: .preferredDisplayIDs)
+    }
 }
 
 struct AudioDefaults: Codable, Equatable, Sendable {
@@ -65,6 +96,7 @@ struct RecordingPreferences: Codable, Equatable, Sendable {
         capture: CaptureDefaults(
             frameRate: 30,
             codecPolicy: .automatic,
+            programPreset: .fullHD,
             includeCursor: true,
             excludeStudioRecorder: true,
             preferredDisplayIDs: []
@@ -265,7 +297,8 @@ struct StudioDraft: Equatable {
                 codecPolicy: codecPolicy,
                 includeCursor: includeCursor,
                 excludeStudioRecorder: excludeStudioRecorder,
-                programResolutionTarget: "\(presentation.canvas.width)x\(presentation.canvas.height)"
+                programResolutionTarget: "\(presentation.canvas.width)x\(presentation.canvas.height)",
+                cursorRendering: .composited
             ),
             presentation: presentation.validated(),
             storage: StorageCaptureSnapshot(
@@ -319,6 +352,11 @@ struct AudioCaptureSnapshot: Codable, Equatable, Sendable {
     let excludesStudioRecorderAudio: Bool
 }
 
+enum CursorRenderingMode: String, Codable, Equatable, Sendable {
+    case systemEmbedded
+    case composited
+}
+
 struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
     let frameRate: Int
     let codecPolicy: RecordingCodecPolicy
@@ -326,6 +364,7 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
     let excludeStudioRecorder: Bool
     let programResolutionTarget: String
     let historicalLabel: String?
+    let cursorRendering: CursorRenderingMode?
 
     init(
         frameRate: Int,
@@ -333,7 +372,8 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
         includeCursor: Bool,
         excludeStudioRecorder: Bool,
         programResolutionTarget: String,
-        historicalLabel: String? = nil
+        historicalLabel: String? = nil,
+        cursorRendering: CursorRenderingMode? = nil
     ) {
         self.frameRate = frameRate
         self.codecPolicy = codecPolicy
@@ -341,7 +381,10 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
         self.excludeStudioRecorder = excludeStudioRecorder
         self.programResolutionTarget = programResolutionTarget
         self.historicalLabel = historicalLabel
+        self.cursorRendering = cursorRendering
     }
+
+    var resolvedCursorRendering: CursorRenderingMode { cursorRendering ?? .systemEmbedded }
 
     var label: String {
         historicalLabel ?? "native-\(frameRate)fps-\(codecPolicy.rawValue)"
@@ -612,6 +655,8 @@ final class PreferencesStore: ObservableObject {
             microphoneFallback = nil
         }
 
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(preset: preferences.capture.programPreset)
         return StudioDraft(
             selectedDisplayIDs: selectedDisplayIDs,
             capturesSystemAudio: preferences.audio.capturesSystemAudio,
@@ -625,7 +670,7 @@ final class PreferencesStore: ObservableObject {
             excludeStudioRecorderAudio: preferences.audio.excludeStudioRecorderAudio,
             frameRate: preferences.capture.frameRate,
             codecPolicy: preferences.capture.codecPolicy,
-            presentation: .default,
+            presentation: presentation,
             retentionPolicy: .editableTracks,
             destination: destination
         )

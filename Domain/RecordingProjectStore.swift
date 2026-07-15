@@ -92,6 +92,8 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let recoveryReport: RecordingProjectRecoveryReport
     let presentation: CapturePresentationSnapshot?
     let primaryAudioDisplayID: UInt32?
+    var includesCursor = true
+    var usesCompositedCursor = false
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -582,7 +584,9 @@ final class RecordingProjectStore {
                 recoveryReport: report,
                 presentation: manifest.captureRequest?.presentation,
                 primaryAudioDisplayID: manifest.captureRequest?.audio.primaryAudioDisplayID
-                    ?? manifest.primaryAudioDisplayID
+                    ?? manifest.primaryAudioDisplayID,
+                includesCursor: manifest.captureRequest?.profile.includeCursor ?? true,
+                usesCompositedCursor: manifest.captureRequest?.profile.resolvedCursorRendering == .composited
             )
         }
     }

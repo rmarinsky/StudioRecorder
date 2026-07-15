@@ -44,11 +44,13 @@ final class PreferencesStoreTests: XCTestCase {
         store.update { preferences in
             preferences.appearance = .light
             preferences.capture.frameRate = 60
+            preferences.capture.programPreset = .ultraHD
             preferences.audio.capturesMicrophone = false
         }
 
         XCTAssertEqual(store.preferences.appearance, .light)
         XCTAssertEqual(store.preferences.capture.frameRate, 30)
+        XCTAssertEqual(store.preferences.capture.programPreset, .ultraHD)
         XCTAssertFalse(store.preferences.audio.capturesMicrophone)
 
         let reopened = PreferencesStore(
@@ -132,6 +134,7 @@ final class PreferencesStoreTests: XCTestCase {
         let draft = store.makeStudioDraft(displays: displays, microphones: microphones)
 
         XCTAssertEqual(draft.selectedDisplayIDs, [2])
+        XCTAssertEqual(draft.presentation.canvas, CaptureCanvasSnapshot(preset: .fullHD))
         XCTAssertFalse(draft.includeCursor)
         XCTAssertEqual(draft.microphoneDeviceID, "system-mic")
         XCTAssertEqual(
@@ -141,6 +144,41 @@ final class PreferencesStoreTests: XCTestCase {
 
         let noSavedDisplay = makeStore().makeStudioDraft(displays: displays, microphones: microphones)
         XCTAssertEqual(noSavedDisplay.selectedDisplayIDs, [1])
+    }
+
+    func testNewDraftUsesSaved4KProgramOutput() {
+        let store = makeStore()
+        store.update { $0.capture.programPreset = .ultraHD }
+
+        let draft = store.makeStudioDraft(
+            displays: [AvailableDisplay(id: 1, title: "Display", pixelSize: CGSize(width: 3_840, height: 2_160))],
+            microphones: []
+        )
+
+        XCTAssertEqual(draft.presentation.canvas, CaptureCanvasSnapshot(preset: .ultraHD))
+    }
+
+    func testExistingPreferencesWithoutProgramPresetMigrateToFullHD() throws {
+        let suiteName = "PreferencesStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var saved = RecordingPreferences.defaults
+        saved.appearance = .dark
+        let encoded = try JSONEncoder().encode(saved)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var capture = try XCTUnwrap(object["capture"] as? [String: Any])
+        capture.removeValue(forKey: "programPreset")
+        object["capture"] = capture
+        defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: PreferencesStore.scalarPreferencesKey)
+
+        let store = PreferencesStore(
+            defaults: defaults,
+            defaultDestination: URL(filePath: "/tmp/Studio Recorder", directoryHint: .isDirectory),
+            destinationIsWritable: { _ in true }
+        )
+
+        XCTAssertEqual(store.preferences.appearance, .dark)
+        XCTAssertEqual(store.preferences.capture.programPreset, .fullHD)
     }
 
     func testDraftValidationCoversPermissionsSourcesMicrophoneAndDestination() {

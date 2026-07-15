@@ -110,10 +110,18 @@ struct ProjectPresentationEditorView: View {
                     labeledSlider("Spill suppression", value: chromaSpillBinding)
                 }
             }
-            Picker("Shape", selection: placement.shape) {
+            Picker("Shape", selection: shapeBinding(for: placement)) {
                 ForEach(SourceShape.allCases) { shape in
                     Text(shape.label).tag(shape)
                 }
+            }
+            if placement.wrappedValue.shape == .roundedRectangle {
+                labeledSlider(
+                    "Corner radius",
+                    value: cornerRadiusBinding(for: placement),
+                    range: 0.02...0.5,
+                    valueText: String(format: "%.0f%%", placement.wrappedValue.effectiveCornerRadius * 100)
+                )
             }
             labeledSlider("Width", value: placement.width, range: 0.08...1)
             labeledSlider("Height", value: placement.height, range: 0.08...1)
@@ -129,12 +137,48 @@ struct ProjectPresentationEditorView: View {
     private func labeledSlider(
         _ label: String,
         value: Binding<CGFloat>,
-        range: ClosedRange<CGFloat> = 0...1
+        range: ClosedRange<CGFloat> = 0...1,
+        valueText: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if let valueText {
+                    Text(valueText).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
             Slider(value: value, in: range)
         }
+    }
+
+    private func shapeBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<SourceShape> {
+        Binding(
+            get: { placement.wrappedValue.shape },
+            set: { shape in
+                var value = placement.wrappedValue
+                value.shape = shape
+                if shape == .roundedRectangle, value.cornerRadius == 0 {
+                    value.cornerRadius = 0.12
+                }
+                placement.wrappedValue = value
+            }
+        )
+    }
+
+    private func cornerRadiusBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<CGFloat> {
+        Binding(
+            get: { placement.wrappedValue.effectiveCornerRadius },
+            set: { radius in
+                var value = placement.wrappedValue
+                value.cornerRadius = radius
+                placement.wrappedValue = value
+            }
+        )
     }
 
     private var canvasPresetBinding: Binding<CaptureCanvasPreset?> {
@@ -322,7 +366,7 @@ private struct RecordedProgramCanvas: View {
         let placement = presentation[keyPath: keyPath]
         let frame = sourceFrame(placement, in: canvasSize)
 
-        sourceShape(for: placement)
+        sourceShape(for: placement, size: frame.size)
             .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
             .frame(width: frame.width, height: frame.height)
             .position(x: frame.midX, y: frame.midY)
@@ -384,17 +428,22 @@ private struct RecordedProgramCanvas: View {
                 width: canvasSize.width * placement.width,
                 height: canvasSize.height * placement.height
             )
-            .clipShape(sourceShape(for: placement))
-            .overlay { sourceShape(for: placement).stroke(.white.opacity(0.48), lineWidth: 1) }
+            .clipShape(sourceShape(
+                for: placement,
+                size: CGSize(
+                    width: canvasSize.width * placement.width,
+                    height: canvasSize.height * placement.height
+                )
+            ))
             .clipped()
     }
 
-    private func sourceShape(for placement: SourcePlacementSnapshot) -> AnyShape {
+    private func sourceShape(for placement: SourcePlacementSnapshot, size: CGSize) -> AnyShape {
         switch placement.shape {
         case .rectangle:
             AnyShape(Rectangle())
         case .roundedRectangle:
-            AnyShape(RoundedRectangle(cornerRadius: max(4, placement.cornerRadius * 80)))
+            AnyShape(RoundedRectangle(cornerRadius: placement.effectiveCornerRadius * min(size.width, size.height)))
         case .circle:
             AnyShape(Ellipse())
         }

@@ -10,6 +10,7 @@ struct ProjectProgramSources: Sendable {
     let screenDisplayID: UInt32?
     let cursorTimeline: CursorSceneTimeline?
     let cameraTimeOffset: TimeInterval
+    let rendersCursor: Bool
 
     init(
         screenURL: URL,
@@ -17,7 +18,8 @@ struct ProjectProgramSources: Sendable {
         audioURL: URL? = nil,
         screenDisplayID: UInt32? = nil,
         cursorTimeline: CursorSceneTimeline? = nil,
-        cameraTimeOffset: TimeInterval = 0
+        cameraTimeOffset: TimeInterval = 0,
+        rendersCursor: Bool = false
     ) {
         self.screenURL = screenURL
         self.cameraURL = cameraURL
@@ -25,6 +27,7 @@ struct ProjectProgramSources: Sendable {
         self.screenDisplayID = screenDisplayID
         self.cursorTimeline = cursorTimeline
         self.cameraTimeOffset = cameraTimeOffset
+        self.rendersCursor = rendersCursor
     }
 }
 
@@ -158,6 +161,7 @@ final class ProjectProgramRenderer {
             cursorSamples: sources.cursorTimeline?.samples.filter {
                 sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
             } ?? [],
+            rendersCursor: sources.rendersCursor,
             screenTransform: try await sourceScreenTrack.load(.preferredTransform),
             cameraTransform: cameraTransform
         )
@@ -230,6 +234,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let presentation: CapturePresentationSnapshot
     let timeline: ProjectEditTimeline
     let cursorTimeline: CursorSceneTimeline?
+    let rendersCursor: Bool
     let screenTransform: CGAffineTransform
     let cameraTransform: CGAffineTransform
 
@@ -240,6 +245,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         presentation: CapturePresentationSnapshot,
         timeline: ProjectEditTimeline,
         cursorSamples: [CursorSceneSample],
+        rendersCursor: Bool,
         screenTransform: CGAffineTransform,
         cameraTransform: CGAffineTransform
     ) {
@@ -249,6 +255,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         self.presentation = presentation
         self.timeline = timeline
         cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        self.rendersCursor = rendersCursor
         self.screenTransform = screenTransform
         self.cameraTransform = cameraTransform
         requiredSourceTrackIDs = ([screenTrackID] + (cameraTrackID.map { [$0] } ?? [])).map {
@@ -268,6 +275,19 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
             centerY: sample.normalizedY,
             scale: presentation.framing.scale
         ).validated()
+    }
+
+    func cursorState(at compositionTime: CMTime) -> ProgramCursorState? {
+        guard rendersCursor,
+              let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
+              let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
+            return nil
+        }
+        return ProgramCursorState(
+            normalizedX: sample.normalizedX,
+            normalizedY: sample.normalizedY,
+            isPrimaryButtonDown: sample.isPrimaryButtonDown
+        )
     }
 }
 
@@ -301,6 +321,7 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
             cameraTransform: instruction.cameraTransform,
             presentation: instruction.presentation,
             screenFraming: instruction.screenFraming(at: request.compositionTime),
+            cursor: instruction.cursorState(at: request.compositionTime),
             to: output
         )
         request.finish(withComposedVideoFrame: output)

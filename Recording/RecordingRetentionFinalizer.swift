@@ -73,7 +73,9 @@ final class RecordingRetentionFinalizer {
                 cursorTimeline: cursorTimeline,
                 cameraTimeOffset: camera.map {
                     ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
-                } ?? 0
+                } ?? 0,
+                rendersCursor: request.profile.includeCursor
+                    && request.profile.resolvedCursorRendering == .composited
             ),
             timeline: timeline,
             presentation: request.presentation,

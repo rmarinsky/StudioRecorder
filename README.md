@@ -13,9 +13,9 @@ public brand.
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
 - provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
-- configures horizontal, vertical, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
-- previews draggable/resizable screen and camera placement, gives camera its own free/landscape/portrait/square frame, freezes the scene into the Capture Request, records cursor/click telemetry for Follow Cursor replay, and records the native system cursor;
-- removes the camera background locally with Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; editable raw camera media remains unchanged;
+- configures Full HD, horizontal or vertical 4K, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
+- previews draggable/resizable screen and camera placement, gives each source independent shape, corner radius, transform, and framing, freezes the scene into the Capture Request, and renders scalable cursor/click treatment through the shared compositor;
+- removes the camera background locally with a throttled Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; editable raw camera media remains unchanged;
 - offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; manual RTMPS credentials stay in macOS Keychain, and the stream uses the same screen/camera/background/follow compositor as local program output;
 - offers per-Scene retention: Editable tracks preserves independent screen/camera media, while Program movie only renders and verifies the exact canvas, framing, Follow Cursor motion, camera shape, background treatment, and audio before removing raw tracks;
 - edits the output canvas and screen/camera placement, scale, shape, and mirroring after recordings that retain editable tracks; the program layout persists in `edit.json` without touching raw tracks;
@@ -27,7 +27,7 @@ public brand.
 
 ## Deliberately not claimed as complete
 
-A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing. Editable tracks keeps the full display recoverable; Program movie only deliberately trades later layout changes for one share-ready file. Custom enlarged-cursor rendering, synchronized waveforms, speed/volume edits, and local transcripts remain future slices. Quick edits never rewrite retained source media.
+A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing and the custom cursor/click renderer. Editable tracks keeps the full display recoverable; Program movie only deliberately trades later layout changes for one share-ready file. Synchronized waveforms, speed/volume edits, and local transcripts remain future slices. Quick edits never rewrite retained source media.
 YouTube OAuth/API broadcast creation, automatic reconnect, and long horizontal/vertical ingest soak tests remain before streaming is release-ready. Cloud hosting and a general OBS-style scene graph remain out of scope.
 
 ## Build and run

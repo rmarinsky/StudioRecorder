@@ -11,9 +11,14 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
 
     private let lock = NSLock()
     private let request: VNGeneratePersonSegmentationRequest
+    private let sequenceHandler = VNSequenceRequestHandler()
+    private let personQuality: PersonQuality
     private var cachedCube: (settings: CameraBackgroundSnapshot, data: Data)?
+    private var cachedPersonMask: CIImage?
+    private var cachedPersonMaskAt: TimeInterval = 0
 
     init(personQuality: PersonQuality) {
+        self.personQuality = personQuality
         request = VNGeneratePersonSegmentationRequest()
         request.qualityLevel = personQuality == .live ? .fast : .balanced
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
@@ -33,6 +38,12 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
 
     private func personForeground(from image: CIImage) -> CIImage? {
         lock.withLock {
+            let now = ProcessInfo.processInfo.systemUptime
+            if personQuality == .live,
+               let cachedPersonMask,
+               now - cachedPersonMaskAt < 0.10 {
+                return blend(image, withPersonMask: cachedPersonMask)
+            }
             // Continuity Camera can deliver 4K frames. Vision's live segmentation
             // does not need those pixels, and processing them would stall preview
             // delivery for seconds. Generate the mask from a bounded input and
@@ -41,7 +52,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                 translationX: -image.extent.minX,
                 y: -image.extent.minY
             ))
-            let maximumInputDimension: CGFloat = 640
+            let maximumInputDimension: CGFloat = personQuality == .live ? 384 : 960
             let inputScale = min(
                 1,
                 maximumInputDimension / max(normalized.extent.width, normalized.extent.height)
@@ -50,9 +61,8 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                 scaleX: inputScale,
                 y: inputScale
             ))
-            let handler = VNImageRequestHandler(ciImage: requestImage, options: [:])
             do {
-                try handler.perform([request])
+                try sequenceHandler.perform([request], on: requestImage)
                 guard let observation = request.results?.first else { return nil }
                 let rawMask = CIImage(cvPixelBuffer: observation.pixelBuffer)
                 let mask = rawMask
@@ -65,18 +75,39 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                         y: image.extent.minY
                     ))
                     .cropped(to: image.extent)
-                let blend = CIFilter(name: "CIBlendWithMask")
-                blend?.setValue(image, forKey: kCIInputImageKey)
-                blend?.setValue(
-                    CIImage(color: .clear).cropped(to: image.extent),
-                    forKey: kCIInputBackgroundImageKey
-                )
-                blend?.setValue(mask, forKey: kCIInputMaskImageKey)
-                return blend?.outputImage?.cropped(to: image.extent)
+                cachedPersonMask = mask
+                cachedPersonMaskAt = now
+                return blend(image, withPersonMask: mask)
             } catch {
                 return nil
             }
         }
+    }
+
+    private func blend(_ image: CIImage, withPersonMask mask: CIImage) -> CIImage? {
+        let fittedMask: CIImage
+        if mask.extent == image.extent {
+            fittedMask = mask
+        } else {
+            fittedMask = mask
+                .transformed(by: CGAffineTransform(
+                    scaleX: image.extent.width / max(mask.extent.width, 1),
+                    y: image.extent.height / max(mask.extent.height, 1)
+                ))
+                .cropped(to: image.extent)
+        }
+        let refinedMask = fittedMask
+            .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: 0.8])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 0.7])
+            .cropped(to: image.extent)
+        let blend = CIFilter(name: "CIBlendWithMask")
+        blend?.setValue(image, forKey: kCIInputImageKey)
+        blend?.setValue(
+            CIImage(color: .clear).cropped(to: image.extent),
+            forKey: kCIInputBackgroundImageKey
+        )
+        blend?.setValue(refinedMask, forKey: kCIInputMaskImageKey)
+        return blend?.outputImage?.cropped(to: image.extent)
     }
 
     private func chromaKey(_ image: CIImage, settings: CameraBackgroundSnapshot) -> CIImage {

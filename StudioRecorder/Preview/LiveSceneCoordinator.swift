@@ -85,7 +85,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             configuration.height = max(360, Int(CGFloat(display.height) * previewScale))
             configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
             configuration.queueDepth = 3
-            configuration.showsCursor = true
+            configuration.showsCursor = streamPipelineLock.withLock { streamPipeline == nil }
             if let streamAudioConfiguration {
                 configuration.capturesAudio = streamAudioConfiguration.capturesSystemAudio
                 configuration.captureMicrophone = streamAudioConfiguration.capturesMicrophone
@@ -256,14 +256,14 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
         let shouldDeliver = cameraFrameDeliveryLock.withLock {
             let now = ProcessInfo.processInfo.systemUptime
             guard !isCameraFrameDeliveryPending,
-                  now - lastCameraFrameProcessingTime >= 0.1 else { return false }
+                  now - lastCameraFrameProcessingTime >= 1.0 / 30.0 else { return false }
             isCameraFrameDeliveryPending = true
             lastCameraFrameProcessingTime = now
             return true
         }
         guard shouldDeliver else { return }
         let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let maximumPreviewDimension: CGFloat = 720
+        let maximumPreviewDimension: CGFloat = 540
         let previewScale = min(
             1,
             maximumPreviewDimension / max(sourceImage.extent.width, sourceImage.extent.height)
@@ -299,15 +299,17 @@ extension LiveSceneCoordinator: SCStreamOutput {
             let box = SendableSampleBuffer(value: sampleBuffer)
             switch outputType {
             case .screen:
-                let cursorPosition = pipelineContext.1.flatMap { frame -> CGPoint? in
+                let cursor = pipelineContext.1.flatMap { frame -> ProgramCursorState? in
                     guard frame.width > 0, frame.height > 0,
-                          let location = CGEvent(source: nil)?.location else { return nil }
-                    return CGPoint(
-                        x: (location.x - frame.minX) / frame.width,
-                        y: (location.y - frame.minY) / frame.height
+                          let location = CGEvent(source: nil)?.location,
+                          frame.contains(location) else { return nil }
+                    return ProgramCursorState(
+                        normalizedX: (location.x - frame.minX) / frame.width,
+                        normalizedY: (location.y - frame.minY) / frame.height,
+                        isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
                     )
                 }
-                Task { await pipeline.appendScreen(box, cursorPosition: cursorPosition) }
+                Task { await pipeline.appendScreen(box, cursor: cursor) }
             case .audio:
                 Task { await pipeline.appendAudio(box, track: 0) }
             case .microphone:

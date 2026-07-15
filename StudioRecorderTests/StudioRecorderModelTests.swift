@@ -10,9 +10,17 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .stopping))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .projects, captureState: .recording))
+        XCTAssertFalse(LiveScenePolicy.shouldRun(route: .settings, captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .recording))
         XCTAssertFalse(LiveScenePolicy.shouldPreserveCameraSession(captureState: .ready))
+    }
+
+    func testSettingsIsAnInWindowRoute() {
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot())
+
+        XCTAssertEqual(model.send(.selectRoute(.settings)), .routeChanged(.settings))
+        XCTAssertEqual(model.snapshot.route, .settings)
     }
 
     func testPermissionRepairPresentationCoversEveryRenderedStateAndAction() throws {

@@ -22,12 +22,22 @@ struct StudioRecorderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            StudioRecorderRootView(model: model, streamingSettings: streamingSettings)
+            StudioRecorderRootView(
+                model: model,
+                preferencesStore: preferencesStore,
+                streamingSettings: streamingSettings
+            )
                 .frame(minWidth: 1_080, minHeight: 700)
                 .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
         .defaultSize(width: 1_260, height: 820)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    model.send(.selectRoute(.settings))
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("New Recording") {
                     model.send(.newRecording)
@@ -46,13 +56,5 @@ struct StudioRecorderApp: App {
             }
         }
 
-        Settings {
-            SettingsView(
-                model: model,
-                preferencesStore: preferencesStore,
-                streamingSettings: streamingSettings
-            )
-                .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
-        }
     }
 }

@@ -271,8 +271,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(request.profile.frameRate))
         configuration.queueDepth = 5
-        configuration.showsCursor = request.profile.includeCursor
-        configuration.showMouseClicks = request.profile.includeCursor && request.presentation.cursor.highlightsClicks
+        let embedsSystemCursor = request.profile.resolvedCursorRendering == .systemEmbedded
+        configuration.showsCursor = request.profile.includeCursor && embedsSystemCursor
+        configuration.showMouseClicks = request.profile.includeCursor
+            && embedsSystemCursor
+            && request.presentation.cursor.highlightsClicks
         configuration.capturesAudio = capturesSystemAudio
         configuration.captureMicrophone = capturesMicrophone
         configuration.microphoneCaptureDeviceID = capturesMicrophone ? microphoneDeviceID : nil
@@ -309,7 +312,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         cursorTelemetryTask?.cancel()
         cursorSamples.removeAll(keepingCapacity: true)
         cursorTelemetryStartedAt = nil
-        guard request.presentation.framing.mode == .followCursor,
+        let needsFramingTelemetry = request.presentation.framing.mode == .followCursor
+        let needsCursorRendering = request.profile.includeCursor
+            && request.profile.resolvedCursorRendering == .composited
+        guard needsFramingTelemetry || needsCursorRendering,
               !displays.isEmpty else { return }
 
         cursorTelemetryStartedAt = ProcessInfo.processInfo.systemUptime

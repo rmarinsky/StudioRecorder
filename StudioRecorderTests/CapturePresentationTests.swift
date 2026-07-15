@@ -50,7 +50,9 @@ final class CapturePresentationTests: XCTestCase {
 
     func testCanvasPresetsCoverHorizontalVerticalAndSixteenByTenOutputs() {
         XCTAssertEqual(CaptureCanvasPreset.fullHD.pixelSize, CGSize(width: 1_920, height: 1_080))
+        XCTAssertEqual(CaptureCanvasPreset.ultraHD.pixelSize, CGSize(width: 3_840, height: 2_160))
         XCTAssertEqual(CaptureCanvasPreset.verticalHD.pixelSize, CGSize(width: 1_080, height: 1_920))
+        XCTAssertEqual(CaptureCanvasPreset.vertical4K.pixelSize, CGSize(width: 2_160, height: 3_840))
         XCTAssertEqual(CaptureCanvasPreset.widescreen16x10.pixelSize, CGSize(width: 1_920, height: 1_200))
     }
 

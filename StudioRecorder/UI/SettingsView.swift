@@ -10,15 +10,39 @@ private enum SettingsTab: String, CaseIterable {
     case shortcuts
 }
 
+private struct SettingsFrameModifier: ViewModifier {
+    let embedded: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if embedded {
+            content
+                .frame(maxWidth: 900, maxHeight: .infinity)
+                .padding(.horizontal, 28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content.frame(width: 620, height: 460)
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
+    var embedded = false
     @AppStorage("selectedSettingsTab") private var selectedTab = SettingsTab.general.rawValue
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
 
     var body: some View {
+        settingsTabs
+            .modifier(SettingsFrameModifier(embedded: embedded))
+            .padding(.top, embedded ? 22 : 8)
+            .navigationTitle("Settings")
+    }
+
+    private var settingsTabs: some View {
         TabView(selection: $selectedTab) {
             generalSettings
                 .tabItem { Label("General", systemImage: "gearshape") }
@@ -39,8 +63,6 @@ struct SettingsView: View {
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
                 .tag(SettingsTab.shortcuts.rawValue)
         }
-        .frame(width: 620, height: 460)
-        .padding(.top, 8)
     }
 
     private var generalSettings: some View {
@@ -69,17 +91,12 @@ struct SettingsView: View {
                     Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
                     Text("H.264").tag(RecordingCodecPolicy.h264)
                 }
-                LabeledContent("Program resolution") {
-                    HStack(spacing: 8) {
-                        Text("1920×1080 target")
-                        Text("Next slice")
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+                Picker("New Scene output", selection: programPresetBinding) {
+                    ForEach(CaptureCanvasPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
                     }
                 }
-                Text("Raw display tracks keep their native resolution.")
+                Text("The Scene output is the exact program recording, export, and stream resolution. Editable raw display tracks keep native resolution.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -175,8 +192,18 @@ struct SettingsView: View {
                         Text("8 Mbps").tag(8_000_000)
                         Text("10 Mbps").tag(10_000_000)
                         Text("12 Mbps").tag(12_000_000)
+                        Text("20 Mbps").tag(20_000_000)
+                        Text("24 Mbps").tag(24_000_000)
+                        Text("30 Mbps · 4K30").tag(30_000_000)
+                        Text("35 Mbps").tag(35_000_000)
+                        Text("40 Mbps").tag(40_000_000)
                     }
                     .labelsHidden()
+                }
+                if activeCanvasIs4K {
+                    Label("4K Scene active. Use 30 Mbps for 30 fps and Normal latency in YouTube.", systemImage: "4k.tv")
+                        .font(.caption)
+                        .foregroundStyle(streamingSettings.videoBitRate >= 30_000_000 ? Color.secondary : Color.orange)
                 }
                 HStack {
                     Button("Save to Keychain") { streamingSettings.save() }
@@ -197,7 +224,7 @@ struct SettingsView: View {
             Section("YouTube encoder contract") {
                 LabeledContent("Video", value: "H.264 · 30 fps · 2 s keyframes")
                 LabeledContent("Audio", value: "AAC · 128 Kbps")
-                Text("The active Scene determines horizontal, vertical, or custom stream dimensions.")
+                Text("The active Scene determines horizontal, vertical, 4K, or custom stream dimensions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -216,6 +243,12 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var activeCanvasIs4K: Bool {
+        let canvas = model.snapshot.studioDraft?.presentation.canvas
+            ?? CaptureCanvasSnapshot(preset: preferencesStore.preferences.capture.programPreset)
+        return canvas.width >= 3_840 || canvas.height >= 3_840
     }
 
     @ViewBuilder
@@ -266,6 +299,13 @@ struct SettingsView: View {
         Binding(
             get: { preferencesStore.preferences.capture.codecPolicy },
             set: { model.send(.changePreference(.codecPolicy($0))) }
+        )
+    }
+
+    private var programPresetBinding: Binding<CaptureCanvasPreset> {
+        Binding(
+            get: { preferencesStore.preferences.capture.programPreset },
+            set: { model.send(.changePreference(.programPreset($0))) }
         )
     }
 

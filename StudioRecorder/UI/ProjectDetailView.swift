@@ -355,7 +355,8 @@ struct ProjectDetailView: View {
                     to: $0.id,
                     in: projectJournalEvents
                 )
-            } ?? 0
+            } ?? 0,
+            rendersCursor: project.includesCursor && project.usesCompositedCursor
         )
     }
 

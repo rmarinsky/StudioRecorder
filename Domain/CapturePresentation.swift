@@ -3,7 +3,9 @@ import Foundation
 
 enum CaptureCanvasPreset: String, Codable, CaseIterable, Identifiable, Sendable {
     case fullHD
+    case ultraHD
     case verticalHD
+    case vertical4K
     case widescreen16x10
     case squareHD
 
@@ -12,7 +14,9 @@ enum CaptureCanvasPreset: String, Codable, CaseIterable, Identifiable, Sendable 
     var pixelSize: CGSize {
         switch self {
         case .fullHD: CGSize(width: 1_920, height: 1_080)
+        case .ultraHD: CGSize(width: 3_840, height: 2_160)
         case .verticalHD: CGSize(width: 1_080, height: 1_920)
+        case .vertical4K: CGSize(width: 2_160, height: 3_840)
         case .widescreen16x10: CGSize(width: 1_920, height: 1_200)
         case .squareHD: CGSize(width: 1_080, height: 1_080)
         }
@@ -21,7 +25,9 @@ enum CaptureCanvasPreset: String, Codable, CaseIterable, Identifiable, Sendable 
     var label: String {
         switch self {
         case .fullHD: "Full HD · 16:9"
+        case .ultraHD: "4K UHD · 16:9"
         case .verticalHD: "Vertical · 9:16"
+        case .vertical4K: "Vertical 4K · 9:16"
         case .widescreen16x10: "Wide · 16:10"
         case .squareHD: "Square · 1:1"
         }
@@ -219,6 +225,11 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     var cornerRadius: CGFloat
     var isVisible: Bool
     var isMirrored: Bool
+
+    var effectiveCornerRadius: CGFloat {
+        guard shape == .roundedRectangle else { return 0 }
+        return cornerRadius > 0 ? cornerRadius : 0.12
+    }
 
     init(
         centerX: CGFloat,

@@ -4,6 +4,7 @@ import SwiftUI
 
 struct StudioRecorderRootView: View {
     @ObservedObject var model: StudioRecorderModel
+    @ObservedObject var preferencesStore: PreferencesStore
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
     @StateObject private var liveScene = LiveSceneCoordinator()
     @StateObject private var streaming = YouTubeStreamingCoordinator()
@@ -28,6 +29,8 @@ struct StudioRecorderRootView: View {
                         .tag(MainRoute.projects)
                     Label("Studio", systemImage: "record.circle")
                         .tag(MainRoute.studio)
+                    Label("Settings", systemImage: "gearshape")
+                        .tag(MainRoute.settings)
                 }
 
                 if !snapshot.interruptedProjects.isEmpty {
@@ -47,6 +50,13 @@ struct StudioRecorderRootView: View {
                     projectsView
                 case .studio:
                     studioDestination
+                case .settings:
+                    SettingsView(
+                        model: model,
+                        preferencesStore: preferencesStore,
+                        streamingSettings: streamingSettings,
+                        embedded: true
+                    )
                 case .recovery:
                     recoveryView
                 }
@@ -120,7 +130,7 @@ struct StudioRecorderRootView: View {
                 }
                 .font(.subheadline)
             } else {
-                Text(snapshot.route == .recovery ? "Recovery" : "Projects")
+                Text(routeTitle)
                     .font(.headline)
             }
         }
@@ -133,6 +143,15 @@ struct StudioRecorderRootView: View {
                     Label("New Recording", systemImage: "plus")
                 }
             }
+        }
+    }
+
+    private var routeTitle: String {
+        switch snapshot.route {
+        case .projects: "Projects"
+        case .settings: "Settings"
+        case .recovery: "Recovery"
+        case .studio: "Studio"
         }
     }
 
@@ -641,6 +660,7 @@ struct StudioRecorderRootView: View {
                 streaming.start(
                     configuration: streamConfiguration,
                     presentation: draft.presentation,
+                    includesCursor: draft.includeCursor,
                     audioConfiguration: audio
                 )
             }
@@ -876,7 +896,7 @@ private struct StudioInspector: View {
                             valueText: String(format: "%.1f×", presentation.cursor.scale)
                         )
                         Toggle("Highlight clicks", isOn: cursorClickBinding)
-                        Text("The system cursor is recorded now. Custom cursor size and click rings stay editable intent until interaction rendering is connected.")
+                        Text("Cursor size and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -978,10 +998,18 @@ private struct StudioInspector: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Picker("Shape", selection: placement.shape) {
+            Picker("Shape", selection: shapeBinding(for: placement)) {
                 ForEach(SourceShape.allCases) { shape in
                     Text(shape.label).tag(shape)
                 }
+            }
+            if placement.wrappedValue.shape == .roundedRectangle {
+                labeledSlider(
+                    "Corner radius",
+                    value: cornerRadiusBinding(for: placement),
+                    range: 0.02...0.5,
+                    valueText: String(format: "%.0f%%", placement.wrappedValue.effectiveCornerRadius * 100)
+                )
             }
             labeledSlider("Width", value: placement.width, range: 0.08...1)
             labeledSlider("Height", value: placement.height, range: 0.08...1)
@@ -1010,6 +1038,35 @@ private struct StudioInspector: View {
             }
             Slider(value: value, in: range)
         }
+    }
+
+    private func shapeBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<SourceShape> {
+        Binding(
+            get: { placement.wrappedValue.shape },
+            set: { shape in
+                var value = placement.wrappedValue
+                value.shape = shape
+                if shape == .roundedRectangle, value.cornerRadius == 0 {
+                    value.cornerRadius = 0.12
+                }
+                placement.wrappedValue = value
+            }
+        )
+    }
+
+    private func cornerRadiusBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<CGFloat> {
+        Binding(
+            get: { placement.wrappedValue.effectiveCornerRadius },
+            set: { radius in
+                var value = placement.wrappedValue
+                value.cornerRadius = radius
+                placement.wrappedValue = value
+            }
+        )
     }
 
     private var canvasPresetBinding: Binding<CaptureCanvasPreset?> {
@@ -1195,11 +1252,13 @@ private struct LiveProgramPreview: View {
                             width: proxy.size.width * presentation.screen.width,
                             height: proxy.size.height * presentation.screen.height
                         )
-                        .clipShape(sourceShape(for: presentation.screen))
-                        .overlay {
-                            sourceShape(for: presentation.screen)
-                                .stroke(.white.opacity(0.28), lineWidth: 1)
-                        }
+                        .clipShape(sourceShape(
+                            for: presentation.screen,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.screen.width,
+                                height: proxy.size.height * presentation.screen.height
+                            )
+                        ))
                         .position(
                             x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
                             y: proxy.size.height * presentation.screen.centerY + screenDrag.height
@@ -1233,15 +1292,17 @@ private struct LiveProgramPreview: View {
                 if let cameraSession, presentation.camera.isVisible {
                     cameraPreview(session: cameraSession)
                         .scaleEffect(x: presentation.camera.isMirrored ? -1 : 1, y: 1)
-                        .clipShape(sourceShape(for: presentation.camera))
-                        .overlay {
-                            sourceShape(for: presentation.camera)
-                                .stroke(.white.opacity(0.65), lineWidth: 1)
-                        }
                         .frame(
                             width: proxy.size.width * presentation.camera.width,
                             height: proxy.size.height * presentation.camera.height
                         )
+                        .clipShape(sourceShape(
+                            for: presentation.camera,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.camera.width,
+                                height: proxy.size.height * presentation.camera.height
+                            )
+                        ))
                         .position(
                             x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
                             y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
@@ -1330,12 +1391,12 @@ private struct LiveProgramPreview: View {
         ).validated()
     }
 
-    private func sourceShape(for placement: SourcePlacementSnapshot) -> AnyShape {
+    private func sourceShape(for placement: SourcePlacementSnapshot, size: CGSize) -> AnyShape {
         switch placement.shape {
         case .rectangle:
             AnyShape(Rectangle())
         case .roundedRectangle:
-            AnyShape(RoundedRectangle(cornerRadius: max(6, placement.cornerRadius * 100)))
+            AnyShape(RoundedRectangle(cornerRadius: placement.effectiveCornerRadius * min(size.width, size.height)))
         case .circle:
             AnyShape(Ellipse())
         }

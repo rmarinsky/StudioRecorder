@@ -159,6 +159,7 @@ final class PermissionCenter {
 enum MainRoute: Hashable {
     case projects
     case studio
+    case settings
     case recovery
 }
 
@@ -195,6 +196,7 @@ enum AppIntent: Equatable {
 enum PreferenceChange: Equatable {
     case appearance(AppearancePreference)
     case codecPolicy(RecordingCodecPolicy)
+    case programPreset(CaptureCanvasPreset)
     case includeCursor(Bool)
     case excludeStudioRecorder(Bool)
     case capturesSystemAudio(Bool)
@@ -612,6 +614,7 @@ final class StudioRecorderModel: ObservableObject {
                 switch change {
                 case .appearance(let appearance): preferences.appearance = appearance
                 case .codecPolicy(let policy): preferences.capture.codecPolicy = policy
+                case .programPreset(let preset): preferences.capture.programPreset = preset
                 case .includeCursor(let includeCursor): preferences.capture.includeCursor = includeCursor
                 case .excludeStudioRecorder(let excluded): preferences.capture.excludeStudioRecorder = excluded
                 case .capturesSystemAudio(let captures): preferences.audio.capturesSystemAudio = captures

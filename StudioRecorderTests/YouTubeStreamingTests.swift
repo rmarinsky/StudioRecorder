@@ -12,8 +12,13 @@ final class YouTubeStreamingTests: XCTestCase {
 
         XCTAssertNil(store.configuration(canvasSize: CGSize(width: 1_920, height: 1_080), frameRate: 30))
         store.streamKey = "secret-key"
+        store.videoBitRate = 30_000_000
         let configuration = store.configuration(canvasSize: CGSize(width: 1_920, height: 1_080), frameRate: 30)
         XCTAssertEqual(configuration?.publishURL?.absoluteString, "rtmps://a.rtmps.youtube.com/live2/secret-key")
+        XCTAssertEqual(configuration?.videoBitRate, 30_000_000)
+
+        let fourK = store.configuration(canvasSize: CGSize(width: 3_840, height: 2_160), frameRate: 30)
+        XCTAssertEqual(fourK?.canvasSize, CGSize(width: 3_840, height: 2_160))
 
         store.serverURL = "rtmp://a.rtmp.youtube.com/live2"
         XCTAssertNil(store.configuration(canvasSize: CGSize(width: 1_920, height: 1_080), frameRate: 30))
@@ -108,7 +113,7 @@ final class YouTubeStreamingTests: XCTestCase {
         await pipeline.appendCamera(SendableSampleBuffer(value: try videoSampleBuffer(color: .red)))
         await pipeline.appendScreen(
             SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
-            cursorPosition: nil
+            cursor: nil
         )
 
         let latestVideo = await sink.latestVideo()
@@ -124,6 +129,54 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertLessThan(corner.red, 80)
         let connectedAudioConfiguration = await sink.connectedAudioConfiguration()
         XCTAssertEqual(connectedAudioConfiguration, audioConfiguration)
+        await pipeline.stop()
+    }
+
+    func testLivePipelineRendersConfiguredCursorAndClickRing() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.cursor = CursorTreatmentSnapshot(scale: 2, highlightsClicks: true)
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: presentation.canvas.pixelSize,
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: presentation,
+            includesCursor: true,
+            audioConfiguration: audio
+        ) { _ in }
+
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: ProgramCursorState(
+                normalizedX: 0.5,
+                normalizedY: 0.5,
+                isPrimaryButtonDown: true
+            )
+        )
+
+        let latestVideo = await sink.latestVideo()
+        let output = try XCTUnwrap(latestVideo?.value.imageBuffer)
+        let image = CIImage(cvPixelBuffer: output)
+        let clickRing = try pixel(in: image, x: 300, y: 180)
+        let untouched = try pixel(in: image, x: 250, y: 180)
+        XCTAssertGreaterThan(clickRing.red, 180)
+        XCTAssertLessThan(clickRing.blue, 120)
+        XCTAssertGreaterThan(untouched.blue, 180)
+        XCTAssertLessThan(untouched.red, 80)
         await pipeline.stop()
     }
 

@@ -21,6 +21,7 @@ final class YouTubeStreamingCoordinator: ObservableObject {
     func start(
         configuration: YouTubeStreamConfiguration,
         presentation: CapturePresentationSnapshot,
+        includesCursor: Bool,
         audioConfiguration: LiveStreamAudioConfiguration
     ) {
         guard !state.isActive else { return }
@@ -33,6 +34,7 @@ final class YouTubeStreamingCoordinator: ObservableObject {
                 try await pipeline.start(
                     configuration: configuration,
                     presentation: presentation,
+                    includesCursor: includesCursor,
                     audioConfiguration: audioConfiguration
                 ) { [weak self] state in
                     guard let self, self.activeAttemptID == attemptID else { return }
@@ -75,6 +77,7 @@ actor LiveProgramPipeline {
     private let sink: any LiveProgramSink
     private let compositor = ProgramFrameCompositor(personQuality: .live)
     private var presentation = CapturePresentationSnapshot.default
+    private var rendersCursor = false
     private var latestCamera: SendableSampleBuffer?
     private var pixelBufferPool: CVPixelBufferPool?
     private var isRunning = false
@@ -86,11 +89,13 @@ actor LiveProgramPipeline {
     func start(
         configuration: YouTubeStreamConfiguration,
         presentation: CapturePresentationSnapshot,
+        includesCursor: Bool = true,
         audioConfiguration: LiveStreamAudioConfiguration,
         stateHandler: @escaping StateHandler
     ) async throws {
         guard !isRunning else { return }
         self.presentation = presentation.validated()
+        rendersCursor = includesCursor
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
         isRunning = true
         do {
@@ -126,7 +131,7 @@ actor LiveProgramPipeline {
 
     func appendScreen(
         _ sampleBuffer: SendableSampleBuffer,
-        cursorPosition: CGPoint?
+        cursor: ProgramCursorState?
     ) async {
         guard isRunning,
               let sourceBuffer = sampleBuffer.value.imageBuffer,
@@ -136,7 +141,10 @@ actor LiveProgramPipeline {
             screen: CIImage(cvPixelBuffer: sourceBuffer),
             camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
             presentation: presentation,
-            screenFraming: streamFraming(cursorPosition: cursorPosition),
+            screenFraming: streamFraming(cursorPosition: cursor.map {
+                CGPoint(x: $0.normalizedX, y: $0.normalizedY)
+            }),
+            cursor: rendersCursor ? cursor : nil,
             to: outputBuffer
         )
         guard let composed = makeSampleBuffer(
