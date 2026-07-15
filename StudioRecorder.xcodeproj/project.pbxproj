@@ -17,12 +17,14 @@
 		208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */; };
 		28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */; };
 		30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */; };
+		332FE2B6A487C505066960F8 /* LiveSceneSnapshotExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FDE68C573E8A4671703ACA8 /* LiveSceneSnapshotExporter.swift */; };
 		376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */; };
 		3BFFB667DCDB38B9F09C9BC1 /* GIFMakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */; };
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
 		8152682622CF0F90F34E778E /* RecordingRetentionFinalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067BFA6986D1345EB4D0A82C /* RecordingRetentionFinalizer.swift */; };
+		8297859DF0D5F66FFE439544 /* LiveSceneSnapshotExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
 		8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
 		8F1D72903453CB425A8CB5A0 /* LiveProgramArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D186F94CE3B34BB52DB31A3A /* LiveProgramArchive.swift */; };
@@ -71,6 +73,8 @@
 		17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneCoordinator.swift; sourceTree = "<group>"; };
 		2897A189300917E718918A9E /* ProjectEditStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditStore.swift; sourceTree = "<group>"; };
 		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
+		2FDE68C573E8A4671703ACA8 /* LiveSceneSnapshotExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneSnapshotExporter.swift; sourceTree = "<group>"; };
+		31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneSnapshotExporterTests.swift; sourceTree = "<group>"; };
 		32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPresentationEditorView.swift; sourceTree = "<group>"; };
 		3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgramPipeline.swift; sourceTree = "<group>"; };
 		3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlannerTests.swift; sourceTree = "<group>"; };
@@ -186,6 +190,7 @@
 				AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */,
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
 				078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */,
+				31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */,
 				51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */,
 				CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */,
 				01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */,
@@ -224,6 +229,7 @@
 			children = (
 				5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */,
 				B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */,
+				2FDE68C573E8A4671703ACA8 /* LiveSceneSnapshotExporter.swift */,
 				A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */,
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
@@ -340,6 +346,7 @@
 				C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */,
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
 				02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */,
+				8297859DF0D5F66FFE439544 /* LiveSceneSnapshotExporterTests.swift in Sources */,
 				6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */,
 				DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */,
 				30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */,
@@ -363,6 +370,7 @@
 				8F1D72903453CB425A8CB5A0 /* LiveProgramArchive.swift in Sources */,
 				208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */,
 				5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */,
+				332FE2B6A487C505066960F8 /* LiveSceneSnapshotExporter.swift in Sources */,
 				BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */,
 				845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */,
 				F195967D1996D9078D6FF408 /* ProjectEditRenderer.swift in Sources */,

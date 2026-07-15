@@ -35,7 +35,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Camera background | implemented | local Vision Person segmentation or adjustable green/blue chroma key in Studio and Project composition | clean-plate matting only after a measured prototype |
 | Canvas and screen region | foundation implemented | horizontal/vertical/16:10/square/custom canvas plus full/fixed/follow modes | fixed region affects ScreenCaptureKit raw capture; follow mode stays non-destructive until telemetry renderer |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
-| Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
+| Quick share media | implemented | live composed Scene snapshot plus raw movie share/drag, current-frame PNG, bounded GIF | system-wide window/region screenshot picker and lightweight markup |
 | Quick edit foundation | implemented | ordered source ranges, trim, split/delete, undo/redo/reset | synchronized tracks, waveform, speed and volume |
 | Streaming | implemented foundation | same frozen scene into Record, YouTube Stream, or both; manual RTMPS key stays in Keychain | YouTube ingest soak, reconnect, then OAuth-managed broadcast creation |
 

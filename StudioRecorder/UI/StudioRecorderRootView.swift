@@ -16,6 +16,9 @@ struct StudioRecorderRootView: View {
     @State private var recoveryOperationID: String?
     @State private var recoveryError: String?
     @State private var recoveryTrashCandidate: RecordingProjectSnapshot?
+    @State private var isCapturingSnapshot = false
+    @State private var lastSnapshotURL: URL?
+    @State private var snapshotError: String?
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
@@ -83,6 +86,11 @@ struct StudioRecorderRootView: View {
             Button("OK", role: .cancel) { recoveryError = nil }
         } message: {
             Text(recoveryError ?? "The project could not be recovered.")
+        }
+        .alert("Snapshot Failed", isPresented: snapshotErrorPresented) {
+            Button("OK", role: .cancel) { snapshotError = nil }
+        } message: {
+            Text(snapshotError ?? "The current stage could not be saved.")
         }
         .confirmationDialog(
             "Move this recording project to Trash?",
@@ -197,6 +205,13 @@ struct StudioRecorderRootView: View {
         Binding(
             get: { gifImportError != nil },
             set: { if !$0 { gifImportError = nil } }
+        )
+    }
+
+    private var snapshotErrorPresented: Binding<Bool> {
+        Binding(
+            get: { snapshotError != nil },
+            set: { if !$0 { snapshotError = nil } }
         )
     }
 
@@ -585,6 +600,20 @@ struct StudioRecorderRootView: View {
                     }
                 }
                 Spacer()
+                Button(action: captureProgramSnapshot) {
+                    if isCapturingSnapshot {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Snapshot", systemImage: "camera.viewfinder")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(
+                    isCapturingSnapshot
+                        || liveScene.screenImage == nil
+                        || snapshotNeedsCameraFrame
+                )
                 Button(action: toggleDelivery) {
                     Label(deliveryButtonTitle, systemImage: isDeliveryActive ? "stop.fill" : "record.circle.fill")
                         .frame(minWidth: 122)
@@ -596,7 +625,24 @@ struct StudioRecorderRootView: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(studioDestinationPath).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                    Text(studioDestinationDetail).font(.caption2).foregroundStyle(studioDestinationColor)
+                    if let lastSnapshotURL {
+                        HStack(spacing: 8) {
+                            Label("Snapshot saved", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Button("Copy") { copySnapshot(lastSnapshotURL) }
+                            Button("Reveal") {
+                                NSWorkspace.shared.activateFileViewerSelecting([lastSnapshotURL])
+                            }
+                            ShareLink(item: lastSnapshotURL) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .accessibilityLabel("Share snapshot")
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption2)
+                    } else {
+                        Text(studioDestinationDetail).font(.caption2).foregroundStyle(studioDestinationColor)
+                    }
                 }
                 .frame(maxWidth: 250, alignment: .trailing)
             }
@@ -969,6 +1015,70 @@ struct StudioRecorderRootView: View {
                 model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
                 model.send(.toggleRecording)
             }
+        }
+    }
+
+    private func captureProgramSnapshot() {
+        guard !isCapturingSnapshot,
+              let draft = snapshot.studioDraft else { return }
+        isCapturingSnapshot = true
+        Task { @MainActor in
+            defer { isCapturingSnapshot = false }
+            do {
+                let destinationURL = try nextSnapshotURL(
+                    in: draft.destination.url,
+                    sceneName: draft.presentation.resolvedName
+                )
+                try await liveScene.saveProgramSnapshot(
+                    presentation: draft.presentation,
+                    capturesCamera: draft.capturesCamera,
+                    includesCursor: draft.includeCursor,
+                    excludesStudioRecorder: draft.excludeStudioRecorder,
+                    to: destinationURL
+                )
+                lastSnapshotURL = destinationURL
+            } catch {
+                snapshotError = error.localizedDescription
+            }
+        }
+    }
+
+    private var snapshotNeedsCameraFrame: Bool {
+        guard let draft = snapshot.studioDraft else { return false }
+        return draft.capturesCamera
+            && draft.presentation.camera.isVisible
+            && !liveScene.isCameraFrameReady
+    }
+
+    private func nextSnapshotURL(in destination: URL, sceneName: String) throws -> URL {
+        let directory = destination.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let safeSceneName = sceneName.components(separatedBy: allowed.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let baseName = "\(safeSceneName.isEmpty ? "Scene" : safeSceneName) Snapshot \(timestamp)"
+        var candidate = directory.appending(path: "\(baseName).png")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory.appending(path: "\(baseName) \(suffix).png")
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private func copySnapshot(_ url: URL) {
+        guard let image = NSImage(contentsOf: url) else {
+            snapshotError = "The saved snapshot could not be copied."
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([image]) else {
+            snapshotError = "The saved snapshot could not be copied."
+            return
         }
     }
 }

@@ -30,18 +30,49 @@ enum LiveScenePolicy {
     }
 }
 
+enum LiveSceneSnapshotCaptureError: LocalizedError, Equatable {
+    case screenUnavailable
+    case cameraUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .screenUnavailable:
+            "The selected screen is not ready for a snapshot yet."
+        case .cameraUnavailable:
+            "The selected camera is still starting. Try the snapshot again in a moment."
+        }
+    }
+
+    static func cameraFrame(
+        capturesCamera: Bool,
+        cameraIsVisible: Bool,
+        availableFrame: CVPixelBuffer?
+    ) throws -> CVPixelBuffer? {
+        guard capturesCamera, cameraIsVisible else { return nil }
+        guard let availableFrame else { throw Self.cameraUnavailable }
+        return availableFrame
+    }
+}
+
+private struct CameraFrameState {
+    var outputID: ObjectIdentifier?
+    var pixelBuffer: CVPixelBuffer?
+}
+
 @MainActor
 final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var screenImage: NSImage?
     @Published private(set) var selectedCameraID: String?
     @Published private(set) var cameraSession: AVCaptureSession?
     @Published private(set) var cameraImage: NSImage?
+    @Published private(set) var isCameraFrameReady = false
     @Published private(set) var screenPreviewError: String?
 
     private let screenQueue = DispatchQueue(label: "StudioRecorder.preview.screen", qos: .userInitiated)
     private let cameraQueue = DispatchQueue(label: "StudioRecorder.preview.camera", qos: .userInitiated)
     private let imageContext = CIContext(options: [.cacheIntermediates: false])
     private let cameraBackgroundProcessor = CameraBackgroundProcessor(personQuality: .live)
+    private let snapshotExporter = LiveSceneSnapshotExporter()
     nonisolated(unsafe) private var isFrameDeliveryPending = false
     nonisolated private let frameDeliveryLock = NSLock()
     nonisolated(unsafe) private var isCameraFrameDeliveryPending = false
@@ -49,6 +80,8 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let cameraFrameDeliveryLock = NSLock()
     nonisolated(unsafe) private var cameraBackground = CameraBackgroundSnapshot.off
     nonisolated private let cameraBackgroundLock = NSLock()
+    nonisolated(unsafe) private var cameraFrameState = CameraFrameState()
+    nonisolated private let cameraFrameStateLock = NSLock()
     nonisolated(unsafe) private var streamPipeline: LiveProgramPipeline?
     nonisolated private let streamPipelineLock = NSLock()
     nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
@@ -57,6 +90,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     private var streamAudioConfiguration: LiveStreamAudioConfiguration?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var screenStream: SCStream?
+    private var previewedDisplay: SCDisplay?
     private var previewedDisplayID: UInt32?
     private var cameraInput: AVCaptureDeviceInput?
     private var cameraVideoOutput: AVCaptureVideoDataOutput?
@@ -118,6 +152,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             startCursorTelemetry()
             try await stream.startCapture()
             screenStream = stream
+            previewedDisplay = display
             previewedDisplayID = displayID
         } catch {
             cursorTelemetryTask?.cancel()
@@ -130,6 +165,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     func stopScreenPreview() async {
         let stream = screenStream
         screenStream = nil
+        previewedDisplay = nil
         previewedDisplayID = nil
         screenImage = nil
         cursorTelemetryTask?.cancel()
@@ -175,12 +211,99 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         cameraInput = nil
         cameraVideoOutput = nil
         cameraImage = nil
+        setActiveCameraOutput(nil)
         guard let session else { return }
         await withCheckedContinuation { continuation in
             cameraQueue.async {
                 session.stopRunning()
                 continuation.resume()
             }
+        }
+    }
+
+    func saveProgramSnapshot(
+        presentation: CapturePresentationSnapshot,
+        capturesCamera: Bool,
+        includesCursor: Bool,
+        excludesStudioRecorder: Bool,
+        to destinationURL: URL
+    ) async throws {
+        guard let previewedDisplay else {
+            throw LiveSceneSnapshotCaptureError.screenUnavailable
+        }
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first(where: { $0.displayID == previewedDisplay.displayID }) else {
+            throw LiveSceneSnapshotCaptureError.screenUnavailable
+        }
+        let ownApplication = content.applications.first {
+            $0.processID == ProcessInfo.processInfo.processIdentifier
+        }
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: excludesStudioRecorder ? (ownApplication.map { [$0] } ?? []) : [],
+            exceptingWindows: []
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.width = display.width
+        configuration.height = display.height
+        configuration.showsCursor = false
+        configuration.capturesAudio = false
+        let screen = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+        let camera = try LiveSceneSnapshotCaptureError.cameraFrame(
+            capturesCamera: capturesCamera,
+            cameraIsVisible: presentation.camera.isVisible,
+            availableFrame: cameraFrameStateLock.withLock { cameraFrameState.pixelBuffer }
+        )
+        let cursor = includesCursor ? contentAlignedCursor(on: display) : nil
+        let framing = effectiveSnapshotFraming(
+            presentation: presentation,
+            cursor: cursor
+        )
+        try await snapshotExporter.export(
+            sources: LiveSceneSnapshotSources(screen: screen, camera: camera),
+            presentation: presentation,
+            screenFraming: framing,
+            cursor: cursor,
+            to: destinationURL
+        )
+    }
+
+    private func contentAlignedCursor(on display: SCDisplay) -> ProgramCursorState? {
+        let hostTime = CMClockConvertHostTimeToSystemUnits(CMClockGetTime(CMClockGetHostTimeClock()))
+        let hostSample = streamCursorSynchronizer.sample(forFrameAt: hostTime) ?? CursorHostSample(
+            hostTime: hostTime,
+            location: CGEvent(source: nil)?.location ?? .zero,
+            isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
+        )
+        let location = hostSample.location
+        let frame = display.frame
+        guard frame.width > 0, frame.height > 0, frame.contains(location) else { return nil }
+        return ProgramCursorState(
+            normalizedX: (location.x - frame.minX) / frame.width,
+            normalizedY: (location.y - frame.minY) / frame.height,
+            isPrimaryButtonDown: hostSample.isPrimaryButtonDown
+        )
+    }
+
+    private func effectiveSnapshotFraming(
+        presentation: CapturePresentationSnapshot,
+        cursor: ProgramCursorState?
+    ) -> ScreenFramingSnapshot? {
+        switch presentation.framing.mode {
+        case .fullDisplay:
+            nil
+        case .fixedRegion:
+            presentation.framing
+        case .followCursor:
+            ScreenFramingSnapshot(
+                mode: .fixedRegion,
+                centerX: cursor?.normalizedX ?? presentation.framing.centerX,
+                centerY: cursor?.normalizedY ?? presentation.framing.centerY,
+                scale: presentation.framing.scale
+            ).validated()
         }
     }
 
@@ -213,6 +336,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             cameraInput = nil
             cameraVideoOutput = nil
             cameraImage = nil
+            setActiveCameraOutput(nil)
             if let previousSession {
                 cameraQueue.async {
                     previousSession.stopRunning()
@@ -224,6 +348,8 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
            cameraSession != nil {
             return
         }
+        cameraImage = nil
+        setActiveCameraOutput(nil)
 
         let session = AVCaptureSession()
         do {
@@ -236,6 +362,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 cameraInput = nil
                 cameraVideoOutput = nil
                 cameraImage = nil
+                setActiveCameraOutput(nil)
                 return
             }
             session.addInput(input)
@@ -251,6 +378,8 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 cameraSession = nil
                 cameraInput = nil
                 cameraVideoOutput = nil
+                cameraImage = nil
+                setActiveCameraOutput(nil)
                 return
             }
             session.addOutput(videoOutput)
@@ -258,6 +387,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             cameraInput = input
             cameraVideoOutput = videoOutput
             cameraSession = session
+            setActiveCameraOutput(videoOutput)
             cameraQueue.async {
                 previousSession?.stopRunning()
                 session.startRunning()
@@ -267,10 +397,28 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             cameraInput = nil
             cameraVideoOutput = nil
             cameraImage = nil
+            setActiveCameraOutput(nil)
             if let previousSession {
                 cameraQueue.async { previousSession.stopRunning() }
             }
         }
+    }
+
+    private func setActiveCameraOutput(_ output: AVCaptureVideoDataOutput?) {
+        cameraFrameStateLock.withLock {
+            cameraFrameState = CameraFrameState(
+                outputID: output.map(ObjectIdentifier.init),
+                pixelBuffer: nil
+            )
+        }
+        isCameraFrameReady = false
+    }
+
+    private func markCameraFrameReady(for outputID: ObjectIdentifier) {
+        guard cameraFrameStateLock.withLock({
+            cameraFrameState.outputID == outputID && cameraFrameState.pixelBuffer != nil
+        }) else { return }
+        isCameraFrameReady = true
     }
 }
 
@@ -280,13 +428,21 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        let outputID = ObjectIdentifier(output)
+        let acceptedFrame = cameraFrameStateLock.withLock { () -> Bool in
+            guard cameraFrameState.outputID == outputID else { return false }
+            cameraFrameState.pixelBuffer = pixelBuffer
+            return true
+        }
+        guard acceptedFrame else { return }
+        Task { @MainActor [weak self] in self?.markCameraFrameReady(for: outputID) }
         if let pipeline = streamPipelineLock.withLock({ streamPipeline }) {
             let box = SendableSampleBuffer(value: sampleBuffer)
             Task { await pipeline.appendCamera(box) }
         }
         let background = cameraBackgroundLock.withLock { cameraBackground }
-        guard background.mode != .off,
-              let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        guard background.mode != .off else { return }
         let shouldDeliver = cameraFrameDeliveryLock.withLock {
             let now = ProcessInfo.processInfo.systemUptime
             guard !isCameraFrameDeliveryPending,
