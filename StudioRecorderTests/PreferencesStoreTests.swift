@@ -205,8 +205,9 @@ final class PreferencesStoreTests: XCTestCase {
         let store = makeStore()
         let displays = [AvailableDisplay(id: 7, title: "Studio Display", pixelSize: CGSize(width: 2_560, height: 1_440))]
         let microphones = [AvailableMicrophone(id: "mic-1", name: "Very Long USB Microphone", isSystemDefault: true)]
+        let cameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]
         let permissions = PermissionSnapshot(screenRecording: .granted, microphone: .granted)
-        var draft = store.makeStudioDraft(displays: displays, microphones: microphones)
+        var draft = store.makeStudioDraft(displays: displays, microphones: microphones, cameras: cameras)
         let requestID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let createdAt = Date(timeIntervalSinceReferenceDate: 12_345)
 
@@ -215,6 +216,7 @@ final class PreferencesStoreTests: XCTestCase {
             createdAt: createdAt,
             displays: displays,
             microphones: microphones,
+            cameras: cameras,
             permissions: permissions
         )
 
@@ -223,20 +225,51 @@ final class PreferencesStoreTests: XCTestCase {
         XCTAssertEqual(request.displaySources.map(\.id), [7])
         XCTAssertEqual(request.displaySources.first?.name, "Studio Display")
         XCTAssertEqual(request.audio.microphone?.id, "mic-1")
+        XCTAssertEqual(request.camera, CameraSourceSnapshot(id: "camera-1", name: "FaceTime HD Camera"))
         XCTAssertEqual(request.profile.frameRate, 30)
         XCTAssertEqual(request.storage.destinationURL?.path, "/tmp/Movies/Studio Recorder")
 
         draft.selectedDisplayIDs = []
         draft.capturesMicrophone = false
+        draft.capturesCamera = false
         draft.includeCursor = false
         store.update { $0.audio.capturesMicrophone = false }
 
         XCTAssertEqual(request.displaySources.map(\.id), [7])
         XCTAssertTrue(request.audio.capturesMicrophone)
+        XCTAssertEqual(request.camera?.id, "camera-1")
         XCTAssertTrue(request.profile.includeCursor)
 
         let data = try JSONEncoder().encode(request)
         XCTAssertEqual(try JSONDecoder().decode(CaptureRequest.self, from: data), request)
+    }
+
+    func testCameraDraftRequiresPermissionAndAnAvailableSelectedDevice() {
+        let displays = [AvailableDisplay(id: 1, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        let cameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [], cameras: cameras)
+        draft.capturesMicrophone = false
+
+        XCTAssertEqual(
+            draft.validationIssues(
+                displays: displays,
+                microphones: [],
+                cameras: cameras,
+                permissions: PermissionSnapshot(screenRecording: .granted, microphone: .granted, camera: .denied)
+            ),
+            [.cameraPermission]
+        )
+
+        draft.cameraDeviceID = nil
+        XCTAssertEqual(
+            draft.validationIssues(
+                displays: displays,
+                microphones: [],
+                cameras: cameras,
+                permissions: PermissionSnapshot(screenRecording: .granted, microphone: .granted, camera: .granted)
+            ),
+            [.cameraUnavailable]
+        )
     }
 
     func testDestinationChangesAffectOnlyFutureDrafts() throws {

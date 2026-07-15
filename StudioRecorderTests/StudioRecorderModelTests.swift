@@ -142,6 +142,39 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(snapshot.requiredCapturePermission, .screenRecording)
     }
 
+    func testCameraPermissionCanBeRepairedOrDisabledForOnlyTheCurrentDraft() throws {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .ready
+        snapshot.capturesMicrophone = false
+        snapshot.capturesCamera = true
+        snapshot.permissionSnapshot = PermissionSnapshot(
+            screenRecording: .granted,
+            microphone: .granted,
+            camera: .denied
+        )
+        snapshot.availableCameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(
+            displays: [],
+            microphones: [],
+            cameras: snapshot.availableCameras
+        )
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        let presentation = try XCTUnwrap(model.snapshot.permissionRepairPresentation)
+        XCTAssertEqual(presentation.permission, .camera)
+        XCTAssertEqual(presentation.title, "Allow Camera")
+        XCTAssertEqual(
+            presentation.actions,
+            [.openSystemSettings, .recordWithoutCamera, .checkAgain, .browseProjects]
+        )
+
+        XCTAssertEqual(model.send(.recordWithoutCamera), .cameraDisabledForDraft)
+        XCTAssertFalse(model.snapshot.capturesCamera)
+        XCTAssertFalse(model.snapshot.studioDraft?.capturesCamera ?? true)
+        XCTAssertNil(model.snapshot.requiredCapturePermission)
+    }
+
     func testRecordWithoutMicrophoneChangesOnlyTheCurrentDraft() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.route = .studio

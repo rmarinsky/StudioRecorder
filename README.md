@@ -8,6 +8,7 @@ public brand.
 
 - discovers all ScreenCaptureKit displays after macOS grants Screen Recording access;
 - records each selected display as a native raw movie in parallel;
+- records the selected camera as a separate fragmented raw movie, preserving it for later layout changes;
 - requests system audio and microphone capture through ScreenCaptureKit;
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
@@ -18,9 +19,9 @@ public brand.
 
 ## Deliberately not claimed as complete
 
-Independent camera encoding, a separately encoded program `.mov`, quick trim/split,
-camera layout instructions, interaction metadata, and local transcripts remain future
-slices. The current program preview is an honest capture contract, not a compositor.
+A separately encoded program `.mov`, quick trim/split, camera layout instructions,
+interaction metadata, and local transcripts remain future slices. The current program
+preview is an honest capture contract, not a compositor; the camera stays independent.
 Livestreaming, cloud hosting, and an OBS-style scene system are explicit non-goals for
 this product phase.
 
@@ -32,7 +33,7 @@ Requirements: Xcode 26.5, XcodeGen, macOS Tahoe 26 on Apple Silicon.
     xcodebuild -project StudioRecorder.xcodeproj -scheme StudioRecorder \
       -destination 'platform=macOS,arch=arm64' build CODE_SIGNING_ALLOWED=NO
 
-On first launch, grant Screen Recording and Microphone access in macOS when requested. Use one short recording first and verify the raw `.mov` files and `journal.ndjson` in the project package.
+On first launch, grant Screen Recording, Microphone, and Camera access in macOS when requested. Use one short recording first and verify the raw `.mov` files and `journal.ndjson` in the project package.
 
 ## Install the DEV app
 

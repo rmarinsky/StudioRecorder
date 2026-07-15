@@ -58,9 +58,20 @@ struct StudioRecorderRootView: View {
         .onChange(of: snapshot.route) { _, route in
             Task { await updateLiveScene(for: route) }
         }
+        .onChange(of: snapshot.captureState) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
+        }
+        .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, cameraID in
+            liveScene.selectCamera(cameraID)
+        }
+        .onChange(of: snapshot.capturesCamera) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
+        }
         .onDisappear {
-            liveScene.stopCameraPreview()
-            Task { await liveScene.stopScreenPreview() }
+            Task {
+                await liveScene.stopCameraPreview()
+                await liveScene.stopScreenPreview()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.appBecameActive() }
@@ -241,12 +252,16 @@ struct StudioRecorderRootView: View {
                         isGranted: snapshot.permissionSnapshot.microphone.isGranted,
                         icon: "mic"
                     )
-                    Label("Camera is a later capture slice", systemImage: "video")
-                        .foregroundStyle(.secondary)
+                    permissionStatusRow(
+                        "Camera",
+                        label: permissionRepair.cameraStatusLabel,
+                        isGranted: snapshot.permissionSnapshot.camera.isGranted,
+                        icon: "video"
+                    )
                     Spacer()
 
                     if permissionRepair.actions.contains(.requestAccess) {
-                        Button(permissionRepair.permission == .microphone ? "Allow Microphone" : "Allow Screen Recording") {
+                        Button(permissionRequestTitle) {
                             Task { await model.requestPermission(permissionRepair.permission) }
                         }
                         .buttonStyle(.borderedProminent)
@@ -263,6 +278,13 @@ struct StudioRecorderRootView: View {
                     if permissionRepair.actions.contains(.recordWithoutMicrophone) {
                         Button("Record Without Microphone") {
                             model.send(.recordWithoutMicrophone)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if permissionRepair.actions.contains(.recordWithoutCamera) {
+                        Button("Record Without Camera") {
+                            model.send(.recordWithoutCamera)
                         }
                         .buttonStyle(.bordered)
                     }
@@ -294,6 +316,14 @@ struct StudioRecorderRootView: View {
             preconditionFailure("Permission repair presentation requested outside repair state")
         }
         return presentation
+    }
+
+    private var permissionRequestTitle: String {
+        switch permissionRepair.permission {
+        case .screenRecording: "Allow Screen Recording"
+        case .microphone: "Allow Microphone"
+        case .camera: "Allow Camera"
+        }
     }
 
     private func permissionStatusRow(_ title: String, label: String, isGranted: Bool, icon: String) -> some View {
@@ -344,10 +374,17 @@ struct StudioRecorderRootView: View {
                         get: { snapshot.studioDraft?.capturesSystemAudio ?? true },
                         set: { model.send(.setDraftCapturesSystemAudio($0)) }
                     ),
-                    cameras: liveScene.cameras,
+                    cameras: snapshot.availableCameras,
                     selectedCameraID: Binding(
-                        get: { liveScene.selectedCameraID },
-                        set: { liveScene.selectCamera($0) }
+                        get: { snapshot.studioDraft?.cameraDeviceID },
+                        set: {
+                            model.send(.setDraftCameraDeviceID($0))
+                            liveScene.selectCamera($0)
+                        }
+                    ),
+                    capturesCamera: Binding(
+                        get: { snapshot.capturesCamera },
+                        set: { model.send(.setCapturesCamera($0)) }
                     ),
                     capturesMicrophone: Binding(
                         get: { snapshot.capturesMicrophone },
@@ -408,10 +445,14 @@ struct StudioRecorderRootView: View {
     }
 
     private func updateLiveScene(for route: MainRoute) async {
-        if route == .studio {
+        if route == .studio,
+           snapshot.captureState == .ready,
+           snapshot.capturesCamera,
+           snapshot.permissionSnapshot.camera.isGranted {
+            liveScene.selectCamera(snapshot.studioDraft?.cameraDeviceID)
             liveScene.startCameraPreview()
         } else {
-            liveScene.stopCameraPreview()
+            await liveScene.stopCameraPreview()
             await liveScene.stopScreenPreview()
         }
     }
@@ -482,7 +523,15 @@ struct StudioRecorderRootView: View {
     }
 
     private func toggleRecording() {
-        model.send(.toggleRecording)
+        guard snapshot.captureState == .ready else {
+            model.send(.toggleRecording)
+            return
+        }
+        Task {
+            await liveScene.stopCameraPreview()
+            await liveScene.stopScreenPreview()
+            model.send(.toggleRecording)
+        }
     }
 }
 
@@ -546,6 +595,7 @@ private struct StudioInspector: View {
     @Binding var capturesSystemAudio: Bool
     let cameras: [AvailableCamera]
     @Binding var selectedCameraID: String?
+    @Binding var capturesCamera: Bool
     @Binding var capturesMicrophone: Bool
     @Binding var microphoneDeviceID: String?
     let microphoneFallback: MicrophoneFallback?
@@ -647,24 +697,24 @@ private struct StudioInspector: View {
 
     @ViewBuilder
     private var cameraRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "video").foregroundStyle(.secondary).frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Camera").font(.subheadline.weight(.medium))
-                Text(cameras.isEmpty ? "No camera available" : "Live preview only — capture next slice")
-                    .font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $capturesCamera) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Camera").font(.subheadline.weight(.medium))
+                    Text(cameras.isEmpty ? "No camera available" : (capturesCamera ? "Independent recoverable raw track" : "Off for this Studio Draft"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
-            Spacer()
-            if cameras.isEmpty {
-                Text("Unavailable").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-            } else {
+            .toggleStyle(.switch)
+            .disabled(isLocked || cameras.isEmpty)
+
+            if capturesCamera, !cameras.isEmpty {
                 Picker("Camera", selection: $selectedCameraID) {
                     ForEach(cameras) { camera in
                         Text(camera.name).tag(Optional(camera.id))
                     }
                 }
-                .labelsHidden()
-                .frame(maxWidth: 122)
+                .disabled(isLocked)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 11)

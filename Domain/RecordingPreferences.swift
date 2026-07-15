@@ -106,6 +106,11 @@ struct AvailableMicrophone: Identifiable, Equatable, Sendable {
     let isSystemDefault: Bool
 }
 
+struct AvailableCamera: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+
 enum MicrophoneFallback: Equatable, Sendable {
     case savedDeviceMissing(savedID: String, fallbackID: String?)
 }
@@ -116,6 +121,8 @@ struct StudioDraft: Equatable {
     var capturesMicrophone: Bool
     var microphoneDeviceID: String?
     var microphoneFallback: MicrophoneFallback?
+    var capturesCamera = false
+    var cameraDeviceID: String?
     var includeCursor: Bool
     var excludeStudioRecorder: Bool
     var excludeStudioRecorderAudio: Bool
@@ -125,7 +132,8 @@ struct StudioDraft: Equatable {
 
     mutating func reconcile(
         displays: [AvailableDisplay],
-        microphones: [AvailableMicrophone]
+        microphones: [AvailableMicrophone],
+        cameras: [AvailableCamera] = []
     ) {
         let availableDisplayIDs = Set(displays.map(\.id))
         selectedDisplayIDs.formIntersection(availableDisplayIDs)
@@ -133,22 +141,29 @@ struct StudioDraft: Equatable {
             selectedDisplayIDs = [firstDisplayID]
         }
 
-        guard capturesMicrophone else { return }
-        if let microphoneDeviceID,
-           microphones.contains(where: { $0.id == microphoneDeviceID }) {
-            return
+        if capturesCamera,
+           !cameras.contains(where: { $0.id == cameraDeviceID }) {
+            cameraDeviceID = cameras.first?.id
         }
-        let missingID = microphoneDeviceID
-        let fallbackID = microphones.first(where: \.isSystemDefault)?.id ?? microphones.first?.id
-        microphoneDeviceID = fallbackID
-        if let missingID {
-            microphoneFallback = .savedDeviceMissing(savedID: missingID, fallbackID: fallbackID)
+
+        if capturesMicrophone {
+            if let microphoneDeviceID,
+               microphones.contains(where: { $0.id == microphoneDeviceID }) {
+                return
+            }
+            let missingID = microphoneDeviceID
+            let fallbackID = microphones.first(where: \.isSystemDefault)?.id ?? microphones.first?.id
+            microphoneDeviceID = fallbackID
+            if let missingID {
+                microphoneFallback = .savedDeviceMissing(savedID: missingID, fallbackID: fallbackID)
+            }
         }
     }
 
     func validationIssues(
         displays: [AvailableDisplay],
         microphones: [AvailableMicrophone],
+        cameras: [AvailableCamera] = [],
         permissions: PermissionSnapshot
     ) -> [StudioDraftValidationIssue] {
         guard !selectedDisplayIDs.isEmpty else { return [.noDisplaySelected] }
@@ -165,6 +180,13 @@ struct StudioDraft: Equatable {
                 return [.microphoneUnavailable]
             }
         }
+        if capturesCamera {
+            guard permissions.camera.isGranted else { return [.cameraPermission] }
+            guard let cameraDeviceID,
+                  cameras.contains(where: { $0.id == cameraDeviceID }) else {
+                return [.cameraUnavailable]
+            }
+        }
         guard destination.warning != .unwritable else { return [.destinationUnwritable] }
         return []
     }
@@ -174,9 +196,15 @@ struct StudioDraft: Equatable {
         createdAt: Date = Date(),
         displays: [AvailableDisplay],
         microphones: [AvailableMicrophone],
+        cameras: [AvailableCamera] = [],
         permissions: PermissionSnapshot
     ) throws -> CaptureRequest {
-        let issues = validationIssues(displays: displays, microphones: microphones, permissions: permissions)
+        let issues = validationIssues(
+            displays: displays,
+            microphones: microphones,
+            cameras: cameras,
+            permissions: permissions
+        )
         guard issues.isEmpty else { throw StudioDraftFreezeError.invalid(issues) }
 
         let displaySources = displays.compactMap { display -> DisplaySourceSnapshot? in
@@ -194,11 +222,17 @@ struct StudioDraft: Equatable {
                 MicrophoneSourceSnapshot(id: $0.id, name: $0.name)
             }
             : nil
+        let camera = capturesCamera
+            ? cameras.first(where: { $0.id == cameraDeviceID }).map {
+                CameraSourceSnapshot(id: $0.id, name: $0.name)
+            }
+            : nil
 
         return CaptureRequest(
             id: id,
             createdAt: createdAt,
             displaySources: displaySources,
+            camera: camera,
             audio: AudioCaptureSnapshot(
                 capturesSystemAudio: capturesSystemAudio,
                 capturesMicrophone: capturesMicrophone,
@@ -228,6 +262,8 @@ enum StudioDraftValidationIssue: Equatable, Sendable {
     case screenRecordingPermission
     case microphonePermission
     case microphoneUnavailable
+    case cameraPermission
+    case cameraUnavailable
     case destinationUnwritable
 }
 
@@ -244,6 +280,11 @@ struct DisplaySourceSnapshot: Codable, Equatable, Sendable {
 }
 
 struct MicrophoneSourceSnapshot: Codable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct CameraSourceSnapshot: Codable, Equatable, Sendable {
     let id: String
     let name: String
 }
@@ -295,6 +336,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     let id: UUID
     let createdAt: Date
     let displaySources: [DisplaySourceSnapshot]
+    let camera: CameraSourceSnapshot?
     let audio: AudioCaptureSnapshot
     let profile: CaptureProfileSnapshot
     let storage: StorageCaptureSnapshot
@@ -303,6 +345,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         id: UUID,
         createdAt: Date,
         displaySources: [DisplaySourceSnapshot],
+        camera: CameraSourceSnapshot? = nil,
         audio: AudioCaptureSnapshot,
         profile: CaptureProfileSnapshot,
         storage: StorageCaptureSnapshot
@@ -310,6 +353,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         self.id = id
         self.createdAt = createdAt
         self.displaySources = displaySources
+        self.camera = camera
         self.audio = audio
         self.profile = profile
         self.storage = storage
@@ -333,7 +377,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     var excludesStudioRecorderAudio: Bool { audio.excludesStudioRecorderAudio }
 
     private enum CodingKeys: String, CodingKey {
-        case id, createdAt, displaySources, audio, profile, storage
+        case id, createdAt, displaySources, camera, audio, profile, storage
         case sources, captureProfile, primaryAudioDisplayID, capturesMicrophone
         case includesCursor, excludesStudioRecorderAudio
     }
@@ -344,6 +388,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         if container.contains(.displaySources) {
             displaySources = try container.decode([DisplaySourceSnapshot].self, forKey: .displaySources)
+            camera = try container.decodeIfPresent(CameraSourceSnapshot.self, forKey: .camera)
             audio = try container.decode(AudioCaptureSnapshot.self, forKey: .audio)
             profile = try container.decode(CaptureProfileSnapshot.self, forKey: .profile)
             storage = try container.decode(StorageCaptureSnapshot.self, forKey: .storage)
@@ -351,6 +396,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         }
 
         let legacySources = try container.decodeIfPresent([RecordingSourceSnapshot].self, forKey: .sources) ?? []
+        camera = nil
         displaySources = legacySources.compactMap { source in
             guard let id = source.displayID else { return nil }
             return DisplaySourceSnapshot(
@@ -390,6 +436,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         try container.encode(id, forKey: .id)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(displaySources, forKey: .displaySources)
+        try container.encodeIfPresent(camera, forKey: .camera)
         try container.encode(audio, forKey: .audio)
         try container.encode(profile, forKey: .profile)
         try container.encode(storage, forKey: .storage)
@@ -507,7 +554,8 @@ final class PreferencesStore: ObservableObject {
 
     func makeStudioDraft(
         displays: [AvailableDisplay],
-        microphones: [AvailableMicrophone]
+        microphones: [AvailableMicrophone],
+        cameras: [AvailableCamera] = []
     ) -> StudioDraft {
         let availableDisplayIDs = Set(displays.map(\.id))
         var selectedDisplayIDs = preferences.capture.preferredDisplayIDs.intersection(availableDisplayIDs)
@@ -537,6 +585,8 @@ final class PreferencesStore: ObservableObject {
             capturesMicrophone: preferences.audio.capturesMicrophone,
             microphoneDeviceID: microphoneDeviceID,
             microphoneFallback: microphoneFallback,
+            capturesCamera: !cameras.isEmpty,
+            cameraDeviceID: cameras.first?.id,
             includeCursor: preferences.capture.includeCursor,
             excludeStudioRecorder: preferences.capture.excludeStudioRecorder,
             excludeStudioRecorderAudio: preferences.audio.excludeStudioRecorderAudio,

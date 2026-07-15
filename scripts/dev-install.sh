@@ -49,4 +49,4 @@ mv "$STAGING_DIR/$DEV_NAME.app" "$DESTINATION"
 open "$DESTINATION"
 
 echo "Installed and launched: $DESTINATION"
-echo "Grant Screen Recording and Microphone access for $DEV_NAME on first launch."
+echo "Grant Screen Recording, Microphone, and Camera access for $DEV_NAME on first launch."

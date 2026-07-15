@@ -44,7 +44,7 @@ struct ProjectDetailView: View {
                                 RoundedRectangle(cornerRadius: 12)
                                     .stroke(.primary.opacity(0.10), lineWidth: 0.5)
                             }
-                            .accessibilityLabel("Recorded screen track preview")
+                            .accessibilityLabel(selectedTrack?.kind == .camera ? "Recorded camera track preview" : "Recorded screen track preview")
 
                         shareActions(for: selectedTrackURL)
                     }
@@ -283,6 +283,9 @@ struct ProjectDetailView: View {
     }
 
     private func trackTitle(_ track: RecordingTrackDescriptor) -> String {
+        if track.kind == .camera {
+            return "Camera track"
+        }
         guard let displayID = track.displayID else { return "Screen track" }
         return project.sources.first(where: { $0.displayID == displayID })?.name ?? "Display \(displayID)"
     }

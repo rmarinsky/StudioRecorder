@@ -5,15 +5,9 @@ import CoreImage
 import Foundation
 import SwiftUI
 
-struct AvailableCamera: Identifiable, Equatable {
-    let id: String
-    let name: String
-}
-
 @MainActor
 final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var screenImage: NSImage?
-    @Published private(set) var cameras: [AvailableCamera] = []
     @Published private(set) var selectedCameraID: String?
     @Published private(set) var cameraSession: AVCaptureSession?
     @Published private(set) var screenPreviewError: String?
@@ -26,23 +20,6 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     private var screenStream: SCStream?
     private var previewedDisplayID: UInt32?
     private var cameraInput: AVCaptureDeviceInput?
-
-    override init() {
-        super.init()
-        refreshCameras()
-    }
-
-    func refreshCameras() {
-        let devices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external],
-            mediaType: .video,
-            position: .unspecified
-        ).devices
-        cameras = devices.map { AvailableCamera(id: $0.uniqueID, name: $0.localizedName) }
-        if selectedCameraID == nil || !cameras.contains(where: { $0.id == selectedCameraID }) {
-            selectedCameraID = cameras.first?.id
-        }
-    }
 
     func startScreenPreview(for displayID: UInt32) async {
         guard previewedDisplayID != displayID || screenStream == nil else { return }
@@ -100,17 +77,19 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     }
 
     func startCameraPreview() {
-        refreshCameras()
         configureCameraPreview()
     }
 
-    func stopCameraPreview() {
+    func stopCameraPreview() async {
         let session = cameraSession
         cameraSession = nil
         cameraInput = nil
         guard let session else { return }
-        cameraQueue.async {
-            session.stopRunning()
+        await withCheckedContinuation { continuation in
+            cameraQueue.async {
+                session.stopRunning()
+                continuation.resume()
+            }
         }
     }
 

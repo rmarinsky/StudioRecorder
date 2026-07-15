@@ -31,7 +31,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Interrupted-project detection | implemented from `stoppedAt == nil` | per-track recovery report | segment repair tooling |
 | Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
 | Program compositor | not implemented | no working control shown | 1080p program output |
-| Camera isolation | not implemented | `Next slice` only where useful | raw camera track and layout |
+| Camera isolation | implemented | optional permission-aware camera source | fragmented raw camera track; layout remains next |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
 | Streaming | not implemented | absent from MVP UI | reconsider only after recorder/editor adoption |
@@ -77,7 +77,7 @@ flowchart LR
 - **Studio Draft** — mutable setup for the next session. It may be abandoned without creating files.
 - **Capture Request** — validated, immutable snapshot used to create the project and streams.
 - **Session** — runtime period from accepted Capture Request until all outputs finalize or interruption is recorded.
-- **Source** — discoverable display, microphone, system-audio feed, or future camera.
+- **Source** — discoverable display, microphone, system-audio feed, or camera.
 - **Track** — file-backed media output associated with one or more sources.
 - **Capture Contract** — resolution policy, frame rate, codec policy, cursor/app exclusion, audio policy, and destination.
 - **Project Status** — derived lifecycle: `recording`, `finalizing`, `finalized`, `needsRecovery`, or `unreadable`.
@@ -274,7 +274,7 @@ Use UserDefaults for scalar preferences. Persist a selected destination as a boo
 - `Check Again` performs a fresh query;
 - `Browse Existing Projects` remains available.
 
-Camera is optional and marked `Next slice`; it never blocks Record in the current product. Microphone denial never blocks a screen-only draft.
+Camera is optional and permission-aware. When enabled, its selected device is frozen into the Capture Request and recorded as an independent fragmented movie. A user can disable it for only the current draft. Microphone denial never blocks a screen-only draft.
 
 **Exit:** when required permissions are valid, return to the intended route and refresh sources. No fixed timer and no indefinite “Checking…”.
 

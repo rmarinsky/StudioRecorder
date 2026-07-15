@@ -6,7 +6,7 @@ The current UI mixes navigation, capture configuration, layout concepts, and rec
 
 - **Project:** a recoverable `.recordingproject` package containing manifest, journal, raw tracks, and later edits/exports.
 - **Session:** the period between starting and stopping capture.
-- **Source:** one display, microphone, system-audio feed, or future camera track.
+- **Source:** one display, microphone, system-audio feed, or camera track.
 - **Layout:** non-destructive composition instructions; it never changes raw tracks.
 - **Export:** a derived output created from project media and edits.
 - **Recovery:** a project state, not a permanent workspace.
@@ -51,7 +51,7 @@ Purpose: explain why capture cannot start and provide the exact repair action.
 
 - Screen Recording: required.
 - Microphone: required by the current capture contract.
-- Camera: optional and labeled as the next slice until implemented.
+- Camera: optional, permission-aware, previewed live, and written as an independent recoverable raw track.
 - Recheck permissions automatically when the app becomes active.
 - Never leave the main screen stuck on “Checking capture access…” without a route forward.
 
@@ -122,7 +122,7 @@ Purpose: show exactly what survived.
 | 1080p-adaptive, 30 fps profile | Implemented | Compact output contract in inspector |
 | Project package + journal | Implemented | Project-centric UX and finalizing status |
 | Interrupted-project discovery | Implemented | Contextual Recovery flow |
-| Camera isolation | Not implemented | `Next slice`, disabled in capture prototype |
+| Camera isolation | Implemented | Selected device freezes into the Capture Request and writes `raw-tracks/camera.mov` |
 | Program compositor | Not implemented | Target-state preview/editor only |
 | Transcript editing | Not implemented | Target-state Editor only |
 | RTMPS streaming | Not implemented | Excluded from capture MVP navigation |

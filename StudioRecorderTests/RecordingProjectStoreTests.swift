@@ -74,7 +74,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: manifestURL), data)
     }
 
-    func testProjectCreationPersistsTheFrozenRequestAtItsResolvedDestination() throws {
+    func testProjectCreationPersistsTheFrozenRequestAtItsResolvedDestination() async throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }
         let request = CaptureRequest(
@@ -83,6 +83,7 @@ final class RecordingProjectStoreTests: XCTestCase {
             displaySources: [
                 DisplaySourceSnapshot(id: 9, name: "Studio Display", pixelWidth: 2_560, pixelHeight: 1_440, metadataState: .known),
             ],
+            camera: CameraSourceSnapshot(id: "camera-9", name: "FaceTime HD Camera"),
             audio: AudioCaptureSnapshot(
                 capturesSystemAudio: false,
                 capturesMicrophone: true,
@@ -104,7 +105,8 @@ final class RecordingProjectStoreTests: XCTestCase {
             )
         )
 
-        let project = try RecordingProjectStore().createProject(request: request)
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
         let manifest = try decodeManifest(at: project.rootURL)
 
         XCTAssertEqual(project.rootURL.deletingLastPathComponent(), destination)
@@ -114,6 +116,25 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureRequest?.audio.capturesSystemAudio, false)
         XCTAssertEqual(manifest.captureRequest?.audio.excludesStudioRecorderAudio, false)
         XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "bookmark-9")
+        XCTAssertEqual(manifest.tracks?.map(\.kind), [.screen, .camera])
+        XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-9.mov", "raw-tracks/camera.mov"])
+        XCTAssertEqual(
+            store.rawTrackURL(for: "camera", in: project)?.path,
+            project.rootURL.appending(path: "raw-tracks/camera.mov").path
+        )
+
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)))
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: "camera", in: project)))
+        try store.markStarted(displayID: 9, in: project)
+        try store.markStarted(trackID: project.trackID(for: .camera), in: project)
+        try store.markFinished(displayID: 9, in: project)
+        try store.markFinished(trackID: project.trackID(for: .camera), in: project)
+        try store.close(project)
+
+        let snapshots = await store.discoverProjects(in: [destination])
+        let snapshot = try XCTUnwrap(snapshots.single)
+        XCTAssertEqual(snapshot.lifecycle, .finalized)
+        XCTAssertEqual(snapshot.recoveryReport.tracks.map(\.state), [.finalized, .finalized])
     }
 
     func testDiscoveryOrdersProjectsNewestFirstDeterministically() async throws {

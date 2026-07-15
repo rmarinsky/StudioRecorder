@@ -7,6 +7,7 @@ import Foundation
 enum CapturePermission: Equatable {
     case screenRecording
     case microphone
+    case camera
 }
 
 enum PermissionAccessState: Equatable {
@@ -23,12 +24,24 @@ enum PermissionAccessState: Equatable {
 struct PermissionSnapshot: Equatable {
     var screenRecording: PermissionAccessState
     var microphone: PermissionAccessState
+    var camera: PermissionAccessState
 
-    static let checking = PermissionSnapshot(screenRecording: .checking, microphone: .checking)
+    init(
+        screenRecording: PermissionAccessState,
+        microphone: PermissionAccessState,
+        camera: PermissionAccessState = .granted
+    ) {
+        self.screenRecording = screenRecording
+        self.microphone = microphone
+        self.camera = camera
+    }
 
-    func requiredPermission(capturesMicrophone: Bool) -> CapturePermission? {
+    static let checking = PermissionSnapshot(screenRecording: .checking, microphone: .checking, camera: .checking)
+
+    func requiredPermission(capturesMicrophone: Bool, capturesCamera: Bool = false) -> CapturePermission? {
         if !screenRecording.isGranted { return .screenRecording }
         if capturesMicrophone, !microphone.isGranted { return .microphone }
+        if capturesCamera, !camera.isGranted { return .camera }
         return nil
     }
 }
@@ -39,12 +52,16 @@ final class PermissionCenter {
     typealias ScreenRequest = () -> Bool
     typealias MicrophoneStatus = () -> AVAuthorizationStatus
     typealias MicrophoneRequest = () async -> Bool
+    typealias CameraStatus = () -> AVAuthorizationStatus
+    typealias CameraRequest = () async -> Bool
     typealias OpenURL = (URL) -> Void
 
     private let screenPreflight: ScreenPreflight
     private let screenRequest: ScreenRequest
     private let microphoneStatus: MicrophoneStatus
     private let microphoneRequest: MicrophoneRequest
+    private let cameraStatus: CameraStatus
+    private let cameraRequest: CameraRequest
     private let openURL: OpenURL
     private var screenGrantAcceptedInCurrentProcess = false
 
@@ -54,6 +71,8 @@ final class PermissionCenter {
             screenRequest: { CGRequestScreenCaptureAccess() },
             microphoneStatus: { AVCaptureDevice.authorizationStatus(for: .audio) },
             microphoneRequest: { await AVCaptureDevice.requestAccess(for: .audio) },
+            cameraStatus: { AVCaptureDevice.authorizationStatus(for: .video) },
+            cameraRequest: { await AVCaptureDevice.requestAccess(for: .video) },
             openURL: { NSWorkspace.shared.open($0) }
         )
     }
@@ -63,19 +82,24 @@ final class PermissionCenter {
         screenRequest: @escaping ScreenRequest,
         microphoneStatus: @escaping MicrophoneStatus,
         microphoneRequest: @escaping MicrophoneRequest,
+        cameraStatus: @escaping CameraStatus = { .authorized },
+        cameraRequest: @escaping CameraRequest = { true },
         openURL: @escaping OpenURL
     ) {
         self.screenPreflight = screenPreflight
         self.screenRequest = screenRequest
         self.microphoneStatus = microphoneStatus
         self.microphoneRequest = microphoneRequest
+        self.cameraStatus = cameraStatus
+        self.cameraRequest = cameraRequest
         self.openURL = openURL
     }
 
     func refresh() async -> PermissionSnapshot {
         PermissionSnapshot(
             screenRecording: screenAccessState(),
-            microphone: microphoneAccessState()
+            microphone: microphoneAccessState(),
+            camera: cameraAccessState()
         )
     }
 
@@ -86,6 +110,9 @@ final class PermissionCenter {
         case .microphone:
             guard microphoneAccessState() == .notDetermined else { return }
             _ = await microphoneRequest()
+        case .camera:
+            guard cameraAccessState() == .notDetermined else { return }
+            _ = await cameraRequest()
         }
     }
 
@@ -96,6 +123,8 @@ final class PermissionCenter {
             pane = "Privacy_ScreenCapture"
         case .microphone:
             pane = "Privacy_Microphone"
+        case .camera:
+            pane = "Privacy_Camera"
         }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else {
             return
@@ -109,12 +138,20 @@ final class PermissionCenter {
     }
 
     private func microphoneAccessState() -> PermissionAccessState {
-        switch microphoneStatus() {
+        accessState(for: microphoneStatus(), restrictedMessage: "Microphone access is restricted.")
+    }
+
+    private func cameraAccessState() -> PermissionAccessState {
+        accessState(for: cameraStatus(), restrictedMessage: "Camera access is restricted.")
+    }
+
+    private func accessState(for status: AVAuthorizationStatus, restrictedMessage: String) -> PermissionAccessState {
+        switch status {
         case .notDetermined: return .notDetermined
         case .denied: return .denied
         case .authorized: return .granted
-        case .restricted: return .unavailable("Microphone access is restricted.")
-        @unknown default: return .unavailable("Microphone permission status is unavailable.")
+        case .restricted: return .unavailable(restrictedMessage)
+        @unknown default: return .unavailable("Capture permission status is unavailable.")
         }
     }
 }
@@ -140,12 +177,15 @@ enum AppIntent: Equatable {
     case toggleRecording
     case setSelectedDisplayIDs(Set<UInt32>)
     case setCapturesMicrophone(Bool)
+    case setCapturesCamera(Bool)
+    case setDraftCameraDeviceID(String?)
     case setDraftCapturesSystemAudio(Bool)
     case setDraftMicrophoneDeviceID(String?)
     case setDraftIncludeCursor(Bool)
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
     case recordWithoutMicrophone
+    case recordWithoutCamera
     case changePreference(PreferenceChange)
     case setProjectDestination(URL)
 }
@@ -172,6 +212,7 @@ enum AppIntentResult: Equatable {
     case displaySelectionChanged
     case microphoneCaptureChanged
     case microphoneDisabledForDraft
+    case cameraDisabledForDraft
     case draftChanged
     case preferenceChanged
     case preferenceChangeFailed(String)
@@ -189,11 +230,13 @@ struct StudioRecorderSnapshot: Equatable {
     var captureState: RecordingState = .preparing
     var availableDisplays: [AvailableDisplay] = []
     var availableMicrophones: [AvailableMicrophone] = []
+    var availableCameras: [AvailableCamera] = []
     var projects: [RecordingProjectSnapshot] = []
     var interruptedProjects: [RecordingProjectSnapshot] = []
     var selectedDisplayIDs: Set<UInt32> = []
     var permissionSnapshot: PermissionSnapshot = .checking
     var capturesMicrophone = true
+    var capturesCamera = false
     var studioDraft: StudioDraft?
     var activeCaptureRequest: CaptureRequest?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
@@ -207,7 +250,7 @@ struct StudioRecorderSnapshot: Equatable {
         }
     }
     var requiredCapturePermission: CapturePermission? {
-        permissionSnapshot.requiredPermission(capturesMicrophone: capturesMicrophone)
+        permissionSnapshot.requiredPermission(capturesMicrophone: capturesMicrophone, capturesCamera: capturesCamera)
     }
     var showsCaptureRepair: Bool {
         guard requiredCapturePermission != nil else { return false }
@@ -217,6 +260,7 @@ struct StudioRecorderSnapshot: Equatable {
         studioDraft?.validationIssues(
             displays: availableDisplays,
             microphones: availableMicrophones,
+            cameras: availableCameras,
             permissions: permissionSnapshot
         ) ?? [.noDisplaySelected]
     }
@@ -243,6 +287,7 @@ enum PermissionRepairAction: Equatable {
     case requestAccess
     case openSystemSettings
     case recordWithoutMicrophone
+    case recordWithoutCamera
     case checkAgain
     case browseProjects
 }
@@ -255,6 +300,7 @@ struct PermissionRepairPresentation: Equatable {
     let detail: String
     let screenStatusLabel: String
     let microphoneStatusLabel: String
+    let cameraStatusLabel: String
     let showsLoadingSkeleton: Bool
     let actions: [PermissionRepairAction]
 }
@@ -265,18 +311,23 @@ extension StudioRecorderSnapshot {
         let state: PermissionAccessState = switch permission {
         case .screenRecording: permissionSnapshot.screenRecording
         case .microphone: permissionSnapshot.microphone
+        case .camera: permissionSnapshot.camera
         }
         let title: String = switch (permission, state) {
         case (.screenRecording, .grantedButRelaunchRequired): "Relaunch Studio Recorder"
         case (.screenRecording, _): "Allow Screen Recording"
         case (.microphone, .notDetermined): "Allow Microphone"
         case (.microphone, _): "Microphone access needs attention"
+        case (.camera, .notDetermined): "Allow Camera"
+        case (.camera, _): "Allow Camera"
         }
         let explanation: String = switch permission {
         case .screenRecording:
             "Screen Recording is required to discover and record selected displays. Existing projects remain available."
         case .microphone:
             "The current Studio Draft includes microphone capture. Repair access or record this draft without a microphone."
+        case .camera:
+            "The current Studio Draft includes an independent camera track. Repair access or record this draft without a camera."
         }
 
         var actions: [PermissionRepairAction] = []
@@ -292,6 +343,9 @@ extension StudioRecorderSnapshot {
             if permission == .microphone {
                 actions.append(.recordWithoutMicrophone)
             }
+            if permission == .camera {
+                actions.append(.recordWithoutCamera)
+            }
             actions.append(contentsOf: [.checkAgain, .browseProjects])
         }
 
@@ -303,6 +357,7 @@ extension StudioRecorderSnapshot {
             detail: state.repairDetail,
             screenStatusLabel: permissionSnapshot.screenRecording.statusLabel,
             microphoneStatusLabel: permissionSnapshot.microphone.statusLabel,
+            cameraStatusLabel: permissionSnapshot.camera.statusLabel,
             showsLoadingSkeleton: state == .checking,
             actions: actions
         )
@@ -372,7 +427,9 @@ final class StudioRecorderModel: ObservableObject {
         guard let coordinator else { return }
         coordinator.configureProjectDestination(preferencesStore.destination.url)
         coordinator.refreshMicrophones()
+        coordinator.refreshCameras()
         snapshot.availableMicrophones = coordinator.availableMicrophones
+        snapshot.availableCameras = coordinator.availableCameras
 
         guard snapshot.permissionSnapshot.screenRecording.isGranted else {
             await coordinator.refreshProjects()
@@ -470,6 +527,20 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft?.capturesMicrophone = capturesMicrophone
             result = .microphoneCaptureChanged
 
+        case .setCapturesCamera(let capturesCamera):
+            guard canEditDraft else { return .ignored }
+            snapshot.capturesCamera = capturesCamera
+            snapshot.studioDraft?.capturesCamera = capturesCamera
+            result = .draftChanged
+
+        case .setDraftCameraDeviceID(let deviceID):
+            guard canEditDraft,
+                  deviceID == nil || snapshot.availableCameras.contains(where: { $0.id == deviceID }) else {
+                return .ignored
+            }
+            snapshot.studioDraft?.cameraDeviceID = deviceID
+            result = .draftChanged
+
         case .setDraftCapturesSystemAudio(let captures):
             guard canEditDraft else { return .ignored }
             snapshot.studioDraft?.capturesSystemAudio = captures
@@ -510,6 +581,12 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft?.capturesMicrophone = false
             result = .microphoneDisabledForDraft
 
+        case .recordWithoutCamera:
+            guard canEditDraft, snapshot.capturesCamera else { return .ignored }
+            snapshot.capturesCamera = false
+            snapshot.studioDraft?.capturesCamera = false
+            result = .cameraDisabledForDraft
+
         case .changePreference(let change):
             let isAppearanceChange: Bool = if case .appearance = change { true } else { false }
             guard isAppearanceChange || !snapshot.areRecordingSettingsLocked else { return .ignored }
@@ -548,13 +625,16 @@ final class StudioRecorderModel: ObservableObject {
                 guard !snapshot.selectedDisplayIDs.isEmpty else { return .ignored }
                 var draft = snapshot.studioDraft ?? preferencesStore.makeStudioDraft(
                     displays: snapshot.availableDisplays,
-                    microphones: snapshot.availableMicrophones
+                    microphones: snapshot.availableMicrophones,
+                    cameras: snapshot.availableCameras
                 )
                 draft.selectedDisplayIDs = snapshot.selectedDisplayIDs
                 draft.capturesMicrophone = snapshot.capturesMicrophone
+                draft.capturesCamera = snapshot.capturesCamera
                 guard let request = try? draft.freeze(
                     displays: snapshot.availableDisplays,
                     microphones: snapshot.availableMicrophones,
+                    cameras: snapshot.availableCameras,
                     permissions: snapshot.permissionSnapshot
                 ) else {
                     return .ignored
@@ -587,11 +667,13 @@ final class StudioRecorderModel: ObservableObject {
     private func createFreshStudioDraft() {
         let draft = preferencesStore.makeStudioDraft(
             displays: snapshot.availableDisplays,
-            microphones: snapshot.availableMicrophones
+            microphones: snapshot.availableMicrophones,
+            cameras: snapshot.availableCameras
         )
         snapshot.studioDraft = draft
         snapshot.selectedDisplayIDs = draft.selectedDisplayIDs
         snapshot.capturesMicrophone = draft.capturesMicrophone
+        snapshot.capturesCamera = draft.capturesCamera
     }
 
     private func observeCoordinator() {
@@ -621,7 +703,7 @@ final class StudioRecorderModel: ObservableObject {
             }
 
         case .ignored, .routeChanged, .projectOpened, .projectClosed, .projectSearchRequested, .displaySelectionChanged,
-             .microphoneCaptureChanged, .microphoneDisabledForDraft, .draftChanged:
+             .microphoneCaptureChanged, .microphoneDisabledForDraft, .cameraDisabledForDraft, .draftChanged:
             break
         case .preferenceChanged, .preferenceChangeFailed:
             break
@@ -634,16 +716,19 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.applyCaptureState(coordinator.state)
         snapshot.availableDisplays = coordinator.availableDisplays
         snapshot.availableMicrophones = coordinator.availableMicrophones
+        snapshot.availableCameras = coordinator.availableCameras
         snapshot.projects = coordinator.projects
         snapshot.interruptedProjects = coordinator.interruptedProjects
 
         if snapshot.studioDraft != nil {
             snapshot.studioDraft?.reconcile(
                 displays: coordinator.availableDisplays,
-                microphones: coordinator.availableMicrophones
+                microphones: coordinator.availableMicrophones,
+                cameras: coordinator.availableCameras
             )
             snapshot.selectedDisplayIDs = snapshot.studioDraft?.selectedDisplayIDs ?? []
             snapshot.capturesMicrophone = snapshot.studioDraft?.capturesMicrophone ?? false
+            snapshot.capturesCamera = snapshot.studioDraft?.capturesCamera ?? false
         } else {
             let availableDisplayIDs = Set(coordinator.availableDisplays.map(\.id))
             snapshot.selectedDisplayIDs.formIntersection(availableDisplayIDs)

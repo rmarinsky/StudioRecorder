@@ -18,6 +18,7 @@
 		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
 		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
+		BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */; };
 		BD9ED984C0ABBF99FE7490BC /* RecordingPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
 		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
@@ -39,6 +40,7 @@
 
 /* Begin PBXFileReference section */
 		027D0183284B828436F04225 /* StudioRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTrackRecorder.swift; sourceTree = "<group>"; };
 		17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneCoordinator.swift; sourceTree = "<group>"; };
 		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
 		3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlannerTests.swift; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 		BCC583B46E8F372CEE4C3BCE /* Recording */ = {
 			isa = PBXGroup;
 			children = (
+				1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */,
 				B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */,
 			);
 			path = Recording;
@@ -256,6 +259,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
 				5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */,
 				845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */,

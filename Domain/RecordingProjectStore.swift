@@ -36,6 +36,7 @@ typealias CaptureRequestSnapshot = CaptureRequest
 
 enum RecordingTrackKind: String, Codable, Equatable, Sendable {
     case screen
+    case camera
 }
 
 struct RecordingTrackDescriptor: Codable, Equatable, Sendable, Identifiable {
@@ -143,6 +144,10 @@ struct RecordingProject: Identifiable, Equatable, Sendable {
 
     func trackID(for displayID: UInt32) -> String? {
         manifest.tracks?.first(where: { $0.displayID == displayID })?.id
+    }
+
+    func trackID(for kind: RecordingTrackKind) -> String? {
+        manifest.tracks?.first(where: { $0.kind == kind })?.id
     }
 }
 
@@ -338,8 +343,13 @@ final class RecordingProjectStore {
         try fileManager.createDirectory(at: rawTracksURL, withIntermediateDirectories: true)
 
         let displays = request.displaySources.map(\.id)
-        let tracks = displays.map {
+        var tracks = displays.map {
             RecordingTrackDescriptor(id: "screen-\($0)", kind: .screen, displayID: $0, relativePath: "raw-tracks/screen-\($0).mov")
+        }
+        if request.camera != nil {
+            tracks.append(
+                RecordingTrackDescriptor(id: "camera", kind: .camera, displayID: nil, relativePath: "raw-tracks/camera.mov")
+            )
         }
         let manifest = RecordingProjectManifest(
             schemaVersion: 2,
@@ -364,15 +374,27 @@ final class RecordingProjectStore {
     }
 
     func markStarted(displayID: UInt32, in project: RecordingProject) throws {
-        try append(.init(kind: .trackStarted, trackID: project.trackID(for: displayID)), to: project)
+        try markStarted(trackID: project.trackID(for: displayID), in: project)
     }
 
     func markFinished(displayID: UInt32, in project: RecordingProject) throws {
-        try append(.init(kind: .trackFinished, trackID: project.trackID(for: displayID)), to: project)
+        try markFinished(trackID: project.trackID(for: displayID), in: project)
     }
 
     func markFailure(displayID: UInt32?, detail: String, in project: RecordingProject) throws {
         let trackID = displayID.flatMap(project.trackID(for:))
+        try markFailure(trackID: trackID, detail: detail, in: project)
+    }
+
+    func markStarted(trackID: String?, in project: RecordingProject) throws {
+        try append(.init(kind: .trackStarted, trackID: trackID), to: project)
+    }
+
+    func markFinished(trackID: String?, in project: RecordingProject) throws {
+        try append(.init(kind: .trackFinished, trackID: trackID), to: project)
+    }
+
+    func markFailure(trackID: String?, detail: String, in project: RecordingProject) throws {
         try append(.init(kind: .trackFailed, trackID: trackID, detail: .init(message: detail)), to: project)
     }
 
@@ -389,8 +411,16 @@ final class RecordingProjectStore {
     }
 
     func rawTrackURL(for displayID: UInt32, in project: RecordingProject) -> URL? {
+        rawTrackURL(for: project.trackID(for: displayID), in: project)
+    }
+
+    func rawTrackURL(for trackID: String, in project: RecordingProject) -> URL? {
+        rawTrackURL(for: Optional(trackID), in: project)
+    }
+
+    private func rawTrackURL(for trackID: String?, in project: RecordingProject) -> URL? {
         project.manifest.tracks?
-            .first(where: { $0.displayID == displayID })
+            .first(where: { $0.id == trackID })
             .map { project.rootURL.appending(path: $0.relativePath) }
     }
 

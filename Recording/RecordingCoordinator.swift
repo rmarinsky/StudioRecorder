@@ -33,6 +33,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var state: RecordingState = .preparing
     @Published private(set) var availableDisplays: [AvailableDisplay] = []
     @Published private(set) var availableMicrophones: [AvailableMicrophone] = []
+    @Published private(set) var availableCameras: [AvailableCamera] = []
     @Published private(set) var activeProject: RecordingProject?
     @Published private(set) var activeCaptureRequest: CaptureRequest?
     @Published private(set) var recordedDuration: TimeInterval = 0
@@ -47,6 +48,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     private let projectStore = RecordingProjectStore()
     private var captures: [UInt32: Capture] = [:]
+    private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
     private var startedOutputIDs: Set<ObjectIdentifier> = []
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
@@ -91,6 +93,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 isSystemDefault: $0.uniqueID == defaultID
             )
         }
+    }
+
+    func refreshCameras() {
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external],
+            mediaType: .video,
+            position: .unspecified
+        ).devices
+        availableCameras = devices.map { AvailableCamera(id: $0.uniqueID, name: $0.localizedName) }
     }
 
     func configureProjectDestination(_ url: URL) {
@@ -152,6 +163,29 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             for capture in captures.values {
                 try await capture.stream.startCapture()
                 startedOutputIDs.insert(ObjectIdentifier(capture.output))
+            }
+
+            if let camera = request.camera {
+                guard let outputURL = projectStore.rawTrackURL(for: "camera", in: project) else {
+                    throw CameraTrackRecorderError.outputUnavailable
+                }
+                let recorder = CameraTrackRecorder { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let activeProject {
+                            try? projectStore.markFailure(
+                                trackID: activeProject.trackID(for: .camera),
+                                detail: message,
+                                in: activeProject
+                            )
+                        }
+                        terminalFailure = terminalFailure ?? message
+                        await beginInterruptedTeardown(reason: message)
+                    }
+                }
+                cameraRecorder = recorder
+                try await recorder.start(deviceID: camera.id, outputURL: outputURL)
+                try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
             }
 
             recordedDuration = 0
@@ -249,6 +283,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 errors.append(error.localizedDescription)
             }
         }
+        if let cameraRecorder {
+            do {
+                try await cameraRecorder.stop()
+                if let activeProject {
+                    try projectStore.markFinished(trackID: activeProject.trackID(for: .camera), in: activeProject)
+                }
+            } catch {
+                errors.append(error.localizedDescription)
+                if let activeProject {
+                    try? projectStore.markFailure(
+                        trackID: activeProject.trackID(for: .camera),
+                        detail: error.localizedDescription,
+                        in: activeProject
+                    )
+                }
+            }
+        }
         if await waitForPendingOutputs() {
             errors.append("Timed out while finalizing one or more recording outputs.")
         }
@@ -311,6 +362,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     private func clearCaptureState() {
         captures.removeAll()
+        cameraRecorder = nil
         startedOutputIDs.removeAll()
         pendingOutputIDs.removeAll()
         activeProject = nil
