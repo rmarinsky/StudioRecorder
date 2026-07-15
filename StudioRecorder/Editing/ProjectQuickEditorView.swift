@@ -82,7 +82,7 @@ struct ProjectQuickEditorView: View {
             }
             .buttonStyle(.bordered)
 
-            audioEditor
+            audioEditor(timeline)
             zoomEditor(timeline)
             privacyEditor(timeline)
 
@@ -133,9 +133,27 @@ struct ProjectQuickEditorView: View {
         }
     }
 
-    private var audioEditor: some View {
+    private func audioEditor(_ timeline: ProjectEditTimeline) -> some View {
         DisclosureGroup(isExpanded: $audioExpanded) {
             VStack(alignment: .leading, spacing: 10) {
+                if session.isLoadingAudioWaveform {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Analyzing audio…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let waveform = session.audioWaveform {
+                    ProjectAudioWaveformView(
+                        waveform: waveform,
+                        sourcePlayhead: timeline.sourceTime(at: session.playhead)
+                    )
+                } else if let waveformError = session.audioWaveformError {
+                    Text(waveformError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack(spacing: 10) {
                     Button {
                         var next = session.audioAdjustment
@@ -360,6 +378,83 @@ struct ProjectQuickEditorView: View {
     private func format(_ seconds: TimeInterval) -> String {
         let total = max(Int(seconds.rounded()), 0)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+private struct ProjectAudioWaveformView: View {
+    let waveform: ProjectAudioWaveform
+    let sourcePlayhead: TimeInterval?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Canvas { context, size in
+                let count = max(waveform.buckets.count, 1)
+                let slotWidth = size.width / CGFloat(count)
+                let centerY = size.height / 2
+
+                context.fill(
+                    Path(CGRect(x: 0, y: centerY, width: size.width, height: 1)),
+                    with: .color(.secondary.opacity(0.18))
+                )
+
+                for (index, bucket) in waveform.buckets.enumerated() {
+                    let x = CGFloat(index) * slotWidth
+                    let peakHeight = max(CGFloat(bucket.peak) * size.height, 1)
+                    let rmsHeight = max(CGFloat(bucket.rms) * size.height, 1)
+                    let peakRect = CGRect(
+                        x: x,
+                        y: centerY - peakHeight / 2,
+                        width: max(slotWidth - 1, 1),
+                        height: peakHeight
+                    )
+                    let rmsRect = CGRect(
+                        x: x,
+                        y: centerY - rmsHeight / 2,
+                        width: max(slotWidth - 1, 1),
+                        height: rmsHeight
+                    )
+                    let peakColor: Color = bucket.isClipped ? .orange : .accentColor.opacity(0.42)
+                    context.fill(Path(peakRect), with: .color(peakColor))
+                    context.fill(Path(rmsRect), with: .color(bucket.isClipped ? .red : .accentColor))
+                }
+
+                if let sourcePlayhead, waveform.duration > 0 {
+                    let progress = min(max(sourcePlayhead / waveform.duration, 0), 1)
+                    let x = size.width * progress
+                    context.fill(
+                        Path(CGRect(x: x, y: 0, width: 2, height: size.height)),
+                        with: .color(.primary.opacity(0.9))
+                    )
+                }
+            }
+            .frame(height: 52)
+            .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+            .accessibilityElement()
+            .accessibilityLabel(accessibilityLabel)
+
+            HStack(spacing: 6) {
+                Text("Source-time overview")
+                Spacer()
+                if waveform.clippedRegionCount > 0 {
+                    Label(
+                        "\(waveform.clippedRegionCount) clipped region\(waveform.clippedRegionCount == 1 ? "" : "s")",
+                        systemImage: "exclamationmark.waveform"
+                    )
+                    .foregroundStyle(.orange)
+                } else {
+                    Label("No clipping detected", systemImage: "checkmark.circle")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        if waveform.clippedRegionCount == 0 {
+            return "Audio waveform. No clipping detected."
+        }
+        return "Audio waveform. \(waveform.clippedRegionCount) clipped regions detected."
     }
 }
 

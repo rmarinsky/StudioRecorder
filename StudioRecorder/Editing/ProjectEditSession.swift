@@ -21,6 +21,9 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
     @Published private(set) var sceneTimeline: StudioSceneTimeline?
     @Published private(set) var audioAdjustment = ProjectAudioAdjustment.unchanged
+    @Published private(set) var audioWaveform: ProjectAudioWaveform?
+    @Published private(set) var isLoadingAudioWaveform = false
+    @Published private(set) var audioWaveformError: String?
     @Published var selectedSegmentID: UUID?
     @Published var selectedPrivacyOverlayID: UUID?
     @Published var selectedManualZoomTransitionIndex: Int?
@@ -31,6 +34,7 @@ final class ProjectEditSession: ObservableObject {
     private let store: ProjectEditStore
     private let renderer: ProjectEditRenderer
     private let programRenderer: ProjectProgramRenderer
+    private let audioWaveformAnalyzer: ProjectAudioWaveformAnalyzer
     private var document: ProjectEditDocument?
     private var projectRootURL: URL?
     private var sourceURL: URL?
@@ -39,17 +43,20 @@ final class ProjectEditSession: ObservableObject {
     private var redoStack: [ProjectEditTimeline] = []
     private var documentSaveTask: Task<Void, Never>?
     private var presentationRenderTask: Task<Void, Never>?
+    private var audioWaveformTask: Task<Void, Never>?
     private var documentRevision = 0
     private var loadID = UUID()
 
     init(
         store: ProjectEditStore = ProjectEditStore(),
         renderer: ProjectEditRenderer = ProjectEditRenderer(),
-        programRenderer: ProjectProgramRenderer = ProjectProgramRenderer()
+        programRenderer: ProjectProgramRenderer = ProjectProgramRenderer(),
+        audioWaveformAnalyzer: ProjectAudioWaveformAnalyzer = ProjectAudioWaveformAnalyzer()
     ) {
         self.store = store
         self.renderer = renderer
         self.programRenderer = programRenderer
+        self.audioWaveformAnalyzer = audioWaveformAnalyzer
     }
 
     var canUndo: Bool { !undoStack.isEmpty && !isWorking }
@@ -92,6 +99,8 @@ final class ProjectEditSession: ObservableObject {
         documentSaveTask = nil
         presentationRenderTask?.cancel()
         presentationRenderTask = nil
+        audioWaveformTask?.cancel()
+        audioWaveformTask = nil
         defer {
             if loadID == requestID { isLoading = false }
         }
@@ -112,6 +121,9 @@ final class ProjectEditSession: ObservableObject {
         privacyOverlays = []
         sceneTimeline = nil
         audioAdjustment = .unchanged
+        audioWaveform = nil
+        isLoadingAudioWaveform = false
+        audioWaveformError = nil
         document = nil
         selectedSegmentID = nil
         selectedPrivacyOverlayID = nil
@@ -167,6 +179,11 @@ final class ProjectEditSession: ObservableObject {
                 .manualZoomMarkers(sourceDuration: editTimeline.sourceDuration)
                 .first?.transitionIndex
             player.replaceCurrentItem(with: item)
+            loadAudioWaveform(
+                from: programSources?.audioURL ?? sourceURL,
+                projectRootURL: projectRootURL,
+                requestID: requestID
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -407,6 +424,8 @@ final class ProjectEditSession: ObservableObject {
         player.pause()
         documentSaveTask?.cancel()
         presentationRenderTask?.cancel()
+        audioWaveformTask?.cancel()
+        isLoadingAudioWaveform = false
         if let document, let projectRootURL {
             documentSaveTask = Task { [store] in
                 try? await store.save(document, in: projectRootURL)
@@ -523,6 +542,38 @@ final class ProjectEditSession: ObservableObject {
             } catch {
                 guard let self, self.loadID == operationID else { return }
                 self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func loadAudioWaveform(
+        from audioURL: URL,
+        projectRootURL: URL,
+        requestID: UUID
+    ) {
+        audioWaveformTask?.cancel()
+        audioWaveform = nil
+        audioWaveformError = nil
+        isLoadingAudioWaveform = true
+        let cacheURL = projectRootURL
+            .appending(path: "analysis", directoryHint: .isDirectory)
+            .appending(path: "audio-waveform.json")
+        audioWaveformTask = Task { [weak self, audioWaveformAnalyzer] in
+            do {
+                let waveform = try await audioWaveformAnalyzer.waveform(
+                    for: audioURL,
+                    cacheURL: cacheURL
+                )
+                try Task.checkCancellation()
+                guard let self, self.loadID == requestID else { return }
+                self.audioWaveform = waveform
+                self.isLoadingAudioWaveform = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.loadID == requestID else { return }
+                self.audioWaveformError = error.localizedDescription
+                self.isLoadingAudioWaveform = false
             }
         }
     }
