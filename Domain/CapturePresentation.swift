@@ -167,6 +167,30 @@ enum CameraBackgroundMode: String, Codable, CaseIterable, Identifiable, Sendable
     }
 }
 
+enum CameraBackgroundPerformanceProfile: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto
+    case quality
+    case performance
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "Auto"
+        case .quality: "Quality"
+        case .performance: "Performance"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: "Adapts mask detail to keep capture responsive."
+        case .quality: "Sharper edges with higher processing load."
+        case .performance: "Lower mask detail for smoother capture."
+        }
+    }
+}
+
 enum ChromaKeyColor: String, Codable, CaseIterable, Identifiable, Sendable {
     case green
     case blue
@@ -188,6 +212,11 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
     var tolerance: CGFloat
     var softness: CGFloat
     var spillSuppression: CGFloat
+    var performanceProfile: CameraBackgroundPerformanceProfile?
+
+    var resolvedPerformanceProfile: CameraBackgroundPerformanceProfile {
+        performanceProfile ?? .auto
+    }
 
     static let off = CameraBackgroundSnapshot(mode: .off)
 
@@ -196,13 +225,15 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
         keyColor: ChromaKeyColor = .green,
         tolerance: CGFloat = 0.28,
         softness: CGFloat = 0.12,
-        spillSuppression: CGFloat = 0.55
+        spillSuppression: CGFloat = 0.55,
+        performanceProfile: CameraBackgroundPerformanceProfile = .auto
     ) {
         self.mode = mode
         self.keyColor = keyColor
         self.tolerance = tolerance
         self.softness = softness
         self.spillSuppression = spillSuppression
+        self.performanceProfile = performanceProfile
     }
 
     func validated() -> CameraBackgroundSnapshot {
@@ -211,7 +242,8 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
             keyColor: keyColor,
             tolerance: min(max(tolerance, 0.02), 0.8),
             softness: min(max(softness, 0.01), 0.5),
-            spillSuppression: min(max(spillSuppression, 0), 1)
+            spillSuppression: min(max(spillSuppression, 0), 1),
+            performanceProfile: resolvedPerformanceProfile
         )
     }
 }

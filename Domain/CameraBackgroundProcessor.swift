@@ -3,6 +3,48 @@ import CoreVideo
 import Foundation
 import Vision
 
+struct CameraBackgroundProcessingPlan: Equatable, Sendable {
+    let effectiveProfile: CameraBackgroundPerformanceProfile
+    let maximumInputDimension: CGFloat
+    let minimumMaskInterval: TimeInterval
+    let usesBalancedVision: Bool
+
+    static func live(
+        profile: CameraBackgroundPerformanceProfile,
+        averageProcessingDuration: TimeInterval
+    ) -> CameraBackgroundProcessingPlan {
+        let effectiveProfile: CameraBackgroundPerformanceProfile = if profile == .auto,
+                                                                      averageProcessingDuration > 0.045 {
+            .performance
+        } else {
+            profile
+        }
+        return switch effectiveProfile {
+        case .auto:
+            CameraBackgroundProcessingPlan(
+                effectiveProfile: .auto,
+                maximumInputDimension: 384,
+                minimumMaskInterval: 1.0 / 12.0,
+                usesBalancedVision: false
+            )
+        case .quality:
+            CameraBackgroundProcessingPlan(
+                effectiveProfile: .quality,
+                maximumInputDimension: 512,
+                minimumMaskInterval: 1.0 / 15.0,
+                usesBalancedVision: true
+            )
+        case .performance:
+            CameraBackgroundProcessingPlan(
+                effectiveProfile: .performance,
+                maximumInputDimension: 256,
+                minimumMaskInterval: 1.0 / 6.0,
+                usesBalancedVision: false
+            )
+        }
+    }
+}
+
 final class CameraBackgroundProcessor: @unchecked Sendable {
     enum PersonQuality: Sendable {
         case live
@@ -16,6 +58,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
     private var cachedCube: (settings: CameraBackgroundSnapshot, data: Data)?
     private var cachedPersonMask: CIImage?
     private var cachedPersonMaskAt: TimeInterval = 0
+    private var averagePersonProcessingDuration: TimeInterval = 0
 
     init(personQuality: PersonQuality) {
         self.personQuality = personQuality
@@ -30,18 +73,28 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
         case .off:
             return image
         case .person:
-            return personForeground(from: image) ?? image
+            return personForeground(
+                from: image,
+                profile: background.resolvedPerformanceProfile
+            ) ?? image
         case .greenScreen:
             return chromaKey(image, settings: background)
         }
     }
 
-    private func personForeground(from image: CIImage) -> CIImage? {
+    private func personForeground(
+        from image: CIImage,
+        profile: CameraBackgroundPerformanceProfile
+    ) -> CIImage? {
         lock.withLock {
             let now = ProcessInfo.processInfo.systemUptime
+            let livePlan = CameraBackgroundProcessingPlan.live(
+                profile: profile,
+                averageProcessingDuration: averagePersonProcessingDuration
+            )
             if personQuality == .live,
                let cachedPersonMask,
-               now - cachedPersonMaskAt < 0.10 {
+               now - cachedPersonMaskAt < livePlan.minimumMaskInterval {
                 return blend(image, withPersonMask: cachedPersonMask)
             }
             // Continuity Camera can deliver 4K frames. Vision's live segmentation
@@ -52,7 +105,9 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                 translationX: -image.extent.minX,
                 y: -image.extent.minY
             ))
-            let maximumInputDimension: CGFloat = personQuality == .live ? 384 : 960
+            let maximumInputDimension: CGFloat = personQuality == .live
+                ? livePlan.maximumInputDimension
+                : 960
             let inputScale = min(
                 1,
                 maximumInputDimension / max(normalized.extent.width, normalized.extent.height)
@@ -61,6 +116,10 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                 scaleX: inputScale,
                 y: inputScale
             ))
+            request.qualityLevel = personQuality == .export || livePlan.usesBalancedVision
+                ? .balanced
+                : .fast
+            let processingStartedAt = ProcessInfo.processInfo.systemUptime
             do {
                 try sequenceHandler.perform([request], on: requestImage)
                 guard let observation = request.results?.first else { return nil }
@@ -77,11 +136,24 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                     .cropped(to: image.extent)
                 cachedPersonMask = mask
                 cachedPersonMaskAt = now
+                updateAverageProcessingDuration(
+                    ProcessInfo.processInfo.systemUptime - processingStartedAt
+                )
                 return blend(image, withPersonMask: mask)
             } catch {
+                updateAverageProcessingDuration(
+                    ProcessInfo.processInfo.systemUptime - processingStartedAt
+                )
                 return nil
             }
         }
+    }
+
+    private func updateAverageProcessingDuration(_ duration: TimeInterval) {
+        guard duration.isFinite, duration >= 0 else { return }
+        averagePersonProcessingDuration = averagePersonProcessingDuration == 0
+            ? duration
+            : averagePersonProcessingDuration * 0.8 + duration * 0.2
     }
 
     private func blend(_ image: CIImage, withPersonMask mask: CIImage) -> CIImage? {

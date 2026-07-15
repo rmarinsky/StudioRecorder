@@ -65,9 +65,9 @@ Build in this order:
 
 **Technical constraint.** Ecamm documents that multiple isolated video encodes can reduce source resolution and that its ISO path does not support 4K ([official preferences](https://support.ecamm.com/en/articles/3324016-ecamm-s-preferences-window)). The practical constraint is encoding/composition budget, not shape-control breadth.
 
-**Existing coverage.** Independent camera transforms/shapes, Vision person removal, chroma key, raw-camera retention, and throttled segmentation exist. `CameraBackgroundProcessor` already downscales Continuity Camera input for Vision work, and preflight warns about 4K plus background treatment.
+**Existing coverage.** Independent camera transforms/shapes, Vision person removal, chroma key, raw-camera retention, and throttled segmentation exist. Person removal now offers Auto, Quality, and Performance profiles; Auto measures segmentation cost and lowers live mask input/cadence before capture stalls, while export remains quality-first. Preflight warns about 4K plus background treatment.
 
-**Recommendation.** Add explicit Auto/Quality/Performance profiles plus a cheaper Blur mode. Auto should reduce mask cadence/preview detail before sacrificing raw capture or audio sync, and health should show when degradation occurs.
+**Recommendation.** Add a cheaper Blur mode and expose Auto's effective degradation in stream health. Continue reducing mask cadence/preview detail before sacrificing raw capture or audio sync.
 
 **Acceptance criterion.** Fanless Apple Silicon screen+camera tests meet a defined frame-time and drift budget; forced overload visibly degrades mask quality but not raw screen/camera/audio continuity; raw camera remains unchanged.
 

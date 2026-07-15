@@ -1820,6 +1820,14 @@ private struct StudioInspector: View {
                     }
                 }
                 if presentation.resolvedCameraBackground.mode == .person {
+                    Picker("Processing", selection: cameraBackgroundPerformanceBinding) {
+                        ForEach(CameraBackgroundPerformanceProfile.allCases) { profile in
+                            Text(profile.label).tag(profile)
+                        }
+                    }
+                    Text(presentation.resolvedCameraBackground.resolvedPerformanceProfile.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -1992,6 +2000,13 @@ private struct StudioInspector: View {
                 background.mode = mode
                 presentation.cameraBackground = background
             }
+        )
+    }
+
+    private var cameraBackgroundPerformanceBinding: Binding<CameraBackgroundPerformanceProfile> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.resolvedPerformanceProfile },
+            set: { profile in updateCameraBackground { $0.performanceProfile = profile } }
         )
     }
 

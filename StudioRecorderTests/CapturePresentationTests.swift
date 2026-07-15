@@ -19,6 +19,66 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(decoded.resolvedName, "Scene 1")
     }
 
+    func testLegacyCameraBackgroundDefaultsToAdaptivePerformance() throws {
+        let legacy = """
+        {
+          "mode": "person",
+          "keyColor": "green",
+          "tolerance": 0.28,
+          "softness": 0.12,
+          "spillSuppression": 0.55
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(CameraBackgroundSnapshot.self, from: legacy)
+
+        XCTAssertEqual(decoded.resolvedPerformanceProfile, .auto)
+    }
+
+    func testCameraBackgroundPerformanceProfileRoundTrips() throws {
+        let background = CameraBackgroundSnapshot(mode: .person, performanceProfile: .performance)
+
+        let decoded = try JSONDecoder().decode(
+            CameraBackgroundSnapshot.self,
+            from: JSONEncoder().encode(background)
+        )
+
+        XCTAssertEqual(decoded.resolvedPerformanceProfile, .performance)
+    }
+
+    func testAutoCameraBackgroundPlanDegradesBeforeCaptureStalls() {
+        let normal = CameraBackgroundProcessingPlan.live(
+            profile: .auto,
+            averageProcessingDuration: 0.02
+        )
+        let overloaded = CameraBackgroundProcessingPlan.live(
+            profile: .auto,
+            averageProcessingDuration: 0.08
+        )
+
+        XCTAssertEqual(normal.effectiveProfile, .auto)
+        XCTAssertEqual(normal.maximumInputDimension, 384)
+        XCTAssertEqual(overloaded.effectiveProfile, .performance)
+        XCTAssertEqual(overloaded.maximumInputDimension, 256)
+        XCTAssertGreaterThan(overloaded.minimumMaskInterval, normal.minimumMaskInterval)
+    }
+
+    func testExplicitCameraBackgroundProfilesRemainStableUnderLoad() {
+        let quality = CameraBackgroundProcessingPlan.live(
+            profile: .quality,
+            averageProcessingDuration: 0.2
+        )
+        let performance = CameraBackgroundProcessingPlan.live(
+            profile: .performance,
+            averageProcessingDuration: 0
+        )
+
+        XCTAssertEqual(quality.effectiveProfile, .quality)
+        XCTAssertEqual(quality.maximumInputDimension, 512)
+        XCTAssertEqual(performance.effectiveProfile, .performance)
+        XCTAssertEqual(performance.maximumInputDimension, 256)
+    }
+
     func testSceneNameIsBoundedAndBlankNamesResolveToTheDefault() {
         var presentation = CapturePresentationSnapshot.default
         presentation.name = String(repeating: "a", count: 100)
