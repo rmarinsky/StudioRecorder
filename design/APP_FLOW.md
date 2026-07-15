@@ -131,7 +131,7 @@ Purpose: show exactly what survived.
 | Quick edit foundation | Implemented | Versioned `edit.json`; raw tracks stay unchanged while playback/export render ordered source ranges |
 | Program compositor | Implemented on playback/export | Core Image compositor renders canvas, screen, camera shape/placement/mirroring, cuts, PNG, GIF, and MOV while raw tracks stay independent |
 | Transcript editing | Not implemented | Target-state Editor only |
-| RTMPS streaming | Not implemented | Next slice reuses the frozen scene for Record, YouTube Stream, or both |
+| RTMPS streaming | Implemented foundation | Record, YouTube Stream, or both reuse the frozen Scene; manual key stays in Keychain, while real ingest/reconnect soak remains before release readiness |
 
 ## Recommended SwiftUI implementation order
 

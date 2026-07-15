@@ -5,6 +5,10 @@ settings:
   base:
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SWIFT_VERSION: "6.0"
+packages:
+  HaishinKit:
+    url: https://github.com/HaishinKit/HaishinKit.swift
+    exactVersion: 2.2.5
 targets:
   StudioRecorder:
     type: application
@@ -26,6 +30,11 @@ targets:
         PRODUCT_NAME: Studio Recorder
         PRODUCT_MODULE_NAME: StudioRecorder
         GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: HaishinKit
+        product: HaishinKit
+      - package: HaishinKit
+        product: RTMPHaishinKit
   StudioRecorderTests:
     type: bundle.unit-test
     platform: macOS

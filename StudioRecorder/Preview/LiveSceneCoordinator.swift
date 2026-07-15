@@ -49,6 +49,10 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let cameraFrameDeliveryLock = NSLock()
     nonisolated(unsafe) private var cameraBackground = CameraBackgroundSnapshot.off
     nonisolated private let cameraBackgroundLock = NSLock()
+    nonisolated(unsafe) private var streamPipeline: LiveProgramPipeline?
+    nonisolated(unsafe) private var streamDisplayFrame: CGRect?
+    nonisolated private let streamPipelineLock = NSLock()
+    private var streamAudioConfiguration: LiveStreamAudioConfiguration?
     private var screenStream: SCStream?
     private var previewedDisplayID: UInt32?
     private var cameraInput: AVCaptureDeviceInput?
@@ -82,14 +86,31 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
             configuration.queueDepth = 3
             configuration.showsCursor = true
-            configuration.capturesAudio = false
+            if let streamAudioConfiguration {
+                configuration.capturesAudio = streamAudioConfiguration.capturesSystemAudio
+                configuration.captureMicrophone = streamAudioConfiguration.capturesMicrophone
+                configuration.microphoneCaptureDeviceID = streamAudioConfiguration.capturesMicrophone
+                    ? streamAudioConfiguration.microphoneDeviceID
+                    : nil
+                configuration.excludesCurrentProcessAudio = streamAudioConfiguration.excludesStudioRecorderAudio
+            } else {
+                configuration.capturesAudio = false
+                configuration.captureMicrophone = false
+            }
             configuration.streamName = "Studio preview (\(display.displayID))"
 
             let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: screenQueue)
+            if streamAudioConfiguration?.capturesSystemAudio == true {
+                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: screenQueue)
+            }
+            if streamAudioConfiguration?.capturesMicrophone == true {
+                try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: screenQueue)
+            }
             try await stream.startCapture()
             screenStream = stream
             previewedDisplayID = displayID
+            streamPipelineLock.withLock { streamDisplayFrame = display.frame }
         } catch {
             screenPreviewError = error.localizedDescription
         }
@@ -100,6 +121,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         screenStream = nil
         previewedDisplayID = nil
         screenImage = nil
+        streamPipelineLock.withLock { streamDisplayFrame = nil }
         guard let stream else { return }
         try? await stream.stopCapture()
     }
@@ -120,6 +142,18 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             return true
         }
         if changed { cameraImage = nil }
+    }
+
+    func setStreamPipeline(
+        _ pipeline: LiveProgramPipeline?,
+        audio: LiveStreamAudioConfiguration?
+    ) async {
+        streamPipelineLock.withLock { streamPipeline = pipeline }
+        guard streamAudioConfiguration != audio else { return }
+        streamAudioConfiguration = audio
+        guard let displayID = previewedDisplayID else { return }
+        await stopScreenPreview()
+        await startScreenPreview(for: displayID)
     }
 
     func stopCameraPreview() async {
@@ -212,6 +246,10 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        if let pipeline = streamPipelineLock.withLock({ streamPipeline }) {
+            let box = SendableSampleBuffer(value: sampleBuffer)
+            Task { await pipeline.appendCamera(box) }
+        }
         let background = cameraBackgroundLock.withLock { cameraBackground }
         guard background.mode != .off,
               let pixelBuffer = sampleBuffer.imageBuffer else { return }
@@ -256,6 +294,28 @@ extension LiveSceneCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        let pipelineContext = streamPipelineLock.withLock { (streamPipeline, streamDisplayFrame) }
+        if let pipeline = pipelineContext.0 {
+            let box = SendableSampleBuffer(value: sampleBuffer)
+            switch outputType {
+            case .screen:
+                let cursorPosition = pipelineContext.1.flatMap { frame -> CGPoint? in
+                    guard frame.width > 0, frame.height > 0,
+                          let location = CGEvent(source: nil)?.location else { return nil }
+                    return CGPoint(
+                        x: (location.x - frame.minX) / frame.width,
+                        y: (location.y - frame.minY) / frame.height
+                    )
+                }
+                Task { await pipeline.appendScreen(box, cursorPosition: cursorPosition) }
+            case .audio:
+                Task { await pipeline.appendAudio(box, track: 0) }
+            case .microphone:
+                Task { await pipeline.appendAudio(box, track: 1) }
+            @unknown default:
+                break
+            }
+        }
         guard outputType == .screen,
               let pixelBuffer = sampleBuffer.imageBuffer else { return }
         let shouldDeliver = frameDeliveryLock.withLock {

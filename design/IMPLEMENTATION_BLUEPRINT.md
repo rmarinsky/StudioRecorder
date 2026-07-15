@@ -37,7 +37,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
 | Quick edit foundation | implemented | ordered source ranges, trim, split/delete, undo/redo/reset | synchronized tracks, waveform, speed and volume |
-| Streaming | not implemented | same frozen scene into Record, YouTube Stream, or both | OAuth-managed broadcast creation after manual RTMPS proves reliable |
+| Streaming | implemented foundation | same frozen scene into Record, YouTube Stream, or both; manual RTMPS key stays in Keychain | YouTube ingest soak, reconnect, then OAuth-managed broadcast creation |
 
 ## 3. Canonical data flow
 
@@ -596,6 +596,8 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 - add OAuth/API-managed broadcast creation later without changing the media pipeline.
 
 **Done:** an unlisted 60-minute 1920×1080 and 1080×1920 soak test stays synchronized, Record + Stream survives network loss without losing the local recording, reconnect state is visible, and YouTube ingest screenshots match the saved stage.
+
+**Current foundation (2026-07-15):** Studio exposes `Record`, `Stream`, and `Record + Stream`. The live ScreenCaptureKit/AVCaptureSession Scene feeds the same `ProgramFrameCompositor` used by Project playback/export, then a pinned HaishinKit 2.2.5 manual mixer encodes H.264/AAC into RTMPS. The key is stored only in Keychain. Tests prove exact composed canvas delivery and closed failure on an unavailable endpoint; real YouTube ingest and 60-minute horizontal/vertical soak acceptance still require a user stream key and live control-room verification.
 
 ### Slice 8 — Recovery resolution
 

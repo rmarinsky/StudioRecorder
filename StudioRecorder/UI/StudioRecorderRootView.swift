@@ -4,7 +4,10 @@ import SwiftUI
 
 struct StudioRecorderRootView: View {
     @ObservedObject var model: StudioRecorderModel
+    @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
     @StateObject private var liveScene = LiveSceneCoordinator()
+    @StateObject private var streaming = YouTubeStreamingCoordinator()
+    @State private var deliveryMode = StreamDeliveryMode.record
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
@@ -56,6 +59,10 @@ struct StudioRecorderRootView: View {
             await updateLiveScene(for: snapshot.route)
         }
         .onChange(of: snapshot.route) { _, route in
+            if route != .studio, streaming.state.isActive {
+                streaming.stop()
+                Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+            }
             Task { await updateLiveScene(for: route) }
         }
         .onChange(of: snapshot.captureState) { _, _ in
@@ -67,11 +74,22 @@ struct StudioRecorderRootView: View {
         .onChange(of: snapshot.studioDraft?.presentation.cameraBackground) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
+        .onChange(of: snapshot.studioDraft?.presentation) { _, presentation in
+            if let presentation {
+                Task { await streaming.pipeline.updatePresentation(presentation) }
+            }
+        }
+        .onChange(of: streaming.state) { _, state in
+            guard !state.isActive else { return }
+            Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+        }
         .onChange(of: snapshot.capturesCamera) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onDisappear {
+            streaming.stop()
             Task {
+                await liveScene.setStreamPipeline(nil, audio: nil)
                 await liveScene.stopCameraPreview()
                 await liveScene.stopScreenPreview()
             }
@@ -413,7 +431,7 @@ struct StudioRecorderRootView: View {
                     ),
                     codecPolicy: snapshot.studioDraft?.codecPolicy ?? .automatic,
                     presentation: presentationBinding,
-                    isLocked: snapshot.areRecordingSettingsLocked
+                    isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                 )
                 .frame(width: 304)
                 .background(.bar)
@@ -421,20 +439,34 @@ struct StudioRecorderRootView: View {
 
             Divider()
             HStack(spacing: 16) {
-                Label(
-                    snapshot.capturesMicrophone ? "Microphone is included" : "Recording without microphone",
-                    systemImage: "mic"
-                )
-                    .font(.subheadline.weight(.medium))
+                VStack(alignment: .leading, spacing: 3) {
+                    Picker("Output", selection: $deliveryMode) {
+                        ForEach(StreamDeliveryMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 286)
+                    .disabled(snapshot.captureState == .recording || streaming.state.isActive)
+                    Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(streaming.state == .live ? .red : .secondary)
+                    if deliveryMode.includesStreaming, streamConfiguration == nil {
+                        Text("Add the YouTube RTMPS key in Settings → Streaming")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
                 Spacer()
-                Button(action: toggleRecording) {
-                    Label(recordButtonTitle, systemImage: snapshot.captureState == .recording ? "stop.fill" : "record.circle.fill")
+                Button(action: toggleDelivery) {
+                    Label(deliveryButtonTitle, systemImage: isDeliveryActive ? "stop.fill" : "record.circle.fill")
                         .frame(minWidth: 122)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .tint(snapshot.captureState == .recording ? .red : coral)
-                .disabled(!canToggleRecording)
+                .tint(isDeliveryActive ? .red : coral)
+                .disabled(!canToggleDelivery)
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(studioDestinationPath).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
@@ -500,14 +532,23 @@ struct StudioRecorderRootView: View {
         .navigationTitle("Recovery")
     }
 
-    private var canToggleRecording: Bool {
+    private var canToggleDelivery: Bool {
         guard !snapshot.isCaptureCommandInFlight else { return false }
-        if snapshot.captureState == .recording { return true }
-        return snapshot.captureState == .ready && snapshot.draftValidationIssues.isEmpty
+        if isDeliveryActive { return true }
+        guard snapshot.captureState == .ready,
+              snapshot.draftValidationIssues.isEmpty else { return false }
+        if deliveryMode.includesStreaming {
+            return streamConfiguration != nil
+        }
+        return true
     }
 
-    private var recordButtonTitle: String {
-        snapshot.captureState == .recording ? "Stop" : "Record"
+    private var isDeliveryActive: Bool {
+        snapshot.captureState == .recording || streaming.state.isActive
+    }
+
+    private var deliveryButtonTitle: String {
+        isDeliveryActive ? "Stop" : deliveryMode.label
     }
 
     private var statusColor: Color {
@@ -555,14 +596,44 @@ struct StudioRecorderRootView: View {
         snapshot.studioDraft?.destination.warning == .unwritable ? .red : .secondary
     }
 
-    private func toggleRecording() {
-        guard snapshot.captureState == .ready else {
-            model.send(.toggleRecording)
+    private var streamConfiguration: YouTubeStreamConfiguration? {
+        streamingSettings.configuration(
+            canvasSize: CGSize(width: canvasWidth, height: canvasHeight),
+            frameRate: snapshot.studioDraft?.frameRate ?? 30
+        )
+    }
+
+    private func toggleDelivery() {
+        if isDeliveryActive {
+            if snapshot.captureState == .recording {
+                model.send(.toggleRecording)
+            }
+            if streaming.state.isActive {
+                streaming.stop()
+                Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+            }
             return
         }
         Task {
-            model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
-            model.send(.toggleRecording)
+            guard let draft = snapshot.studioDraft else { return }
+            if deliveryMode.includesStreaming, let streamConfiguration {
+                let audio = LiveStreamAudioConfiguration(
+                    capturesSystemAudio: draft.capturesSystemAudio,
+                    capturesMicrophone: draft.capturesMicrophone,
+                    microphoneDeviceID: draft.microphoneDeviceID,
+                    excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
+                )
+                await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
+                streaming.start(
+                    configuration: streamConfiguration,
+                    presentation: draft.presentation,
+                    audioConfiguration: audio
+                )
+            }
+            if deliveryMode.includesRecording {
+                model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
+                model.send(.toggleRecording)
+            }
         }
     }
 }

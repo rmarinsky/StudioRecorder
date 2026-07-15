@@ -5,6 +5,7 @@ private enum SettingsTab: String, CaseIterable {
     case general
     case capture
     case audio
+    case streaming
     case storage
     case shortcuts
 }
@@ -12,6 +13,7 @@ private enum SettingsTab: String, CaseIterable {
 struct SettingsView: View {
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
+    @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
     @AppStorage("selectedSettingsTab") private var selectedTab = SettingsTab.general.rawValue
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
@@ -27,6 +29,9 @@ struct SettingsView: View {
             audioSettings
                 .tabItem { Label("Audio", systemImage: "waveform") }
                 .tag(SettingsTab.audio.rawValue)
+            streamingSettingsView
+                .tabItem { Label("Streaming", systemImage: "dot.radiowaves.left.and.right") }
+                .tag(SettingsTab.streaming.rawValue)
             storageSettings
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
                 .tag(SettingsTab.storage.rawValue)
@@ -153,6 +158,49 @@ struct SettingsView: View {
                 }
             }
             .disabled(isLocked)
+        }
+        .formStyle(.grouped)
+    }
+
+    private var streamingSettingsView: some View {
+        Form {
+            Section("YouTube Live") {
+                TextField("RTMPS server", text: $streamingSettings.serverURL)
+                    .textContentType(.URL)
+                SecureField("Stream key", text: $streamingSettings.streamKey)
+                    .textContentType(.password)
+                LabeledContent("Video bitrate") {
+                    Picker("Video bitrate", selection: $streamingSettings.videoBitRate) {
+                        Text("6 Mbps").tag(6_000_000)
+                        Text("8 Mbps").tag(8_000_000)
+                        Text("10 Mbps").tag(10_000_000)
+                        Text("12 Mbps").tag(12_000_000)
+                    }
+                    .labelsHidden()
+                }
+                HStack {
+                    Button("Save to Keychain") { streamingSettings.save() }
+                    Button("Open YouTube Live Control Room") {
+                        NSWorkspace.shared.open(URL(string: "https://studio.youtube.com/channel/UC/livestreaming")!)
+                    }
+                }
+                if let credentialError = streamingSettings.credentialError {
+                    Label(credentialError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("The stream key is stored only in macOS Keychain. It is never written to project files or logs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("YouTube encoder contract") {
+                LabeledContent("Video", value: "H.264 · 30 fps · 2 s keyframes")
+                LabeledContent("Audio", value: "AAC · 128 Kbps")
+                Text("The active Scene determines horizontal, vertical, or custom stream dimensions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

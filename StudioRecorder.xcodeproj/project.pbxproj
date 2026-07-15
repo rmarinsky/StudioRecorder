@@ -13,20 +13,26 @@
 		13B8ECF226E15196B0B70E26 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */; };
 		196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
+		208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */; };
 		28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */; };
 		30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */; };
 		376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */; };
+		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
+		8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
 		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
 		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
 		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
 		A66AADF142C1D940754C0E01 /* ProjectQuickEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 158EBFAEFC92DB31BAD3CA23 /* ProjectQuickEditorView.swift */; };
+		ACD7EF0A9E898F71E4289452 /* YouTubeStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
+		B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
 		B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */; };
 		BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */; };
 		BD9ED984C0ABBF99FE7490BC /* RecordingPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */; };
+		BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */; };
 		C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2897A189300917E718918A9E /* ProjectEditStore.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
 		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
@@ -36,6 +42,7 @@
 		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
 		DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */; };
 		E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */; };
+		E6102E345B72130B25AFBD3A /* YouTubeStreamSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */; };
 		E9E0C0A0A54C9D2CC336B3DA /* ProjectMediaExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADFE8A95E62F46884D456041 /* ProjectMediaExporter.swift */; };
 		F195967D1996D9078D6FF408 /* ProjectEditRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */; };
 /* End PBXBuildFile section */
@@ -59,6 +66,7 @@
 		2897A189300917E718918A9E /* ProjectEditStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditStore.swift; sourceTree = "<group>"; };
 		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
 		32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPresentationEditorView.swift; sourceTree = "<group>"; };
+		3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgramPipeline.swift; sourceTree = "<group>"; };
 		3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlannerTests.swift; sourceTree = "<group>"; };
 		43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectProgramRenderer.swift; sourceTree = "<group>"; };
@@ -68,12 +76,16 @@
 		51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesStoreTests.swift; sourceTree = "<group>"; };
 		5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraBackgroundProcessor.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7126807F0F98EB846E410145 /* YouTubeStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeStreaming.swift; sourceTree = "<group>"; };
+		891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeStreamingTests.swift; sourceTree = "<group>"; };
 		96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
 		9A418726188BA1186770D369 /* RecordingProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStore.swift; sourceTree = "<group>"; };
+		A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramFrameCompositor.swift; sourceTree = "<group>"; };
 		AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePresentationTests.swift; sourceTree = "<group>"; };
 		ADFE8A95E62F46884D456041 /* ProjectMediaExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMediaExporter.swift; sourceTree = "<group>"; };
 		B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePresentation.swift; sourceTree = "<group>"; };
 		B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPreferences.swift; sourceTree = "<group>"; };
+		B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeStreamSink.swift; sourceTree = "<group>"; };
 		B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCoordinator.swift; sourceTree = "<group>"; };
 		C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlanner.swift; sourceTree = "<group>"; };
 		CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditTimeline.swift; sourceTree = "<group>"; };
@@ -86,6 +98,18 @@
 		FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudioRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5CFB72CDB48AC85184349881 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */,
+				8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		0AA0B2638E89C4D301F652D5 /* UI */ = {
@@ -159,6 +183,7 @@
 				4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */,
 				3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */,
 				D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */,
+				891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */,
 			);
 			path = StudioRecorderTests;
 			sourceTree = "<group>";
@@ -175,7 +200,9 @@
 			isa = PBXGroup;
 			children = (
 				1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */,
+				3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */,
 				B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */,
+				B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */,
 			);
 			path = Recording;
 			sourceTree = "<group>";
@@ -185,6 +212,7 @@
 			children = (
 				5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */,
 				B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */,
+				A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */,
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
 				CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */,
@@ -192,6 +220,7 @@
 				442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */,
 				B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */,
 				9A418726188BA1186770D369 /* RecordingProjectStore.swift */,
+				7126807F0F98EB846E410145 /* YouTubeStreaming.swift */,
 			);
 			path = Domain;
 			sourceTree = "<group>";
@@ -224,6 +253,7 @@
 			buildConfigurationList = 7EC436051ABBC9303EDD79DB /* Build configuration list for PBXNativeTarget "StudioRecorder" */;
 			buildPhases = (
 				A77BB2CF2232BF266804EA4A /* Sources */,
+				5CFB72CDB48AC85184349881 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -231,6 +261,8 @@
 			);
 			name = StudioRecorder;
 			packageProductDependencies = (
+				48264C86C007CE4D5C35A458 /* HaishinKit */,
+				20760362B2E4B0080237C2D6 /* RTMPHaishinKit */,
 			);
 			productName = StudioRecorder;
 			productReference = FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */;
@@ -274,6 +306,9 @@
 			);
 			mainGroup = DB8939C8D6309FF7722ADBF4;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 330971FAA4ECDBCD9C3F2F9F /* Products */;
 			projectDirPath = "";
@@ -299,6 +334,7 @@
 				09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */,
 				1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */,
 				C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */,
+				ACD7EF0A9E898F71E4289452 /* YouTubeStreamingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,7 +346,9 @@
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
+				208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */,
 				5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */,
+				BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */,
 				845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */,
 				F195967D1996D9078D6FF408 /* ProjectEditRenderer.swift in Sources */,
 				D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */,
@@ -328,6 +366,8 @@
 				DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */,
 				E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */,
 				A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */,
+				E6102E345B72130B25AFBD3A /* YouTubeStreamSink.swift in Sources */,
+				4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -566,6 +606,30 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/HaishinKit/HaishinKit.swift";
+			requirement = {
+				kind = exactVersion;
+				version = 2.2.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		20760362B2E4B0080237C2D6 /* RTMPHaishinKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */;
+			productName = RTMPHaishinKit;
+		};
+		48264C86C007CE4D5C35A458 /* HaishinKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */;
+			productName = HaishinKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E71B071AC7021315EE0841A6 /* Project object */;
 }
