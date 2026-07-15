@@ -9,7 +9,8 @@ final class ProjectMediaExporterTests: XCTestCase {
             startTime: 8,
             duration: 20,
             framesPerSecond: 24,
-            maxPixelWidth: 4_000
+            maxPixelWidth: 4_000,
+            loops: false
         )
 
         let plan = try settings.plan(assetDuration: 12)
@@ -18,6 +19,8 @@ final class ProjectMediaExporterTests: XCTestCase {
         XCTAssertEqual(plan.duration, 4, accuracy: 0.001)
         XCTAssertEqual(plan.framesPerSecond, 15, accuracy: 0.001)
         XCTAssertEqual(plan.maxPixelWidth, 1_280)
+        XCTAssertFalse(plan.loops)
+        XCTAssertEqual(plan.imageIOLoopCount, 1)
         XCTAssertEqual(plan.frameTimes.first, 8)
         XCTAssertEqual(try XCTUnwrap(plan.frameTimes.last), 11.933333, accuracy: 0.001)
         XCTAssertEqual(plan.frameTimes.count, 60)
@@ -31,6 +34,7 @@ final class ProjectMediaExporterTests: XCTestCase {
         let firstScreenshotURL = directory.appending(path: "frame-start.png")
         let secondScreenshotURL = directory.appending(path: "frame-middle.png")
         let gifURL = directory.appending(path: "clip.gif")
+        let oneShotGIFURL = directory.appending(path: "clip-once.gif")
         try await writeReadableMovie(to: movieURL)
 
         let exporter = ProjectMediaExporter()
@@ -41,10 +45,22 @@ final class ProjectMediaExporterTests: XCTestCase {
             settings: GIFExportSettings(startTime: 0, duration: 1, framesPerSecond: 5, maxPixelWidth: 320),
             to: gifURL
         )
+        try await exporter.exportGIF(
+            from: movieURL,
+            settings: GIFExportSettings(
+                startTime: 0,
+                duration: 1,
+                framesPerSecond: 5,
+                maxPixelWidth: 320,
+                loops: false
+            ),
+            to: oneShotGIFURL
+        )
 
         let firstScreenshot = try XCTUnwrap(CGImageSourceCreateWithURL(firstScreenshotURL as CFURL, nil))
         let secondScreenshot = try XCTUnwrap(CGImageSourceCreateWithURL(secondScreenshotURL as CFURL, nil))
         let gif = try XCTUnwrap(CGImageSourceCreateWithURL(gifURL as CFURL, nil))
+        let oneShotGIF = try XCTUnwrap(CGImageSourceCreateWithURL(oneShotGIFURL as CFURL, nil))
         XCTAssertEqual(CGImageSourceGetCount(firstScreenshot), 1)
         XCTAssertEqual(CGImageSourceGetCount(secondScreenshot), 1)
         XCTAssertNotEqual(
@@ -56,6 +72,8 @@ final class ProjectMediaExporterTests: XCTestCase {
             imageBytes(try XCTUnwrap(CGImageSourceCreateImageAtIndex(gif, 0, nil))),
             imageBytes(try XCTUnwrap(CGImageSourceCreateImageAtIndex(gif, CGImageSourceGetCount(gif) - 1, nil)))
         )
+        XCTAssertEqual(gifLoopCount(gif), 0)
+        XCTAssertEqual(gifLoopCount(oneShotGIF), 1)
     }
 
     private func writeReadableMovie(to url: URL) async throws {
@@ -120,5 +138,11 @@ final class ProjectMediaExporterTests: XCTestCase {
     private func imageBytes(_ image: CGImage) -> Data? {
         guard let data = image.dataProvider?.data else { return nil }
         return data as Data
+    }
+
+    private func gifLoopCount(_ source: CGImageSource) -> Int? {
+        guard let properties = CGImageSourceCopyProperties(source, nil) as? [CFString: Any],
+              let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any] else { return nil }
+        return gif[kCGImagePropertyGIFLoopCount] as? Int
     }
 }

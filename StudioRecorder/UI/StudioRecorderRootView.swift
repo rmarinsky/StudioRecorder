@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StudioRecorderRootView: View {
     @ObservedObject var model: StudioRecorderModel
@@ -9,6 +10,8 @@ struct StudioRecorderRootView: View {
     @StateObject private var liveScene = LiveSceneCoordinator()
     @StateObject private var streaming = YouTubeStreamingCoordinator()
     @State private var deliveryMode = StreamDeliveryMode.record
+    @State private var importedGIFSource: GIFMakerSource?
+    @State private var gifImportError: String?
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
@@ -64,6 +67,14 @@ struct StudioRecorderRootView: View {
             .toolbar { toolbarContent }
         }
         .tint(coral)
+        .sheet(item: $importedGIFSource) { source in
+            GIFMakerView(source: source) { importedGIFSource = nil }
+        }
+        .alert("Video Could Not Be Opened", isPresented: gifImportErrorPresented) {
+            Button("OK", role: .cancel) { gifImportError = nil }
+        } message: {
+            Text(gifImportError ?? "Unknown video import error")
+        }
         .task {
             await model.launch()
             await updateLiveScene(for: snapshot.route)
@@ -138,12 +149,44 @@ struct StudioRecorderRootView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             if snapshot.route == .projects {
                 Button {
+                    openVideoForGIF()
+                } label: {
+                    Label("Video to GIF…", systemImage: "sparkles.rectangle.stack")
+                }
+
+                Button {
                     model.send(.newRecording)
                 } label: {
                     Label("New Recording", systemImage: "plus")
                 }
             }
         }
+    }
+
+    private var gifImportErrorPresented: Binding<Bool> {
+        Binding(
+            get: { gifImportError != nil },
+            set: { if !$0 { gifImportError = nil } }
+        )
+    }
+
+    private func openVideoForGIF() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.movie]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Make GIF"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            gifImportError = "The selected video is not readable."
+            return
+        }
+        let baseName = url.deletingPathExtension().lastPathComponent
+        importedGIFSource = GIFMakerSource(
+            url: url,
+            suggestedName: "\(baseName) clip.gif",
+            initialStartTime: 0
+        )
     }
 
     private var routeTitle: String {

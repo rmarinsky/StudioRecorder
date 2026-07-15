@@ -14,6 +14,11 @@ struct ProjectDetailView: View {
     @State private var isExporting = false
     @State private var exportMessage: String?
     @State private var exportError: String?
+    @State private var gifMakerSource: GIFMakerSource?
+    @State private var temporaryGIFSourceURL: URL?
+    @State private var gifPreparationTask: Task<Void, Never>?
+    @State private var gifPreparationID = UUID()
+    @State private var isPreparingGIF = false
 
     private let exporter = ProjectMediaExporter()
 
@@ -73,7 +78,14 @@ struct ProjectDetailView: View {
         }
         .navigationTitle("Recording")
         .task(id: programScreenTrackID) { await loadProgram() }
-        .onDisappear { editSession.stop() }
+        .onDisappear {
+            editSession.stop()
+            cancelGIFPreparation()
+            cleanupGIFSource()
+        }
+        .sheet(item: $gifMakerSource, onDismiss: cleanupGIFSource) { source in
+            GIFMakerView(source: source) { gifMakerSource = nil }
+        }
         .overlay(alignment: .bottom) {
             if let exportMessage {
                 Label(exportMessage, systemImage: "checkmark.circle.fill")
@@ -238,8 +250,14 @@ struct ProjectDetailView: View {
             Button("Save Frame", systemImage: "photo") { exportScreenshot() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
-            Button("Make 5s GIF", systemImage: "sparkles.rectangle.stack") { exportGIF() }
+            Button("Make GIF…", systemImage: "sparkles.rectangle.stack") { openGIFMaker() }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(isPreparingGIF)
+
+            if isPreparingGIF {
+                ProgressView().controlSize(.small).padding(.leading, 2)
+                Button("Cancel", role: .cancel) { cancelGIFPreparation() }
+            }
 
             if isExporting {
                 ProgressView().controlSize(.small).padding(.leading, 2)
@@ -391,18 +409,51 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func exportGIF() {
-        guard let destinationURL = saveURL(type: .gif, suggestedName: "Recording clip.gif") else { return }
+    private func openGIFMaker() {
         let seconds = editSession.playhead
-        performExport(success: "GIF saved") {
-            let media = try await editSession.prepareMediaForDerivedExport()
-            defer { media.removeIfTemporary() }
-            try await exporter.exportGIF(
-                from: media.url,
-                settings: GIFExportSettings(startTime: seconds.isFinite ? max(seconds, 0) : 0),
-                to: destinationURL
-            )
+        cancelGIFPreparation()
+        let operationID = UUID()
+        gifPreparationID = operationID
+        isPreparingGIF = true
+        exportError = nil
+        gifPreparationTask = Task {
+            do {
+                cleanupGIFSource()
+                let media = try await editSession.prepareMediaForDerivedExport()
+                guard !Task.isCancelled, gifPreparationID == operationID else {
+                    media.removeIfTemporary()
+                    return
+                }
+                temporaryGIFSourceURL = media.isTemporary ? media.url : nil
+                gifMakerSource = GIFMakerSource(
+                    url: media.url,
+                    suggestedName: "\(editSession.presentation.resolvedName) clip.gif",
+                    initialStartTime: seconds.isFinite ? max(seconds, 0) : 0
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                if gifPreparationID == operationID { exportError = error.localizedDescription }
+            }
+            if gifPreparationID == operationID {
+                isPreparingGIF = false
+                gifPreparationTask = nil
+            }
         }
+    }
+
+    private func cancelGIFPreparation() {
+        gifPreparationID = UUID()
+        gifPreparationTask?.cancel()
+        gifPreparationTask = nil
+        isPreparingGIF = false
+    }
+
+    private func cleanupGIFSource() {
+        if let temporaryGIFSourceURL {
+            try? FileManager.default.removeItem(at: temporaryGIFSourceURL)
+        }
+        temporaryGIFSourceURL = nil
     }
 
     private func exportEditedMovie() {

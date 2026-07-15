@@ -70,7 +70,7 @@ actor ProjectMediaExporter {
 
         CGImageDestinationSetProperties(
             destination,
-            [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary
+            [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: plan.imageIOLoopCount]] as CFDictionary
         )
         let frameProperties = [
             kCGImagePropertyGIFDictionary: [
@@ -119,7 +119,10 @@ struct GIFExportPlan: Equatable, Sendable {
     let duration: TimeInterval
     let framesPerSecond: Double
     let maxPixelWidth: Int
+    let loops: Bool
     let frameTimes: [TimeInterval]
+
+    var imageIOLoopCount: Int { loops ? 0 : 1 }
 }
 
 struct GIFExportSettings: Equatable, Sendable {
@@ -127,17 +130,20 @@ struct GIFExportSettings: Equatable, Sendable {
     let duration: TimeInterval
     let framesPerSecond: Double
     let maxPixelWidth: Int
+    let loops: Bool
 
     init(
         startTime: TimeInterval,
         duration: TimeInterval = 5,
         framesPerSecond: Double = 10,
-        maxPixelWidth: Int = 960
+        maxPixelWidth: Int = 960,
+        loops: Bool = true
     ) {
         self.startTime = startTime
         self.duration = duration
         self.framesPerSecond = framesPerSecond
         self.maxPixelWidth = maxPixelWidth
+        self.loops = loops
     }
 
     func plan(assetDuration: TimeInterval) throws -> GIFExportPlan {
@@ -162,6 +168,7 @@ struct GIFExportSettings: Equatable, Sendable {
             duration: safeDuration,
             framesPerSecond: safeFPS,
             maxPixelWidth: safeWidth,
+            loops: loops,
             frameTimes: frameTimes
         )
     }

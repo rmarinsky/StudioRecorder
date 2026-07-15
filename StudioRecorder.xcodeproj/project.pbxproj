@@ -17,6 +17,7 @@
 		28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */; };
 		30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */; };
 		376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */; };
+		3BFFB667DCDB38B9F09C9BC1 /* GIFMakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */; };
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
@@ -96,6 +97,7 @@
 		D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlannerTests.swift; sourceTree = "<group>"; };
 		EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderModel.swift; sourceTree = "<group>"; };
 		EF06D65D7BBCD8B359710577 /* ProjectEditSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditSession.swift; sourceTree = "<group>"; };
+		F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GIFMakerView.swift; sourceTree = "<group>"; };
 		F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditRenderer.swift; sourceTree = "<group>"; };
 		FD2E19F005362A8BC62C6CF0 /* StudioRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudioRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderApp.swift; sourceTree = "<group>"; };
@@ -117,6 +119,7 @@
 		0AA0B2638E89C4D301F652D5 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */,
 				96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */,
 				43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */,
 				4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */,
@@ -349,6 +352,7 @@
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
+				3BFFB667DCDB38B9F09C9BC1 /* GIFMakerView.swift in Sources */,
 				208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */,
 				5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */,
 				BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */,
