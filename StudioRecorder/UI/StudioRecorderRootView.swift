@@ -1107,7 +1107,15 @@ private struct StudioInspector: View {
     }
 
     private var framingModeBinding: Binding<ScreenFramingMode> {
-        Binding(get: { presentation.framing.mode }, set: { presentation.framing.mode = $0 })
+        Binding(
+            get: { presentation.framing.mode },
+            set: { mode in
+                presentation.framing.mode = mode
+                if mode == .followCursor, presentation.framing.scale >= 0.99 {
+                    presentation.framing.scale = 0.55
+                }
+            }
+        )
     }
 
     private var framingScaleBinding: Binding<CGFloat> {
