@@ -25,9 +25,16 @@ struct ProjectDetailView: View {
     init(project: RecordingProjectSnapshot, onClose: @escaping () -> Void) {
         self.project = project
         self.onClose = onClose
-        let firstTrack = project.tracks.first
-        let firstScreenTrack = project.tracks.first(where: { $0.kind == .screen })
-            ?? project.tracks.first(where: { $0.kind == .program })
+        let playableTrackIDs = Set(project.recoveryReport.tracks.compactMap { track in
+            switch track.state {
+            case .finalized, .partialReadable: track.id
+            case .missing, .unreadable, .unknownV1: nil
+            }
+        })
+        let firstTrack = project.tracks.first(where: { playableTrackIDs.contains($0.id) })
+        let firstScreenTrack = project.tracks.first(where: {
+            playableTrackIDs.contains($0.id) && ($0.kind == .screen || $0.kind == .program)
+        })
         _selectedTrackID = State(initialValue: firstTrack?.id)
         _programScreenTrackID = State(initialValue: firstScreenTrack?.id)
         _editSession = StateObject(wrappedValue: ProjectEditSession())
@@ -145,6 +152,14 @@ struct ProjectDetailView: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 16)
                     .padding(.bottom, 8)
+
+                if project.lifecycle == .recovered {
+                    Label("Recovered after an interrupted recording. Only verified playable tracks were retained; the original diagnostics remain in the project journal.", systemImage: "checkmark.shield.fill")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 14)
+                }
 
                 if isProgramOnlyProject {
                     VStack(alignment: .leading, spacing: 8) {
@@ -334,8 +349,16 @@ struct ProjectDetailView: View {
 
     private var programScreenTrack: RecordingTrackDescriptor? {
         project.tracks.first {
-            $0.id == programScreenTrackID && ($0.kind == .screen || $0.kind == .program)
-        } ?? project.tracks.first { $0.kind == .screen || $0.kind == .program }
+            $0.id == programScreenTrackID && isPlayable($0) && ($0.kind == .screen || $0.kind == .program)
+        } ?? project.tracks.first { isPlayable($0) && ($0.kind == .screen || $0.kind == .program) }
+    }
+
+    private func isPlayable(_ track: RecordingTrackDescriptor) -> Bool {
+        guard FileManager.default.fileExists(atPath: project.rootURL.appending(path: track.relativePath).path),
+              let state = project.recoveryReport.tracks.first(where: { $0.id == track.id })?.state else {
+            return false
+        }
+        return state == .finalized || state == .partialReadable
     }
 
     private var programScreenTrackURL: URL? {
@@ -536,6 +559,7 @@ struct ProjectDetailView: View {
         case .recording: "Recording"
         case .finalizing: "Finalizing"
         case .finalized: "Ready"
+        case .recovered: "Recovered"
         case .needsRecovery: "Needs recovery"
         case .unreadable: "Unreadable"
         }
@@ -544,6 +568,7 @@ struct ProjectDetailView: View {
     private var lifecycleIcon: String {
         switch project.lifecycle {
         case .finalized: "checkmark.circle.fill"
+        case .recovered: "checkmark.shield.fill"
         case .needsRecovery, .unreadable: "exclamationmark.triangle.fill"
         case .recording: "record.circle"
         case .finalizing: "clock"
@@ -553,6 +578,7 @@ struct ProjectDetailView: View {
     private var lifecycleColor: Color {
         switch project.lifecycle {
         case .finalized: .green
+        case .recovered: .blue
         case .needsRecovery, .unreadable: .orange
         case .recording, .finalizing: .secondary
         }

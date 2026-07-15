@@ -5,6 +5,7 @@ enum RecordingProjectLifecycle: String, Codable, Equatable, Sendable {
     case recording
     case finalizing
     case finalized
+    case recovered
     case needsRecovery
     case unreadable
 }
@@ -97,7 +98,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
-    var isInterrupted: Bool { lifecycle == .needsRecovery }
+    var isInterrupted: Bool { lifecycle == .needsRecovery || lifecycle == .unreadable }
     var displayCount: Int { sources.count }
 }
 
@@ -165,6 +166,7 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
     case finalizationStarted
     case projectClosed
     case projectInterrupted
+    case recoveryCompleted
 
     init?(legacyValue: String) {
         switch legacyValue {
@@ -176,6 +178,7 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
         case "finalization-started": self = .finalizationStarted
         case "project-closed": self = .projectClosed
         case "project-interrupted": self = .projectInterrupted
+        case "recovery-completed": self = .recoveryCompleted
         default: return nil
         }
     }
@@ -283,6 +286,26 @@ enum RecordingProjectStoreError: LocalizedError {
             "Studio Recorder could not resolve the project destination."
         case .missingTrackDescriptor(let displayID):
             "Studio Recorder could not prepare a raw track for display \(displayID)."
+        }
+    }
+}
+
+enum RecordingRecoveryError: LocalizedError, Equatable {
+    case notRecoverable
+    case noReadableTracks
+    case invalidManifest
+    case projectChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .notRecoverable:
+            "This project no longer needs recovery."
+        case .noReadableTracks:
+            "No readable movie tracks were found. Reveal the package to inspect it or move it to Trash."
+        case .invalidManifest:
+            "The project manifest could not be read safely."
+        case .projectChanged:
+            "The project changed after it was inspected. Refresh Recovery and try again."
         }
     }
 }
@@ -440,6 +463,48 @@ final class RecordingProjectStore {
 
     func markInterrupted(_ project: RecordingProject, detail: String) throws {
         try append(.init(kind: .projectInterrupted, detail: .init(message: detail)), to: project)
+    }
+
+    func recoverReadableTracks(from snapshot: RecordingProjectSnapshot) throws {
+        guard snapshot.lifecycle == .needsRecovery else {
+            throw RecordingRecoveryError.notRecoverable
+        }
+        let manifestURL = snapshot.rootURL.appending(path: "manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              var manifest = try? Self.makeDecoder().decode(RecordingProjectManifest.self, from: data) else {
+            throw RecordingRecoveryError.invalidManifest
+        }
+        if let expectedID = snapshot.identity.manifestID, manifest.id != expectedID {
+            throw RecordingRecoveryError.projectChanged
+        }
+        let readableTrackIDs = Set(snapshot.recoveryReport.tracks.compactMap { track in
+            switch track.state {
+            case .finalized, .partialReadable:
+                track.id
+            case .missing, .unreadable, .unknownV1:
+                nil
+            }
+        })
+        let recoveredTracks = snapshot.tracks.filter { track in
+            readableTrackIDs.contains(track.id) && Self.safeTrackURL(for: track, in: snapshot.rootURL) != nil
+        }
+        guard !recoveredTracks.isEmpty else {
+            throw RecordingRecoveryError.noReadableTracks
+        }
+
+        let excludedCount = max(snapshot.tracks.count - recoveredTracks.count, 0)
+        manifest.stoppedAt = manifest.stoppedAt ?? Date()
+        manifest.tracks = recoveredTracks
+        try write(manifest, to: manifestURL)
+        try append(
+            .init(
+                kind: .recoveryCompleted,
+                detail: .init(
+                    message: "Recovered \(recoveredTracks.count) readable track(s); excluded \(excludedCount) unavailable track(s)."
+                )
+            ),
+            to: RecordingProject(rootURL: snapshot.rootURL, manifest: manifest)
+        )
     }
 
     func rawTrackURL(for displayID: UInt32, in project: RecordingProject) -> URL? {
@@ -663,11 +728,18 @@ final class RecordingProjectStore {
         if manifest.stoppedAt != nil, kinds.contains(.projectClosed), allTracksFinalized, report.diagnostics.isEmpty {
             return .finalized
         }
+        let allRecoveredTracksReadable = !report.tracks.isEmpty && report.tracks.allSatisfy {
+            $0.state == .finalized || $0.state == .partialReadable
+        }
+        if kinds.contains(.recoveryCompleted), allRecoveredTracksReadable {
+            return .recovered
+        }
         if kinds.contains(.projectInterrupted) || kinds.contains(.trackFailed) || report.tracks.contains(where: { $0.state == .missing || $0.state == .unreadable || $0.state == .unknownV1 }) {
             return .needsRecovery
         }
-        if kinds.contains(.finalizationStarted) { return .finalizing }
-        if kinds.contains(.trackStarted) || kinds.contains(.projectCreated) { return .recording }
+        if kinds.contains(.finalizationStarted) || kinds.contains(.trackStarted) || kinds.contains(.projectCreated) {
+            return .needsRecovery
+        }
         return .needsRecovery
     }
 

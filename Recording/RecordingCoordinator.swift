@@ -123,6 +123,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         interruptedProjects = snapshots.filter(\.isInterrupted)
     }
 
+    func recoverProject(_ projectID: String) async throws {
+        guard let project = interruptedProjects.first(where: { $0.id == projectID }) else {
+            throw RecordingRecoveryError.notRecoverable
+        }
+        try projectStore.recoverReadableTracks(from: project)
+        await refreshProjects()
+    }
+
+    func moveRecoveryProjectToTrash(_ projectID: String) async throws {
+        guard let project = interruptedProjects.first(where: { $0.id == projectID }),
+              project.rootURL.pathExtension == "recordingproject" else {
+            throw RecordingRecoveryError.notRecoverable
+        }
+        _ = try FileManager.default.trashItem(at: project.rootURL, resultingItemURL: nil)
+        await refreshProjects()
+    }
+
     func startRecording(_ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil) async {
         guard state == .ready else { return }
         state = .preparing

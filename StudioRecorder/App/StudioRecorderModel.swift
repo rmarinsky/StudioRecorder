@@ -480,6 +480,18 @@ final class StudioRecorderModel: ObservableObject {
         cameraPreviewSession = session.map(CameraSessionReference.init(session:))
     }
 
+    func recoverProject(_ projectID: String) async throws {
+        guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
+        try await coordinator.recoverProject(projectID)
+        synchronizeFromCoordinator()
+    }
+
+    func moveRecoveryProjectToTrash(_ projectID: String) async throws {
+        guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
+        try await coordinator.moveRecoveryProjectToTrash(projectID)
+        synchronizeFromCoordinator()
+    }
+
     @discardableResult
     func send(_ intent: AppIntent) -> AppIntentResult {
         let result: AppIntentResult

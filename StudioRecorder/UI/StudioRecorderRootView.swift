@@ -12,6 +12,9 @@ struct StudioRecorderRootView: View {
     @State private var deliveryMode = StreamDeliveryMode.record
     @State private var importedGIFSource: GIFMakerSource?
     @State private var gifImportError: String?
+    @State private var recoveryOperationID: String?
+    @State private var recoveryError: String?
+    @State private var recoveryTrashCandidate: RecordingProjectSnapshot?
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
@@ -74,6 +77,24 @@ struct StudioRecorderRootView: View {
             Button("OK", role: .cancel) { gifImportError = nil }
         } message: {
             Text(gifImportError ?? "Unknown video import error")
+        }
+        .alert("Recovery Failed", isPresented: recoveryErrorPresented) {
+            Button("OK", role: .cancel) { recoveryError = nil }
+        } message: {
+            Text(recoveryError ?? "The project could not be recovered.")
+        }
+        .confirmationDialog(
+            "Move this recording project to Trash?",
+            isPresented: recoveryTrashConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                guard let project = recoveryTrashCandidate else { return }
+                Task { await moveRecoveryProjectToTrash(project) }
+            }
+            Button("Cancel", role: .cancel) { recoveryTrashCandidate = nil }
+        } message: {
+            Text("The complete .recordingproject package will be moved to macOS Trash. No media is deleted automatically.")
         }
         .task {
             await model.launch()
@@ -593,19 +614,188 @@ struct StudioRecorderRootView: View {
             if snapshot.interruptedProjects.isEmpty {
                 ContentUnavailableView("No recovery needed", systemImage: "checkmark.shield", description: Text("All discovered projects closed cleanly."))
             } else {
-                List(snapshot.interruptedProjects) { project in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(project.rootURL.deletingPathExtension().lastPathComponent).fontWeight(.semibold)
-                        Text("\(project.displayCount) display track(s) · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text("The package is preserved for per-track review in the next recovery slice.")
-                            .font(.caption).foregroundStyle(.orange)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Recovery Review")
+                                .font(.title2.weight(.semibold))
+                            Text("Studio Recorder found projects that did not close cleanly. Recover keeps only verified playable tracks; unavailable files and the original diagnostics are never silently discarded.")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(snapshot.interruptedProjects) { project in
+                            recoveryCard(project)
+                        }
                     }
-                    .padding(.vertical, 4)
+                    .padding(24)
+                    .frame(maxWidth: 900, alignment: .leading)
                 }
             }
         }
         .navigationTitle("Recovery")
+    }
+
+    private func recoveryCard(_ project: RecordingProjectSnapshot) -> some View {
+        let playableCount = recoveryPlayableCount(project)
+        let unavailableCount = max(project.recoveryReport.tracks.count - playableCount, 0)
+        let isWorking = recoveryOperationID == project.id
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: project.lifecycle == .unreadable ? "exclamationmark.octagon.fill" : "lifepreserver.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(project.presentation?.resolvedName ?? "Interrupted Recording")
+                        .font(.headline)
+                    Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(playableCount) playable · \(unavailableCount) unavailable")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(playableCount > 0 ? Color.primary : Color.orange)
+                }
+                Spacer()
+                if isWorking { ProgressView().controlSize(.small) }
+            }
+
+            if project.recoveryReport.tracks.isEmpty {
+                Text("The package metadata is unreadable. Reveal it for manual inspection or move the complete package to Trash.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(project.recoveryReport.tracks) { track in
+                        HStack(spacing: 10) {
+                            Image(systemName: recoveryTrackIcon(track.descriptor.kind))
+                                .frame(width: 18)
+                                .foregroundStyle(recoveryTrackIsPlayable(track) ? Color.green : Color.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(recoveryTrackTitle(track.descriptor))
+                                    .font(.subheadline.weight(.medium))
+                                Text(recoveryTrackDetail(track))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: recoveryTrackIsPlayable(track) ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(recoveryTrackIsPlayable(track) ? Color.green : Color.orange)
+                        }
+                        .padding(.vertical, 9)
+                        if track.id != project.recoveryReport.tracks.last?.id { Divider() }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            if let diagnostic = project.recoveryReport.diagnostics.first {
+                Label(diagnostic, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            HStack(spacing: 10) {
+                Button("Recover \(playableCount) Track\(playableCount == 1 ? "" : "s")", systemImage: "checkmark.shield") {
+                    Task { await recoverProject(project) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(playableCount == 0 || project.lifecycle != .needsRecovery || recoveryOperationID != nil)
+
+                Button("Review Media", systemImage: "play.rectangle") {
+                    model.send(.openProject(project.id))
+                }
+                .disabled(playableCount == 0 || recoveryOperationID != nil)
+
+                Button("Reveal", systemImage: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([project.rootURL])
+                }
+
+                Spacer()
+
+                Button("Move to Trash…", systemImage: "trash", role: .destructive) {
+                    recoveryTrashCandidate = project
+                }
+                .disabled(recoveryOperationID != nil)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(18)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(.primary.opacity(0.10), lineWidth: 1)
+        }
+    }
+
+    private func recoverProject(_ project: RecordingProjectSnapshot) async {
+        recoveryOperationID = project.id
+        defer { recoveryOperationID = nil }
+        do {
+            try await model.recoverProject(project.id)
+            model.send(.openProject(project.id))
+        } catch {
+            recoveryError = error.localizedDescription
+        }
+    }
+
+    private func moveRecoveryProjectToTrash(_ project: RecordingProjectSnapshot) async {
+        recoveryTrashCandidate = nil
+        recoveryOperationID = project.id
+        defer { recoveryOperationID = nil }
+        do {
+            try await model.moveRecoveryProjectToTrash(project.id)
+        } catch {
+            recoveryError = error.localizedDescription
+        }
+    }
+
+    private func recoveryPlayableCount(_ project: RecordingProjectSnapshot) -> Int {
+        project.recoveryReport.tracks.filter(recoveryTrackIsPlayable).count
+    }
+
+    private func recoveryTrackIsPlayable(_ track: RecordingTrackRecoverySnapshot) -> Bool {
+        track.state == .finalized || track.state == .partialReadable
+    }
+
+    private func recoveryTrackTitle(_ track: RecordingTrackDescriptor) -> String {
+        switch track.kind {
+        case .screen: track.displayID.map { "Display \($0)" } ?? "Screen"
+        case .camera: "Camera"
+        case .program: "Program movie"
+        }
+    }
+
+    private func recoveryTrackIcon(_ kind: RecordingTrackKind) -> String {
+        switch kind {
+        case .screen: "display"
+        case .camera: "video"
+        case .program: "rectangle.inset.filled.and.person.filled"
+        }
+    }
+
+    private func recoveryTrackDetail(_ track: RecordingTrackRecoverySnapshot) -> String {
+        let state: String = switch track.state {
+        case .finalized: "Finalized"
+        case .partialReadable: "Playable partial recording"
+        case .missing: "Missing"
+        case .unreadable: "Unreadable"
+        case .unknownV1: "Legacy status unknown"
+        }
+        let size = track.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+        return [state, size].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var recoveryErrorPresented: Binding<Bool> {
+        Binding(get: { recoveryError != nil }, set: { if !$0 { recoveryError = nil } })
+    }
+
+    private var recoveryTrashConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { recoveryTrashCandidate != nil },
+            set: { if !$0 { recoveryTrashCandidate = nil } }
+        )
     }
 
     private var canToggleDelivery: Bool {
@@ -745,6 +935,7 @@ private struct ProjectRow: View {
         case .recording: "Recording"
         case .finalizing: "Finalizing"
         case .finalized: "Finalized"
+        case .recovered: "Recovered"
         case .needsRecovery: "Needs recovery"
         case .unreadable: "Unreadable"
         }
@@ -753,6 +944,7 @@ private struct ProjectRow: View {
     private var statusColor: Color {
         switch project.lifecycle {
         case .finalized: .green
+        case .recovered: .blue
         case .needsRecovery, .unreadable: .orange
         case .recording, .finalizing: .secondary
         }
@@ -761,6 +953,7 @@ private struct ProjectRow: View {
     private var statusIcon: String {
         switch project.lifecycle {
         case .finalized: "display.2"
+        case .recovered: "checkmark.shield"
         case .needsRecovery, .unreadable: "exclamationmark.triangle"
         case .recording: "record.circle"
         case .finalizing: "clock"

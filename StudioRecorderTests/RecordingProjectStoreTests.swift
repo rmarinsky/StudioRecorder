@@ -234,10 +234,59 @@ final class RecordingProjectStoreTests: XCTestCase {
         let byID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.identity.manifestID, $0) })
 
         XCTAssertEqual(byID[finalized.id]?.lifecycle, .finalized)
-        XCTAssertEqual(byID[recording.id]?.lifecycle, .recording)
+        XCTAssertEqual(byID[recording.id]?.lifecycle, .needsRecovery)
         XCTAssertEqual(byID[recording.id]?.recoveryReport.tracks.single?.state, .partialReadable)
         XCTAssertEqual(byID[recovery.id]?.lifecycle, .needsRecovery)
         XCTAssertEqual(byID[recovery.id]?.recoveryReport.tracks.single?.state, .missing)
+    }
+
+    func testRecoveryKeepsOnlyVerifiedReadableTracksAndPreservesTheFailureHistory() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = RecordingProjectStore(baseDirectory: rootURL)
+        let project = try store.createProject(displays: [1, 2], primaryAudioDisplayID: 1)
+        try await writeReadableMovie(to: try outputURL(for: 1, in: project, store: store))
+        try store.markStarted(displayID: 1, in: project)
+        try store.markStarted(displayID: 2, in: project)
+        try store.markInterrupted(project, detail: "Capture service stopped unexpectedly")
+
+        let interruptedProjects = await store.discoverProjects()
+        let interrupted = try XCTUnwrap(interruptedProjects.single)
+        XCTAssertEqual(interrupted.lifecycle, .needsRecovery)
+        XCTAssertEqual(interrupted.recoveryReport.tracks.map(\.state), [.partialReadable, .missing])
+
+        try store.recoverReadableTracks(from: interrupted)
+
+        let recoveredProjects = await store.discoverProjects()
+        let recovered = try XCTUnwrap(recoveredProjects.single)
+        let manifest = try decodeManifest(at: project.rootURL)
+        let events = try decodeJournal(at: store.journalURL(for: project))
+        XCTAssertEqual(recovered.lifecycle, .recovered)
+        XCTAssertFalse(recovered.isInterrupted)
+        XCTAssertEqual(recovered.tracks.map(\.id), ["screen-1"])
+        XCTAssertEqual(recovered.recoveryReport.tracks.map(\.state), [.partialReadable])
+        XCTAssertEqual(recovered.recoveryReport.diagnostics, ["Capture service stopped unexpectedly"])
+        XCTAssertEqual(manifest.tracks?.map(\.id), ["screen-1"])
+        XCTAssertNotNil(manifest.stoppedAt)
+        XCTAssertEqual(events.last?.kind, .recoveryCompleted)
+    }
+
+    func testRecoveryRefusesToRewriteAProjectWithoutReadableTracks() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = RecordingProjectStore(baseDirectory: rootURL)
+        let project = try store.createProject(displays: [1], primaryAudioDisplayID: 1)
+        let manifestBefore = try Data(contentsOf: project.rootURL.appending(path: "manifest.json"))
+        let interruptedProjects = await store.discoverProjects()
+        let interrupted = try XCTUnwrap(interruptedProjects.single)
+
+        XCTAssertThrowsError(try store.recoverReadableTracks(from: interrupted)) { error in
+            XCTAssertEqual(error as? RecordingRecoveryError, .noReadableTracks)
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: project.rootURL.appending(path: "manifest.json")),
+            manifestBefore
+        )
     }
 
     func testProgramOnlyFinalizationVerifiesProgramBeforeRemovingRawTracks() async throws {
@@ -333,6 +382,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(byName[corruptJournal.lastPathComponent]?.lifecycle, .unreadable)
         XCTAssertEqual(byName[unsupportedJournal.lastPathComponent]?.lifecycle, .unreadable)
         XCTAssertEqual(byName[corruptJournal.lastPathComponent]?.recoveryReport.diagnostics, ["Corrupt journal line 1"])
+        XCTAssertTrue(byName[missingManifest.lastPathComponent]?.isInterrupted == true)
     }
 
     func testTypedJournalEventsHaveStableOrdering() async throws {
