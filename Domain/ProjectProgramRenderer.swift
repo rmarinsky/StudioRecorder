@@ -62,7 +62,8 @@ final class ProjectProgramRenderer {
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
-        audioAdjustment: ProjectAudioAdjustment = .unchanged
+        audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) async throws -> AVPlayerItem {
         let rendered = try await makeComposition(
             sources: sources,
@@ -74,7 +75,9 @@ final class ProjectProgramRenderer {
         item.videoComposition = rendered.videoComposition
         item.audioMix = ProjectAudioMixFactory.make(
             for: rendered.asset.tracks(withMediaType: .audio),
-            adjustment: audioAdjustment
+            adjustment: audioAdjustment,
+            timeline: timeline,
+            segmentAdjustments: segmentAudioAdjustments
         )
         return item
     }
@@ -85,6 +88,7 @@ final class ProjectProgramRenderer {
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, sources: sources)
@@ -100,7 +104,9 @@ final class ProjectProgramRenderer {
         session.videoComposition = rendered.videoComposition
         session.audioMix = ProjectAudioMixFactory.make(
             for: rendered.asset.tracks(withMediaType: .audio),
-            adjustment: audioAdjustment
+            adjustment: audioAdjustment,
+            timeline: timeline,
+            segmentAdjustments: segmentAudioAdjustments
         )
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-program-\(UUID().uuidString).mov")

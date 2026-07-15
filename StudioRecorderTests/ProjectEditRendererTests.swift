@@ -18,13 +18,21 @@ final class ProjectEditRendererTests: XCTestCase {
             displayID: nil,
             relativePath: "program.caf"
         )
-        let timeline = try ProjectEditTimeline(trackID: track.id, sourceDuration: 0.1)
+        let segmentID = UUID()
+        let timeline = try ProjectEditTimeline(
+            trackID: track.id,
+            sourceDuration: 0.1,
+            initialSegmentID: segmentID
+        )
         let store = ProjectEditStore()
         try await store.save(
             ProjectEditDocument(
                 projectID: projectID,
                 timelines: [timeline],
-                audioAdjustment: ProjectAudioAdjustment(gain: 0.4, isMuted: true)
+                audioAdjustment: ProjectAudioAdjustment(gain: 0.4, isMuted: true),
+                segmentAudioAdjustments: [
+                    ProjectSegmentAudioAdjustment(segmentID: segmentID, gain: 0.5),
+                ]
             ),
             in: rootURL
         )
@@ -38,6 +46,7 @@ final class ProjectEditRendererTests: XCTestCase {
             initialPresentation: .default
         )
         XCTAssertTrue(session.audioAdjustment.isMuted)
+        XCTAssertEqual(session.segmentAudioAdjustments.count, 1)
 
         await session.reset()
         try await Task.sleep(for: .milliseconds(250))
@@ -47,6 +56,125 @@ final class ProjectEditRendererTests: XCTestCase {
         let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
         let reloaded = try XCTUnwrap(loaded)
         XCTAssertEqual(reloaded.audioAdjustment, .unchanged)
+        XCTAssertTrue(reloaded.segmentAudioAdjustments.isEmpty)
+    }
+
+    @MainActor
+    func testSegmentAudioSurvivesSplitDeleteUndoAndPreservesOtherTimelineEdits() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let firstID = UUID()
+        let otherID = UUID()
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 0.1, initialSegmentID: firstID)
+        let otherTimeline = try ProjectEditTimeline(trackID: "other", sourceDuration: 0.1, initialSegmentID: otherID)
+        let store = ProjectEditStore()
+        try await store.save(
+            ProjectEditDocument(
+                projectID: projectID,
+                timelines: [timeline, otherTimeline],
+                segmentAudioAdjustments: [
+                    ProjectSegmentAudioAdjustment(segmentID: firstID, gain: 0.3),
+                    ProjectSegmentAudioAdjustment(segmentID: otherID, gain: 0.6),
+                ]
+            ),
+            in: rootURL
+        )
+        let track = RecordingTrackDescriptor(
+            id: "program",
+            kind: .program,
+            displayID: nil,
+            relativePath: sourceURL.lastPathComponent
+        )
+        let session = ProjectEditSession(store: store)
+        await session.load(
+            projectID: projectID,
+            projectRootURL: rootURL,
+            track: track,
+            sourceURL: sourceURL,
+            programSources: nil,
+            initialPresentation: .default
+        )
+        await session.player.seek(to: CMTime(seconds: 0.05, preferredTimescale: 600))
+
+        await session.splitAtPlayhead()
+        XCTAssertEqual(session.timeline?.segments.count, 2)
+        XCTAssertEqual(session.segmentAudioAdjustments.count, 2)
+        XCTAssertTrue(session.segmentAudioAdjustments.allSatisfy { abs($0.gain - 0.3) < 0.001 })
+        let trailingID = try XCTUnwrap(session.selectedSegmentID)
+
+        await session.deleteSelectedSegment()
+        XCTAssertEqual(session.timeline?.segments.count, 1)
+        XCTAssertFalse(session.segmentAudioAdjustments.contains { $0.segmentID == trailingID })
+        await session.undo()
+        XCTAssertEqual(session.timeline?.segments.count, 2)
+        XCTAssertEqual(session.segmentAudioAdjustment(for: trailingID).gain, 0.3, accuracy: 0.001)
+
+        var changedAudio = session.segmentAudioAdjustment(for: trailingID)
+        changedAudio.gain = 0.8
+        session.updateSegmentAudioAdjustment(changedAudio)
+        XCTAssertEqual(session.segmentAudioAdjustment(for: trailingID).gain, 0.8, accuracy: 0.001)
+        await session.undo()
+        XCTAssertEqual(session.segmentAudioAdjustment(for: trailingID).gain, 0.3, accuracy: 0.001)
+        await session.redo()
+        XCTAssertEqual(session.segmentAudioAdjustment(for: trailingID).gain, 0.8, accuracy: 0.001)
+
+        session.stop()
+        try await Task.sleep(for: .milliseconds(50))
+        let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
+        let reloaded = try XCTUnwrap(loaded)
+        XCTAssertEqual(reloaded.segmentAudioAdjustment(for: otherID).gain, 0.6, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testLoadingChangedMediaPrunesOnlyItsStaleSegmentAudio() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let staleID = UUID()
+        let otherID = UUID()
+        let store = ProjectEditStore()
+        try await store.save(
+            ProjectEditDocument(
+                projectID: projectID,
+                timelines: [
+                    try ProjectEditTimeline(trackID: "program", sourceDuration: 1, initialSegmentID: staleID),
+                    try ProjectEditTimeline(trackID: "other", sourceDuration: 0.1, initialSegmentID: otherID),
+                ],
+                segmentAudioAdjustments: [
+                    ProjectSegmentAudioAdjustment(segmentID: staleID, gain: 0.2),
+                    ProjectSegmentAudioAdjustment(segmentID: otherID, gain: 0.6),
+                ]
+            ),
+            in: rootURL
+        )
+        let session = ProjectEditSession(store: store)
+        await session.load(
+            projectID: projectID,
+            projectRootURL: rootURL,
+            track: RecordingTrackDescriptor(
+                id: "program",
+                kind: .program,
+                displayID: nil,
+                relativePath: sourceURL.lastPathComponent
+            ),
+            sourceURL: sourceURL,
+            programSources: nil,
+            initialPresentation: .default
+        )
+        session.stop()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
+        let reloaded = try XCTUnwrap(loaded)
+        XCTAssertFalse(reloaded.segmentAudioAdjustments.contains { $0.segmentID == staleID })
+        XCTAssertEqual(reloaded.segmentAudioAdjustment(for: otherID).gain, 0.6, accuracy: 0.001)
     }
 
     func testPlayerPreviewAppliesPersistedAudioGainWithoutChangingTheSource() async throws {
@@ -99,6 +227,120 @@ final class ProjectEditRendererTests: XCTestCase {
         }
         XCTAssertLessThan(peak, 0.000_1)
         XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+    }
+
+    func testPlayerPreviewAppliesSelectedSegmentAudioGainAtTheEditBoundary() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.caf")
+        try writeAudioFile(to: sourceURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "audio", sourceDuration: 0.1, initialSegmentID: firstID)
+        try timeline.split(at: 0.05, newSegmentID: secondID)
+
+        let item = try await ProjectEditRenderer().makePlayerItem(
+            from: sourceURL,
+            timeline: timeline,
+            segmentAudioAdjustments: [
+                ProjectSegmentAudioAdjustment(segmentID: secondID, gain: 0.25),
+            ]
+        )
+        let parameters = try XCTUnwrap(item.audioMix?.inputParameters.first)
+        var startVolume: Float = -1
+        var endVolume: Float = -1
+        var timeRange = CMTimeRange.invalid
+        XCTAssertTrue(parameters.getVolumeRamp(
+            for: CMTime(seconds: 0.01, preferredTimescale: 600),
+            startVolume: &startVolume,
+            endVolume: &endVolume,
+            timeRange: &timeRange
+        ))
+        XCTAssertEqual(startVolume, 1, accuracy: 0.001)
+        XCTAssertTrue(parameters.getVolumeRamp(
+            for: CMTime(seconds: 0.075, preferredTimescale: 600),
+            startVolume: &startVolume,
+            endVolume: &endVolume,
+            timeRange: &timeRange
+        ))
+        XCTAssertEqual(startVolume, 0.25, accuracy: 0.001)
+    }
+
+    func testExportMutesOnlyTheSelectedSegmentWithoutChangingTheSource() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.caf")
+        let outputURL = directory.appending(path: "segment-muted.mov")
+        try writeAudioFile(to: sourceURL)
+        let rawBytes = try Data(contentsOf: sourceURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "audio", sourceDuration: 0.1, initialSegmentID: firstID)
+        try timeline.split(at: 0.05, newSegmentID: secondID)
+
+        try await ProjectEditRenderer().exportMovie(
+            from: sourceURL,
+            timeline: timeline,
+            segmentAudioAdjustments: [
+                ProjectSegmentAudioAdjustment(segmentID: secondID, isMuted: true),
+            ],
+            to: outputURL
+        )
+
+        let file = try AVAudioFile(forReading: outputURL)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: AVAudioFrameCount(file.length)
+        ))
+        try file.read(into: buffer)
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        let midpoint = Int(buffer.frameLength) / 2
+        let firstPeak = (0..<max(midpoint - 200, 1)).reduce(Float.zero) { max($0, abs(samples[$1])) }
+        let secondPeak = (min(midpoint + 1_200, Int(buffer.frameLength))..<Int(buffer.frameLength))
+            .reduce(Float.zero) { max($0, abs(samples[$1])) }
+        XCTAssertGreaterThan(firstPeak, 0.1)
+        XCTAssertLessThan(secondPeak, 0.001)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+    }
+
+    func testProgramPreviewUsesTheSameSelectedSegmentAudioBoundary() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let audioURL = directory.appending(path: "audio.caf")
+        try await writeReadableMovie(to: screenURL)
+        try writeAudioFile(to: audioURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 0.1, initialSegmentID: firstID)
+        try timeline.split(at: 0.05, newSegmentID: secondID)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+
+        let item = try await ProjectProgramRenderer().makePlayerItem(
+            sources: ProjectProgramSources(screenURL: screenURL, cameraURL: nil, audioURL: audioURL),
+            timeline: timeline,
+            presentation: presentation,
+            segmentAudioAdjustments: [
+                ProjectSegmentAudioAdjustment(segmentID: secondID, gain: 0.2),
+            ]
+        )
+
+        let parameters = try XCTUnwrap(item.audioMix?.inputParameters.first)
+        var startVolume: Float = -1
+        var endVolume: Float = -1
+        var timeRange = CMTimeRange.invalid
+        XCTAssertTrue(parameters.getVolumeRamp(
+            for: CMTime(seconds: 0.075, preferredTimescale: 600),
+            startVolume: &startVolume,
+            endVolume: &endVolume,
+            timeRange: &timeRange
+        ))
+        XCTAssertEqual(startVolume, 0.2, accuracy: 0.001)
     }
 
     func testProgramRendererReplaysSafeShortcutTelemetryWithoutChangingRawMedia() async throws {

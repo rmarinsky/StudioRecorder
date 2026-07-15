@@ -14,6 +14,12 @@ struct PreparedProjectMedia: Sendable {
 
 @MainActor
 final class ProjectEditSession: ObservableObject {
+    private struct EditHistoryState: Equatable {
+        let timeline: ProjectEditTimeline
+        let audioAdjustment: ProjectAudioAdjustment
+        let segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
+    }
+
     let player = AVPlayer()
 
     @Published private(set) var timeline: ProjectEditTimeline?
@@ -21,6 +27,7 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
     @Published private(set) var sceneTimeline: StudioSceneTimeline?
     @Published private(set) var audioAdjustment = ProjectAudioAdjustment.unchanged
+    @Published private(set) var segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     @Published private(set) var audioWaveform: ProjectAudioWaveform?
     @Published private(set) var isLoadingAudioWaveform = false
     @Published private(set) var audioWaveformError: String?
@@ -39,8 +46,8 @@ final class ProjectEditSession: ObservableObject {
     private var projectRootURL: URL?
     private var sourceURL: URL?
     private var programSources: ProjectProgramSources?
-    private var undoStack: [ProjectEditTimeline] = []
-    private var redoStack: [ProjectEditTimeline] = []
+    private var undoStack: [EditHistoryState] = []
+    private var redoStack: [EditHistoryState] = []
     private var documentSaveTask: Task<Void, Never>?
     private var presentationRenderTask: Task<Void, Never>?
     private var audioWaveformTask: Task<Void, Never>?
@@ -70,7 +77,8 @@ final class ProjectEditSession: ObservableObject {
         timeline?.isIdentity == false ||
             !privacyOverlays.isEmpty ||
             sceneTimeline != programSources?.sceneTimeline ||
-            !audioAdjustment.isUnchanged
+            !audioAdjustment.isUnchanged ||
+            !segmentAudioAdjustments.isEmpty
     }
     var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
     var canEditManualZoom: Bool { canPersistEdits && timeline != nil && sceneTimeline != nil }
@@ -121,6 +129,7 @@ final class ProjectEditSession: ObservableObject {
         privacyOverlays = []
         sceneTimeline = nil
         audioAdjustment = .unchanged
+        segmentAudioAdjustments = []
         audioWaveform = nil
         isLoadingAudioWaveform = false
         audioWaveformError = nil
@@ -156,11 +165,21 @@ final class ProjectEditSession: ObservableObject {
                abs(saved.sourceDuration - duration) < 0.1 {
                 editTimeline = saved
             } else {
+                if let staleTimeline = editDocument.timeline(for: track.id) {
+                    let staleSegmentIDs = Set(staleTimeline.segments.map(\.id))
+                    editDocument.segmentAudioAdjustments.removeAll {
+                        staleSegmentIDs.contains($0.segmentID)
+                    }
+                }
                 editTimeline = try ProjectEditTimeline(trackID: track.id, sourceDuration: duration)
                 editDocument.replaceTimeline(editTimeline)
             }
             sceneTimeline = loadedSceneTimeline
             audioAdjustment = editDocument.audioAdjustment
+            let editSegmentIDs = Set(editTimeline.segments.map(\.id))
+            segmentAudioAdjustments = editDocument.segmentAudioAdjustments.filter {
+                editSegmentIDs.contains($0.segmentID)
+            }
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
                 timeline: editTimeline,
@@ -196,10 +215,25 @@ final class ProjectEditSession: ObservableObject {
     func splitAtPlayhead() async {
         guard let current = timeline else { return }
         let newSegmentID = UUID()
+        let inheritedAdjustment = current.segment(at: playhead)
+            .map { segmentAudioAdjustment(for: $0.id) }
         var next = current
         do {
             try next.split(at: playhead, newSegmentID: newSegmentID)
-            await commitEdit(next, selectedSegmentID: newSegmentID, seekTime: playhead)
+            var nextAdjustments = segmentAudioAdjustments
+            if let inheritedAdjustment, !inheritedAdjustment.isUnchanged {
+                nextAdjustments.append(ProjectSegmentAudioAdjustment(
+                    segmentID: newSegmentID,
+                    gain: inheritedAdjustment.gain,
+                    isMuted: inheritedAdjustment.isMuted
+                ))
+            }
+            await commitEdit(
+                next,
+                segmentAudioAdjustments: nextAdjustments,
+                selectedSegmentID: newSegmentID,
+                seekTime: playhead
+            )
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -255,16 +289,19 @@ final class ProjectEditSession: ObservableObject {
             if errorMessage == nil, !audioAdjustment.isUnchanged {
                 updateAudioAdjustment(.unchanged)
             }
+            if errorMessage == nil, !segmentAudioAdjustments.isEmpty {
+                clearCurrentTimelineSegmentAudioAdjustments()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     func undo() async {
-        guard let current = timeline, let previous = undoStack.last else { return }
+        guard let current = currentHistoryState, let previous = undoStack.last else { return }
         await commit(
             previous,
-            selectedSegmentID: previous.segments.first?.id,
+            selectedSegmentID: previous.timeline.segments.first?.id,
             seekTime: 0,
             nextUndoStack: Array(undoStack.dropLast()),
             nextRedoStack: redoStack + [current]
@@ -272,10 +309,10 @@ final class ProjectEditSession: ObservableObject {
     }
 
     func redo() async {
-        guard let current = timeline, let next = redoStack.last else { return }
+        guard let current = currentHistoryState, let next = redoStack.last else { return }
         await commit(
             next,
-            selectedSegmentID: next.segments.first?.id,
+            selectedSegmentID: next.timeline.segments.first?.id,
             seekTime: 0,
             nextUndoStack: undoStack + [current],
             nextRedoStack: Array(redoStack.dropLast())
@@ -291,6 +328,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments,
                 to: destinationURL
             )
         } else {
@@ -298,6 +336,7 @@ final class ProjectEditSession: ObservableObject {
                 from: sourceURL,
                 timeline: timeline,
                 audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments,
                 to: destinationURL
             )
         }
@@ -306,8 +345,47 @@ final class ProjectEditSession: ObservableObject {
     func updateAudioAdjustment(_ next: ProjectAudioAdjustment) {
         guard !isWorking, var nextDocument = document, let projectRootURL else { return }
         let validated = ProjectAudioAdjustment(gain: next.gain, isMuted: next.isMuted)
+        guard validated != audioAdjustment else { return }
+        pushCurrentHistoryState()
         audioAdjustment = validated
         nextDocument.replaceAudioAdjustment(validated)
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
+    func segmentAudioAdjustment(for segmentID: UUID) -> ProjectSegmentAudioAdjustment {
+        segmentAudioAdjustments.first { $0.segmentID == segmentID }
+            ?? ProjectSegmentAudioAdjustment(segmentID: segmentID)
+    }
+
+    func updateSegmentAudioAdjustment(_ next: ProjectSegmentAudioAdjustment) {
+        guard !isWorking,
+              timeline?.segments.contains(where: { $0.id == next.segmentID }) == true,
+              var nextDocument = document,
+              let projectRootURL else { return }
+        let validated = ProjectSegmentAudioAdjustment(
+            segmentID: next.segmentID,
+            gain: next.gain,
+            isMuted: next.isMuted
+        )
+        guard validated != segmentAudioAdjustment(for: next.segmentID) else { return }
+        pushCurrentHistoryState()
+        nextDocument.replaceSegmentAudioAdjustment(validated)
+        segmentAudioAdjustments.removeAll { $0.segmentID == validated.segmentID }
+        if !validated.isUnchanged { segmentAudioAdjustments.append(validated) }
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
+    private func clearCurrentTimelineSegmentAudioAdjustments() {
+        guard let timeline, var nextDocument = document, let projectRootURL else { return }
+        pushCurrentHistoryState()
+        let currentSegmentIDs = Set(timeline.segments.map(\.id))
+        nextDocument.segmentAudioAdjustments.removeAll { currentSegmentIDs.contains($0.segmentID) }
+        nextDocument.updatedAt = Date()
+        segmentAudioAdjustments = []
         document = nextDocument
         scheduleDocumentSave(in: projectRootURL)
         scheduleProgramRefresh(force: true)
@@ -391,7 +469,7 @@ final class ProjectEditSession: ObservableObject {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         guard !timeline.isIdentity || programSources != nil || !privacyOverlays.isEmpty
-                || !audioAdjustment.isUnchanged else {
+                || !audioAdjustment.isUnchanged || !segmentAudioAdjustments.isEmpty else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         let directory = FileManager.default.temporaryDirectory
@@ -405,6 +483,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments,
                 to: outputURL
             )
         } else {
@@ -412,6 +491,7 @@ final class ProjectEditSession: ObservableObject {
                 from: sourceURL,
                 timeline: timeline,
                 audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments,
                 to: outputURL
             )
         }
@@ -435,12 +515,17 @@ final class ProjectEditSession: ObservableObject {
 
     private func commitEdit(
         _ next: ProjectEditTimeline,
+        segmentAudioAdjustments nextSegmentAudioAdjustments: [ProjectSegmentAudioAdjustment]? = nil,
         selectedSegmentID: UUID?,
         seekTime: TimeInterval
     ) async {
-        guard let current = timeline else { return }
+        guard let current = currentHistoryState else { return }
         await commit(
-            next,
+            EditHistoryState(
+                timeline: next,
+                audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: nextSegmentAudioAdjustments ?? segmentAudioAdjustments
+            ),
             selectedSegmentID: selectedSegmentID,
             seekTime: seekTime,
             nextUndoStack: undoStack + [current],
@@ -449,11 +534,11 @@ final class ProjectEditSession: ObservableObject {
     }
 
     private func commit(
-        _ next: ProjectEditTimeline,
+        _ next: EditHistoryState,
         selectedSegmentID: UUID?,
         seekTime: TimeInterval,
-        nextUndoStack: [ProjectEditTimeline],
-        nextRedoStack: [ProjectEditTimeline]
+        nextUndoStack: [EditHistoryState],
+        nextRedoStack: [EditHistoryState]
     ) async {
         guard !isWorking,
               let sourceURL,
@@ -471,21 +556,38 @@ final class ProjectEditSession: ObservableObject {
         do {
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
-                timeline: next,
+                timeline: next.timeline,
                 presentation: presentation,
-                privacyOverlays: privacyOverlays
+                privacyOverlays: privacyOverlays,
+                audioAdjustment: next.audioAdjustment,
+                segmentAudioAdjustments: next.segmentAudioAdjustments
             )
             guard loadID == operationID, var nextDocument = document else { return }
-            nextDocument.replaceTimeline(next)
+            let previousSegmentIDs = Set(
+                nextDocument.timeline(for: next.timeline.trackID)?.segments.map(\.id) ?? []
+            )
+            nextDocument.replaceTimeline(next.timeline)
+            nextDocument.replaceAudioAdjustment(next.audioAdjustment)
+            nextDocument.segmentAudioAdjustments.removeAll {
+                previousSegmentIDs.contains($0.segmentID)
+            }
+            nextDocument.segmentAudioAdjustments.append(contentsOf: next.segmentAudioAdjustments)
+            let allSegmentIDs = Set(nextDocument.timelines.flatMap { $0.segments.map(\.id) })
+            nextDocument.retainSegmentAudioAdjustments(for: allSegmentIDs)
             try await store.save(nextDocument, in: projectRootURL)
             guard loadID == operationID else { return }
             document = nextDocument
-            timeline = next
+            timeline = next.timeline
+            audioAdjustment = next.audioAdjustment
+            let nextSegmentIDs = Set(next.timeline.segments.map(\.id))
+            segmentAudioAdjustments = next.segmentAudioAdjustments.filter {
+                nextSegmentIDs.contains($0.segmentID)
+            }
             self.selectedSegmentID = selectedSegmentID
             undoStack = nextUndoStack
             redoStack = nextRedoStack
             player.replaceCurrentItem(with: item)
-            let safeSeekTime = min(max(seekTime, 0), max(next.duration - 0.001, 0))
+            let safeSeekTime = min(max(seekTime, 0), max(next.timeline.duration - 0.001, 0))
             await player.seek(to: CMTime(seconds: safeSeekTime, preferredTimescale: 600))
         } catch {
             errorMessage = error.localizedDescription
@@ -496,22 +598,44 @@ final class ProjectEditSession: ObservableObject {
         sourceURL: URL,
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
-        privacyOverlays: [ProjectPrivacyOverlay]
+        privacyOverlays: [ProjectPrivacyOverlay],
+        audioAdjustment: ProjectAudioAdjustment? = nil,
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]? = nil
     ) async throws -> AVPlayerItem {
+        let audioAdjustment = audioAdjustment ?? self.audioAdjustment
+        let segmentAudioAdjustments = segmentAudioAdjustments ?? self.segmentAudioAdjustments
         if let renderSources = renderSources(for: sourceURL, privacyOverlays: privacyOverlays) {
             return try await programRenderer.makePlayerItem(
                 sources: renderSources,
                 timeline: timeline,
                 presentation: programSources == nil ? bakedProgramPresentation(from: presentation) : presentation,
                 privacyOverlays: privacyOverlays,
-                audioAdjustment: audioAdjustment
+                audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments
             )
         }
         return try await renderer.makePlayerItem(
             from: sourceURL,
             timeline: timeline,
-            audioAdjustment: audioAdjustment
+            audioAdjustment: audioAdjustment,
+            segmentAudioAdjustments: segmentAudioAdjustments
         )
+    }
+
+    private var currentHistoryState: EditHistoryState? {
+        timeline.map {
+            EditHistoryState(
+                timeline: $0,
+                audioAdjustment: audioAdjustment,
+                segmentAudioAdjustments: segmentAudioAdjustments
+            )
+        }
+    }
+
+    private func pushCurrentHistoryState() {
+        guard let currentHistoryState else { return }
+        undoStack.append(currentHistoryState)
+        redoStack = []
     }
 
     private func scheduleProgramRefresh(force: Bool = false) {

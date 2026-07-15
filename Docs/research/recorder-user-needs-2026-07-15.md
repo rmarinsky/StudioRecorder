@@ -53,7 +53,7 @@ Build in this order:
 
 **Technical constraint.** OBS documents separate recording tracks for post-production and a distinct combined stream track ([official multi-track guide](https://obsproject.com/kb/advanced-recording-guide-and-multi-track-audio)). Ordinary players may expose only one track, so a share-ready program mix and editable sources are separate contracts.
 
-**Existing coverage.** Studio Recorder captures system audio and mic, retains editable raw tracks, and mixes enabled live inputs into the single AAC stream YouTube expects. Quick Edit persists master mute/volume attenuation in `edit.json`, applies the same native audio mix to preview, faithful composition, and MOV export, and asynchronously caches a decoded source-time waveform with peak/RMS levels and clipping markers. Raw tracks are never rewritten. Source-separated waveforms, speed, and per-source/per-segment volume remain incomplete.
+**Existing coverage.** Studio Recorder captures system audio and mic and mixes enabled live inputs into the single AAC stream YouTube expects. Quick Edit persists master and per-segment mute/volume attenuation in `edit.json`, applies the same native audio mix to preview, faithful composition, and MOV export, and asynchronously caches a decoded source-time waveform with peak/RMS levels and clipping markers. Raw tracks are never rewritten. Current `SCRecordingOutput` files contain one mixed AAC track, so true system/microphone stems require a later capture-format migration; source-separated waveforms and speed remain incomplete.
 
 **Recommendation.** Add compact source waveforms, clipped-peak markers, zoomable time scale, keyboard nudging, segment speed, and source/segment volume or mute. Persist edits in `edit.json`; never rewrite raw media.
 

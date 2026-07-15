@@ -248,6 +248,61 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(reloaded.audioAdjustment.effectiveGain, 0)
     }
 
+    func testCurrentEditPersistsValidatedSegmentAudioAdjustment() async throws {
+        let projectID = UUID()
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(
+            trackID: "program",
+            sourceDuration: 2,
+            initialSegmentID: firstID
+        )
+        try timeline.split(at: 1, newSegmentID: secondID)
+        var document = ProjectEditDocument(projectID: projectID, timelines: [timeline])
+        document.replaceSegmentAudioAdjustment(
+            ProjectSegmentAudioAdjustment(segmentID: secondID, gain: 0.4, isMuted: true)
+        )
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(projectID.uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let store = ProjectEditStore()
+        try await store.save(document, in: rootURL)
+        let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
+        let reloaded = try XCTUnwrap(loaded)
+
+        XCTAssertEqual(reloaded.schemaVersion, ProjectEditDocument.currentSchemaVersion)
+        XCTAssertEqual(reloaded.segmentAudioAdjustment(for: firstID).effectiveGain, 1)
+        XCTAssertEqual(reloaded.segmentAudioAdjustment(for: secondID).effectiveGain, 0)
+    }
+
+    func testEditStoreRejectsDuplicateSegmentIDsAcrossTimelines() async throws {
+        let projectID = UUID()
+        let duplicateID = UUID()
+        let document = ProjectEditDocument(
+            projectID: projectID,
+            timelines: [
+                try ProjectEditTimeline(trackID: "screen-1", sourceDuration: 1, initialSegmentID: duplicateID),
+                try ProjectEditTimeline(trackID: "screen-2", sourceDuration: 1, initialSegmentID: duplicateID),
+            ],
+            segmentAudioAdjustments: [
+                ProjectSegmentAudioAdjustment(segmentID: duplicateID, gain: 0.5),
+            ]
+        )
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(projectID.uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        do {
+            try await ProjectEditStore().save(document, in: rootURL)
+            XCTFail("Segment IDs must identify exactly one timeline segment.")
+        } catch {
+            XCTAssertEqual(error as? ProjectEditStoreError, .invalidSegmentAudioAdjustment)
+        }
+    }
+
     func testEditStoreRejectsAnOutOfRangeAudioAdjustment() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)

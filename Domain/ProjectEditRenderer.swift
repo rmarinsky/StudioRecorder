@@ -26,13 +26,16 @@ final class ProjectEditRenderer {
     func makePlayerItem(
         from sourceURL: URL,
         timeline: ProjectEditTimeline,
-        audioAdjustment: ProjectAudioAdjustment = .unchanged
+        audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) async throws -> AVPlayerItem {
         let composition = try await makeComposition(from: sourceURL, timeline: timeline)
         let item = AVPlayerItem(asset: composition)
         item.audioMix = ProjectAudioMixFactory.make(
             for: composition.tracks(withMediaType: .audio),
-            adjustment: audioAdjustment
+            adjustment: audioAdjustment,
+            timeline: timeline,
+            segmentAdjustments: segmentAudioAdjustments
         )
         return item
     }
@@ -41,6 +44,7 @@ final class ProjectEditRenderer {
         from sourceURL: URL,
         timeline: ProjectEditTimeline,
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, for: sourceURL)
@@ -50,7 +54,9 @@ final class ProjectEditRenderer {
         }
         session.audioMix = ProjectAudioMixFactory.make(
             for: composition.tracks(withMediaType: .audio),
-            adjustment: audioAdjustment
+            adjustment: audioAdjustment,
+            timeline: timeline,
+            segmentAdjustments: segmentAudioAdjustments
         )
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
@@ -120,13 +126,28 @@ final class ProjectEditRenderer {
 enum ProjectAudioMixFactory {
     static func make(
         for tracks: [AVAssetTrack],
-        adjustment: ProjectAudioAdjustment
+        adjustment: ProjectAudioAdjustment,
+        timeline: ProjectEditTimeline? = nil,
+        segmentAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) -> AVAudioMix? {
-        guard !tracks.isEmpty, !adjustment.isUnchanged else { return nil }
+        guard !tracks.isEmpty,
+              !adjustment.isUnchanged || segmentAdjustments.contains(where: { !$0.isUnchanged }) else { return nil }
+        let segmentAdjustments = segmentAdjustments.reduce(into: [UUID: ProjectSegmentAudioAdjustment]()) {
+            $0[$1.segmentID] = $1
+        }
         let mix = AVMutableAudioMix()
         mix.inputParameters = tracks.map { track in
             let parameters = AVMutableAudioMixInputParameters(track: track)
-            parameters.setVolume(adjustment.effectiveGain, at: .zero)
+            guard let timeline else {
+                parameters.setVolume(adjustment.effectiveGain, at: .zero)
+                return parameters
+            }
+            var outputTime = CMTime.zero
+            for segment in timeline.segments {
+                let segmentGain = segmentAdjustments[segment.id]?.effectiveGain ?? 1
+                parameters.setVolume(adjustment.effectiveGain * segmentGain, at: outputTime)
+                outputTime = outputTime + CMTime(seconds: segment.duration, preferredTimescale: 600)
+            }
             return parameters
         }
         return mix

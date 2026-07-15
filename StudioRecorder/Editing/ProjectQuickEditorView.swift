@@ -176,7 +176,35 @@ struct ProjectQuickEditorView: View {
                         .frame(width: 42, alignment: .trailing)
                 }
 
-                Text("Applies to preview and derived exports. The captured screen, microphone, and system-audio tracks remain unchanged.")
+                if let selectedSegmentID = session.selectedSegmentID,
+                   let selectedIndex = timeline.segments.firstIndex(where: { $0.id == selectedSegmentID }) {
+                    Divider()
+                    let adjustment = session.segmentAudioAdjustment(for: selectedSegmentID)
+                    HStack(spacing: 10) {
+                        Text("Segment \(selectedIndex + 1)")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 72, alignment: .leading)
+                        Button {
+                            var next = adjustment
+                            next.isMuted.toggle()
+                            session.updateSegmentAudioAdjustment(next)
+                        } label: {
+                            Image(systemName: adjustment.isMuted ? "speaker.slash.fill" : "speaker.wave.1.fill")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel(adjustment.isMuted ? "Unmute selected segment" : "Mute selected segment")
+
+                        Slider(value: segmentAudioGainBinding(selectedSegmentID), in: 0...1, step: 0.05)
+                            .disabled(adjustment.isMuted)
+                            .accessibilityLabel("Selected segment volume")
+                        Text("\(Int((adjustment.gain * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                }
+
+                Text("Applies to preview and derived exports. Captured source media remains unchanged.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -187,6 +215,13 @@ struct ProjectQuickEditorView: View {
                     .font(.subheadline.weight(.semibold))
                 if !session.audioAdjustment.isUnchanged {
                     Text(session.audioAdjustment.isMuted ? "MUTED" : "\(Int((session.audioAdjustment.gain * 100).rounded()))%")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+                if !session.segmentAudioAdjustments.isEmpty {
+                    Text("\(session.segmentAudioAdjustments.count) SEGMENT\(session.segmentAudioAdjustments.count == 1 ? "" : "S")")
                         .font(.caption2.weight(.bold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -204,6 +239,17 @@ struct ProjectQuickEditorView: View {
                 var next = session.audioAdjustment
                 next.gain = gain
                 session.updateAudioAdjustment(next)
+            }
+        )
+    }
+
+    private func segmentAudioGainBinding(_ segmentID: UUID) -> Binding<Double> {
+        Binding(
+            get: { session.segmentAudioAdjustment(for: segmentID).gain },
+            set: { gain in
+                var next = session.segmentAudioAdjustment(for: segmentID)
+                next.gain = gain
+                session.updateSegmentAudioAdjustment(next)
             }
         )
     }

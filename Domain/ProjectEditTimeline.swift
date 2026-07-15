@@ -251,6 +251,13 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         )
     }
 
+    func segment(at timelineTime: TimeInterval) -> ProjectEditSegment? {
+        guard timelineTime.isFinite,
+              timelineTime >= 0,
+              timelineTime <= duration else { return nil }
+        return segmentLocation(at: min(timelineTime, max(duration - 0.000_001, 0)))?.segment
+    }
+
     init(
         trackID: String,
         sourceDuration: TimeInterval,
