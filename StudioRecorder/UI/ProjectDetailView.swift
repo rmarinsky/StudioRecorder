@@ -315,8 +315,26 @@ struct ProjectDetailView: View {
             cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
             audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) },
             screenDisplayID: screen.displayID,
-            cursorTimeline: cursorTimeline
+            cursorTimeline: cursorTimeline,
+            cameraTimeOffset: camera.map {
+                ProjectTrackTiming.offset(
+                    from: screen.id,
+                    to: $0.id,
+                    in: projectJournalEvents
+                )
+            } ?? 0
         )
+    }
+
+    private var projectJournalEvents: [ProjectJournalEvent] {
+        let url = project.rootURL.appending(path: "journal.ndjson")
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return text.split(whereSeparator: \.isNewline).compactMap {
+            try? decoder.decode(ProjectJournalEvent.self, from: Data($0.utf8))
+        }
     }
 
     private var cursorTimeline: CursorSceneTimeline? {

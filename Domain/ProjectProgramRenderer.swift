@@ -9,19 +9,22 @@ struct ProjectProgramSources: Sendable {
     let audioURL: URL?
     let screenDisplayID: UInt32?
     let cursorTimeline: CursorSceneTimeline?
+    let cameraTimeOffset: TimeInterval
 
     init(
         screenURL: URL,
         cameraURL: URL?,
         audioURL: URL? = nil,
         screenDisplayID: UInt32? = nil,
-        cursorTimeline: CursorSceneTimeline? = nil
+        cursorTimeline: CursorSceneTimeline? = nil,
+        cameraTimeOffset: TimeInterval = 0
     ) {
         self.screenURL = screenURL
         self.cameraURL = cameraURL
         self.audioURL = audioURL
         self.screenDisplayID = screenDisplayID
         self.cursorTimeline = cursorTimeline
+        self.cameraTimeOffset = cameraTimeOffset
     }
 }
 
@@ -124,11 +127,11 @@ final class ProjectProgramRenderer {
                 if let sourceCameraTrack = try await cameraAsset.loadTracks(withMediaType: .video).first,
                    let cameraTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: 2) {
                     do {
-                        try await insert(
+                        try await insertCamera(
                             timeline: timeline,
                             from: sourceCameraTrack,
                             into: cameraTrack,
-                            allowsShortSource: true
+                            screenTimeOffset: sources.cameraTimeOffset
                         )
                         cameraTrackID = cameraTrack.trackID
                         cameraTransform = try await sourceCameraTrack.load(.preferredTransform)
@@ -169,24 +172,48 @@ final class ProjectProgramRenderer {
     private func insert(
         timeline: ProjectEditTimeline,
         from source: AVAssetTrack,
-        into destination: AVMutableCompositionTrack,
-        allowsShortSource: Bool = false
+        into destination: AVMutableCompositionTrack
     ) async throws {
-        let sourceDuration = allowsShortSource ? try await source.load(.timeRange).duration.seconds : nil
         var insertionTime = CMTime.zero
         for segment in timeline.segments {
-            var duration = segment.duration
-            if let sourceDuration {
-                let available = sourceDuration - segment.sourceStart
-                duration = min(duration, max(available, 0))
-            }
-            guard duration > 0 else { continue }
             let range = CMTimeRange(
                 start: CMTime(seconds: segment.sourceStart, preferredTimescale: 600),
-                duration: CMTime(seconds: duration, preferredTimescale: 600)
+                duration: CMTime(seconds: segment.duration, preferredTimescale: 600)
             )
             try destination.insertTimeRange(range, of: source, at: insertionTime)
             insertionTime = insertionTime + range.duration
+        }
+    }
+
+    private func insertCamera(
+        timeline: ProjectEditTimeline,
+        from source: AVAssetTrack,
+        into destination: AVMutableCompositionTrack,
+        screenTimeOffset: TimeInterval
+    ) async throws {
+        let cameraDuration = try await source.load(.timeRange).duration.seconds
+        guard cameraDuration.isFinite, cameraDuration > 0 else { return }
+        let cameraStart = screenTimeOffset
+        let cameraEnd = cameraStart + cameraDuration
+        var insertionTime = CMTime.zero
+
+        for segment in timeline.segments {
+            let segmentEnd = segment.sourceStart + segment.duration
+            let overlapStart = max(segment.sourceStart, cameraStart)
+            let overlapEnd = min(segmentEnd, cameraEnd)
+            if overlapEnd > overlapStart {
+                let sourceStart = overlapStart - cameraStart
+                let destinationStart = insertionTime + CMTime(
+                    seconds: overlapStart - segment.sourceStart,
+                    preferredTimescale: 600
+                )
+                let range = CMTimeRange(
+                    start: CMTime(seconds: sourceStart, preferredTimescale: 600),
+                    duration: CMTime(seconds: overlapEnd - overlapStart, preferredTimescale: 600)
+                )
+                try destination.insertTimeRange(range, of: source, at: destinationStart)
+            }
+            insertionTime = insertionTime + CMTime(seconds: segment.duration, preferredTimescale: 600)
         }
     }
 }

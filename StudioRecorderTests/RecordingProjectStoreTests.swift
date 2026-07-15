@@ -6,6 +6,22 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testProjectTrackTimingUsesRecordedTrackStartEvents() {
+        let screenStart = Date(timeIntervalSince1970: 1_000)
+        let cameraStart = Date(timeIntervalSince1970: 1_002.25)
+        let events = [
+            ProjectJournalEvent(kind: .trackStarted, trackID: "screen-1", timestamp: screenStart),
+            ProjectJournalEvent(kind: .trackStarted, trackID: "camera", timestamp: cameraStart),
+        ]
+
+        XCTAssertEqual(
+            ProjectTrackTiming.offset(from: "screen-1", to: "camera", in: events),
+            2.25,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(ProjectTrackTiming.offset(from: "missing", to: "camera", in: events), 0)
+    }
+
     func testV1PackageDiscoveryPreservesThePackageAndNormalizesUnknownState() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }

@@ -250,6 +250,23 @@ struct ProjectJournalEvent: Codable, Equatable, Sendable {
     }
 }
 
+enum ProjectTrackTiming {
+    static func offset(
+        from referenceTrackID: String,
+        to trackID: String,
+        in events: [ProjectJournalEvent]
+    ) -> TimeInterval {
+        let referenceStart = events.first {
+            $0.kind == .trackStarted && $0.trackID == referenceTrackID
+        }?.timestamp
+        let trackStart = events.first {
+            $0.kind == .trackStarted && $0.trackID == trackID
+        }?.timestamp
+        guard let referenceStart, let trackStart else { return 0 }
+        return trackStart.timeIntervalSince(referenceStart)
+    }
+}
+
 enum RecordingProjectStoreError: LocalizedError {
     case missingMoviesDirectory
     case missingCaptureDestination
