@@ -316,6 +316,7 @@ private struct RecordedProgramCanvas: View {
     @GestureState private var screenDrag: CGSize = .zero
     @GestureState private var cameraDrag: CGSize = .zero
     @State private var resizeStart: SourcePlacementSnapshot?
+    @State private var activeResizeHandle: SourceResizeHandle?
 
     var body: some View {
         GeometryReader { proxy in
@@ -344,13 +345,14 @@ private struct RecordedProgramCanvas: View {
                         .gesture(dragGesture(for: \.camera, in: proxy.size, state: $cameraDrag))
                 }
 
-                selectionOverlay(in: proxy.size)
-
                 Text("\(presentation.canvas.width) × \(presentation.canvas.height)")
                     .font(.caption2.monospacedDigit().weight(.medium))
                     .foregroundStyle(.white.opacity(0.82))
                     .padding(8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(false)
+
+                selectionOverlay(in: proxy.size)
             }
         }
         .aspectRatio(presentation.canvas.aspectRatio, contentMode: .fit)
@@ -372,16 +374,25 @@ private struct RecordedProgramCanvas: View {
             .position(x: frame.midX, y: frame.midY)
             .allowsHitTesting(false)
 
-        ForEach(ResizeCorner.allCases, id: \.self) { corner in
+        ForEach(SourceResizeHandle.allCases) { handle in
             Circle()
-                .fill(Color.accentColor)
-                .overlay { Circle().stroke(.white, lineWidth: 1.5) }
+                .fill(.background)
+                .overlay { Circle().stroke(Color.accentColor, lineWidth: 2) }
                 .frame(width: 11, height: 11)
-                .position(corner.point(in: frame))
-                .contentShape(Rectangle().inset(by: -8))
-                .gesture(resizeGesture(for: keyPath, corner: corner, canvasSize: canvasSize))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .position(SourcePlacementManipulator.resizeHandlePosition(
+                    handle,
+                    sourceFrame: frame,
+                    canvasSize: canvasSize,
+                    hitTargetSize: 28,
+                    anchorSourceFrame: activeResizeHandle == handle
+                        ? resizeStart.map { sourceFrame($0, in: canvasSize) }
+                        : nil
+                ))
+                .gesture(resizeGesture(for: keyPath, handle: handle, canvasSize: canvasSize))
                 .accessibilityLabel(
-                    "Resize \(selectedSource == .screen ? "screen" : "camera") from \(corner.label)"
+                    "Resize \(selectedSource == .screen ? "screen" : "camera") with \(handle.accessibilityLabel.lowercased())"
                 )
                 .accessibilityHint("Use the Width and Height sliders for precise accessible resizing.")
         }
@@ -398,7 +409,7 @@ private struct RecordedProgramCanvas: View {
 
     private func resizeGesture(
         for keyPath: WritableKeyPath<CapturePresentationSnapshot, SourcePlacementSnapshot>,
-        corner: ResizeCorner,
+        handle: SourceResizeHandle,
         canvasSize: CGSize
     ) -> some Gesture {
         DragGesture(minimumDistance: 0)
@@ -406,14 +417,18 @@ private struct RecordedProgramCanvas: View {
                 guard canvasSize.width > 0, canvasSize.height > 0 else { return }
                 let start = resizeStart ?? presentation[keyPath: keyPath]
                 resizeStart = start
-                var next = start
-                next.width = start.width + corner.horizontalSign * value.translation.width / canvasSize.width
-                next.height = start.height + corner.verticalSign * value.translation.height / canvasSize.height
-                next.centerX = start.centerX + value.translation.width / canvasSize.width / 2
-                next.centerY = start.centerY + value.translation.height / canvasSize.height / 2
-                presentation[keyPath: keyPath] = next.validated()
+                activeResizeHandle = handle
+                presentation[keyPath: keyPath] = SourcePlacementManipulator.resized(
+                    start,
+                    from: handle,
+                    translation: value.translation,
+                    canvasSize: canvasSize
+                )
             }
-            .onEnded { _ in resizeStart = nil }
+            .onEnded { _ in
+                resizeStart = nil
+                activeResizeHandle = nil
+            }
     }
 
     private func sourceImage(
@@ -455,42 +470,26 @@ private struct RecordedProgramCanvas: View {
         state: GestureState<CGSize>
     ) -> some Gesture {
         DragGesture(minimumDistance: 2)
-            .updating(state) { value, state, _ in state = value.translation }
+            .updating(state) { value, state, _ in
+                let placement = presentation[keyPath: keyPath]
+                let moved = SourcePlacementManipulator.moved(
+                    placement,
+                    translation: value.translation,
+                    canvasSize: size
+                )
+                state = CGSize(
+                    width: (moved.centerX - placement.centerX) * size.width,
+                    height: (moved.centerY - placement.centerY) * size.height
+                )
+            }
             .onEnded { value in
                 guard size.width > 0, size.height > 0 else { return }
-                presentation[keyPath: keyPath].centerX += value.translation.width / size.width
-                presentation[keyPath: keyPath].centerY += value.translation.height / size.height
+                presentation[keyPath: keyPath] = SourcePlacementManipulator.moved(
+                    presentation[keyPath: keyPath],
+                    translation: value.translation,
+                    canvasSize: size
+                )
                 presentation = presentation.validated()
             }
-    }
-}
-
-private enum ResizeCorner: CaseIterable, Hashable {
-    case topLeft, topRight, bottomLeft, bottomRight
-
-    var horizontalSign: CGFloat {
-        switch self { case .topLeft, .bottomLeft: -1; case .topRight, .bottomRight: 1 }
-    }
-
-    var verticalSign: CGFloat {
-        switch self { case .topLeft, .topRight: -1; case .bottomLeft, .bottomRight: 1 }
-    }
-
-    var label: String {
-        switch self {
-        case .topLeft: "top left"
-        case .topRight: "top right"
-        case .bottomLeft: "bottom left"
-        case .bottomRight: "bottom right"
-        }
-    }
-
-    func point(in rect: CGRect) -> CGPoint {
-        switch self {
-        case .topLeft: CGPoint(x: rect.minX, y: rect.minY)
-        case .topRight: CGPoint(x: rect.maxX, y: rect.minY)
-        case .bottomLeft: CGPoint(x: rect.minX, y: rect.maxY)
-        case .bottomRight: CGPoint(x: rect.maxX, y: rect.maxY)
-        }
     }
 }

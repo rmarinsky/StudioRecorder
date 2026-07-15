@@ -96,6 +96,140 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(placement.cornerRadius, 0.08)
     }
 
+    func testBottomRightResizeKeepsTheOppositeCornerAnchored() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.4,
+            height: 0.4,
+            shape: .rectangle
+        )
+
+        let resized = SourcePlacementManipulator.resized(
+            placement,
+            from: .bottomRight,
+            translation: CGSize(width: 200, height: 100),
+            canvasSize: CGSize(width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(resized.centerX, 0.6, accuracy: 0.001)
+        XCTAssertEqual(resized.centerY, 0.6, accuracy: 0.001)
+        XCTAssertEqual(resized.width, 0.6, accuracy: 0.001)
+        XCTAssertEqual(resized.height, 0.6, accuracy: 0.001)
+    }
+
+    func testCornerResizeClampsToTheCanvasWithoutMovingTheOppositeCorner() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.4,
+            height: 0.4,
+            shape: .rectangle
+        )
+
+        let resized = SourcePlacementManipulator.resized(
+            placement,
+            from: .topLeft,
+            translation: CGSize(width: -800, height: -400),
+            canvasSize: CGSize(width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(resized.centerX, 0.35, accuracy: 0.001)
+        XCTAssertEqual(resized.centerY, 0.35, accuracy: 0.001)
+        XCTAssertEqual(resized.width, 0.7, accuracy: 0.001)
+        XCTAssertEqual(resized.height, 0.7, accuracy: 0.001)
+    }
+
+    func testCornerResizeCannotCrossTheOppositeCorner() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.4,
+            height: 0.4,
+            shape: .rectangle
+        )
+
+        let resized = SourcePlacementManipulator.resized(
+            placement,
+            from: .bottomRight,
+            translation: CGSize(width: -900, height: -450),
+            canvasSize: CGSize(width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(resized.centerX, 0.34, accuracy: 0.001)
+        XCTAssertEqual(resized.centerY, 0.34, accuracy: 0.001)
+        XCTAssertEqual(resized.width, 0.08, accuracy: 0.001)
+        XCTAssertEqual(resized.height, 0.08, accuracy: 0.001)
+    }
+
+    func testMoveStaysInsideTheCanvasContinuously() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 0.8,
+            centerY: 0.2,
+            width: 0.2,
+            height: 0.3,
+            shape: .roundedRectangle
+        )
+
+        let moved = SourcePlacementManipulator.moved(
+            placement,
+            translation: CGSize(width: 900, height: -400),
+            canvasSize: CGSize(width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(moved.centerX, 0.9, accuracy: 0.001)
+        XCTAssertEqual(moved.centerY, 0.15, accuracy: 0.001)
+    }
+
+    func testFullCanvasSourceCannotMoveOutsideTheCanvas() {
+        let moved = SourcePlacementManipulator.moved(
+            CapturePresentationSnapshot.default.screen,
+            translation: CGSize(width: 500, height: 300),
+            canvasSize: CGSize(width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(moved.centerX, 0.5, accuracy: 0.001)
+        XCTAssertEqual(moved.centerY, 0.5, accuracy: 0.001)
+    }
+
+    func testResizeHandleHitTargetStaysInsideTheCanvas() {
+        let topLeft = SourcePlacementManipulator.resizeHandlePosition(
+            .topLeft,
+            sourceFrame: CGRect(x: 0, y: 0, width: 1_000, height: 500),
+            canvasSize: CGSize(width: 1_000, height: 500),
+            hitTargetSize: 28
+        )
+        let bottomRight = SourcePlacementManipulator.resizeHandlePosition(
+            .bottomRight,
+            sourceFrame: CGRect(x: 0, y: 0, width: 1_000, height: 500),
+            canvasSize: CGSize(width: 1_000, height: 500),
+            hitTargetSize: 28
+        )
+
+        XCTAssertEqual(topLeft, CGPoint(x: 14, y: 14))
+        XCTAssertEqual(bottomRight, CGPoint(x: 986, y: 486))
+    }
+
+    func testInsetResizeHandlePreservesItsEdgeOffsetWhileDragging() {
+        let movedTopLeft = SourcePlacementManipulator.resizeHandlePosition(
+            .topLeft,
+            sourceFrame: CGRect(x: 10, y: 8, width: 990, height: 492),
+            canvasSize: CGSize(width: 1_000, height: 500),
+            hitTargetSize: 28,
+            anchorSourceFrame: CGRect(x: 0, y: 0, width: 1_000, height: 500)
+        )
+        let movedBottomRight = SourcePlacementManipulator.resizeHandlePosition(
+            .bottomRight,
+            sourceFrame: CGRect(x: 0, y: 0, width: 990, height: 492),
+            canvasSize: CGSize(width: 1_000, height: 500),
+            hitTargetSize: 28,
+            anchorSourceFrame: CGRect(x: 0, y: 0, width: 1_000, height: 500)
+        )
+
+        XCTAssertEqual(movedTopLeft, CGPoint(x: 24, y: 22))
+        XCTAssertEqual(movedBottomRight, CGPoint(x: 976, y: 478))
+    }
+
     func testFullCanvasSourceAlwaysCentersInsideTheCanvas() {
         let placement = SourcePlacementSnapshot(
             centerX: 1,

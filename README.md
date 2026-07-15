@@ -14,7 +14,7 @@ public brand.
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
 - provides a native Projects/Studio shell, exact live display and camera preview, actionable per-track recovery review, and `⌘R` start/stop shortcut;
 - configures Full HD, horizontal or vertical 4K, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
-- previews draggable/resizable screen and camera placement, gives each source independent shape, corner radius, transform, and framing, freezes the scene into the Capture Request, and renders scalable cursor/click treatment through the shared compositor;
+- previews directly selectable screen and camera placement with large corner-resize targets, drag movement, pixel nudging, independent shape/corner radius/transform/framing, freezes the scene into the Capture Request, and reuses the same bounded manipulation in post-recording layout edits;
 - saves named Scene presets locally and switches compatible compositions during a recording or stream; recording projects preserve a timestamped scene timeline so playback and program export reproduce every live layout change;
 - keeps the Studio inspector concise with large Screen, Camera, and Microphone & Audio rows that open focused native source-and-layout popovers;
 - removes the camera background locally with a throttled Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; editable raw camera media remains unchanged;

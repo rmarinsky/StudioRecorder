@@ -3,6 +3,20 @@ import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum StudioCanvasSource: String, Identifiable {
+    case screen
+    case camera
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .screen: "Screen"
+        case .camera: "Camera"
+        }
+    }
+}
+
 struct StudioRecorderRootView: View {
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
@@ -27,6 +41,7 @@ struct StudioRecorderRootView: View {
     @State private var sceneSwitchError: String?
     @State private var sceneLibraryError: String?
     @State private var streamingSceneContract: StudioSceneLiveContract?
+    @State private var selectedCanvasSource: StudioCanvasSource?
 
     private let streamPreflightRunner = StreamPreflightRunner()
 
@@ -176,8 +191,16 @@ struct StudioRecorderRootView: View {
                 break
             }
         }
-        .onChange(of: snapshot.capturesCamera) { _, _ in
+        .onChange(of: snapshot.capturesCamera) { _, capturesCamera in
+            if !capturesCamera, selectedCanvasSource == .camera {
+                selectedCanvasSource = nil
+            }
             Task { await updateLiveScene(for: snapshot.route) }
+        }
+        .onChange(of: snapshot.availableCameras) { _, cameras in
+            if cameras.isEmpty, selectedCanvasSource == .camera {
+                selectedCanvasSource = nil
+            }
         }
     }
 
@@ -557,7 +580,8 @@ struct StudioRecorderRootView: View {
                         screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording,
                         presentation: presentationBinding,
-                        isLocked: snapshot.areRecordingSettingsLocked
+                        selectedSource: $selectedCanvasSource,
+                        isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .task(id: primarySelectedDisplayID) {
@@ -615,6 +639,7 @@ struct StudioRecorderRootView: View {
                         set: { model.send(.setDraftRetentionPolicy($0)) }
                     ),
                     presentation: presentationBinding,
+                    selectedCanvasSource: $selectedCanvasSource,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                 )
                 .frame(width: 304)
@@ -1355,6 +1380,7 @@ private struct StudioInspector: View {
     let codecPolicy: RecordingCodecPolicy
     @Binding var retentionPolicy: MediaRetentionPolicy
     @Binding var presentation: CapturePresentationSnapshot
+    @Binding var selectedCanvasSource: StudioCanvasSource?
     let isLocked: Bool
     @State private var activeSourceSettings: SourceSettings?
 
@@ -1482,6 +1508,18 @@ private struct StudioInspector: View {
                     .padding(.horizontal, 14).padding(.bottom, 18)
             }
         }
+        .onChange(of: capturesCamera) { _, enabled in
+            if enabled, !cameras.isEmpty {
+                selectedCanvasSource = .camera
+            } else if selectedCanvasSource == .camera {
+                selectedCanvasSource = nil
+            }
+        }
+        .onChange(of: cameras) { _, availableCameras in
+            if availableCameras.isEmpty, selectedCanvasSource == .camera {
+                selectedCanvasSource = nil
+            }
+        }
     }
 
     private func sourceSettingsButton(
@@ -1492,6 +1530,14 @@ private struct StudioInspector: View {
     ) -> some View {
         Button {
             activeSourceSettings = settings
+            switch settings {
+            case .screens:
+                selectedCanvasSource = .screen
+            case .camera:
+                selectedCanvasSource = capturesCamera && !cameras.isEmpty ? .camera : nil
+            case .microphone:
+                selectedCanvasSource = nil
+            }
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: icon)
@@ -1512,7 +1558,11 @@ private struct StudioInspector: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(activeSourceSettings == settings ? Color.accentColor.opacity(0.10) : Color.clear)
+        .background(
+            activeSourceSettings == settings || canvasSource(for: settings).map { $0 == selectedCanvasSource } == true
+                ? Color.accentColor.opacity(0.10)
+                : Color.clear
+        )
         .overlay(alignment: .bottom) { Divider() }
         .popover(
             isPresented: Binding(
@@ -1524,6 +1574,14 @@ private struct StudioInspector: View {
             sourceSettingsPanel(settings)
                 .frame(width: 330)
                 .padding(16)
+        }
+    }
+
+    private func canvasSource(for settings: SourceSettings) -> StudioCanvasSource? {
+        switch settings {
+        case .screens: .screen
+        case .camera: .camera
+        case .microphone: nil
         }
     }
 
@@ -1902,6 +1960,12 @@ private struct StudioInspector: View {
 }
 
 private struct LiveProgramPreview: View {
+    private struct ResizeSession {
+        let source: StudioCanvasSource
+        let handle: SourceResizeHandle
+        let placement: SourcePlacementSnapshot
+    }
+
     let screenImage: NSImage?
     let cameraSession: AVCaptureSession?
     let cameraImage: NSImage?
@@ -1910,10 +1974,13 @@ private struct LiveProgramPreview: View {
     let screenPreviewError: String?
     let isRecording: Bool
     @Binding var presentation: CapturePresentationSnapshot
+    @Binding var selectedSource: StudioCanvasSource?
     let isLocked: Bool
 
     @GestureState private var screenDrag: CGSize = .zero
     @GestureState private var cameraDrag: CGSize = .zero
+    @State private var resizeSession: ResizeSession?
+    @FocusState private var isStageFocused: Bool
 
     var body: some View {
         GeometryReader { proxy in
@@ -1936,8 +2003,35 @@ private struct LiveProgramPreview: View {
                             x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
                             y: proxy.size.height * presentation.screen.centerY + screenDrag.height
                         )
-                        .contentShape(Rectangle())
+                        .allowsHitTesting(false)
+
+                    Rectangle()
+                        .fill(Color.white.opacity(0.001))
+                        .frame(
+                            width: proxy.size.width * presentation.screen.width,
+                            height: proxy.size.height * presentation.screen.height
+                        )
+                        .clipShape(sourceShape(
+                            for: presentation.screen,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.screen.width,
+                                height: proxy.size.height * presentation.screen.height
+                            )
+                        ))
+                        .position(
+                            x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
+                            y: proxy.size.height * presentation.screen.centerY + screenDrag.height
+                        )
+                        .contentShape(sourceShape(
+                            for: presentation.screen,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.screen.width,
+                                height: proxy.size.height * presentation.screen.height
+                            )
+                        ))
+                        .onTapGesture { select(.screen) }
                         .gesture(screenDragGesture(in: proxy.size))
+                        .accessibilityLabel("Screen source on canvas")
                 } else if let screenPreviewError {
                     VStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -1980,9 +2074,36 @@ private struct LiveProgramPreview: View {
                             x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
                             y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
                         )
-                        .contentShape(Rectangle())
-                        .gesture(cameraDragGesture(in: proxy.size))
+                        .allowsHitTesting(false)
                         .accessibilityLabel("Selected camera preview")
+
+                    Rectangle()
+                        .fill(Color.white.opacity(0.001))
+                        .frame(
+                            width: proxy.size.width * presentation.camera.width,
+                            height: proxy.size.height * presentation.camera.height
+                        )
+                        .clipShape(sourceShape(
+                            for: presentation.camera,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.camera.width,
+                                height: proxy.size.height * presentation.camera.height
+                            )
+                        ))
+                        .position(
+                            x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
+                            y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
+                        )
+                        .contentShape(sourceShape(
+                            for: presentation.camera,
+                            size: CGSize(
+                                width: proxy.size.width * presentation.camera.width,
+                                height: proxy.size.height * presentation.camera.height
+                            )
+                        ))
+                        .onTapGesture { select(.camera) }
+                        .gesture(cameraDragGesture(in: proxy.size))
+                        .accessibilityLabel("Camera source on canvas")
                 }
 
                 HStack {
@@ -1993,12 +2114,45 @@ private struct LiveProgramPreview: View {
                 .font(.caption2.monospacedDigit().weight(.medium))
                 .foregroundStyle(.white.opacity(0.86))
                 .padding(10)
+                .allowsHitTesting(false)
 
                 if isRecording {
                     Label("REC", systemImage: "record.circle.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.red)
                         .padding(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .allowsHitTesting(false)
+                } else if let selectedSource, !isLocked, isAvailable(selectedSource) {
+                    Text("\(selectedSource.label) selected · Drag to move · Arrow keys nudge")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.90))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.black.opacity(0.58), in: Capsule())
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        .allowsHitTesting(false)
+                }
+
+                if !isLocked, selectedSource == .screen, screenImage != nil {
+                    sourceSelectionOverlay(
+                        for: .screen,
+                        placement: presentation.screen,
+                        translation: screenDrag,
+                        canvasSize: proxy.size
+                    )
+                }
+
+                if !isLocked,
+                   selectedSource == .camera,
+                   presentation.camera.isVisible,
+                   cameraSession != nil {
+                    sourceSelectionOverlay(
+                        for: .camera,
+                        placement: presentation.camera,
+                        translation: cameraDrag,
+                        canvasSize: proxy.size
+                    )
                 }
             }
         }
@@ -2007,7 +2161,12 @@ private struct LiveProgramPreview: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(isRecording ? Color.red : Color.clear, lineWidth: 1)
         }
+        .focusable(!isLocked)
+        .focused($isStageFocused)
+        .focusEffectDisabled()
+        .onMoveCommand(perform: nudgeSelectedSource)
         .accessibilityLabel("Live selected screen and camera preview")
+        .accessibilityHint("Click a source to select it. Drag to move, use its corner handles to resize, or use the arrow keys to nudge.")
     }
 
     @ViewBuilder
@@ -2064,6 +2223,170 @@ private struct LiveProgramPreview: View {
         ).validated()
     }
 
+    private func sourceSelectionOverlay(
+        for source: StudioCanvasSource,
+        placement: SourcePlacementSnapshot,
+        translation: CGSize,
+        canvasSize: CGSize
+    ) -> some View {
+        let frame = selectionFrame(
+            placement: placement,
+            translation: translation,
+            canvasSize: canvasSize
+        )
+        return ZStack {
+            Color.clear.allowsHitTesting(false)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .allowsHitTesting(false)
+
+            ForEach(SourceResizeHandle.allCases) { handle in
+                resizeHandle(handle)
+                    .position(SourcePlacementManipulator.resizeHandlePosition(
+                        handle,
+                        sourceFrame: frame,
+                        canvasSize: canvasSize,
+                        hitTargetSize: 28,
+                        anchorSourceFrame: resizeAnchorFrame(
+                            for: source,
+                            handle: handle,
+                            canvasSize: canvasSize
+                        )
+                    ))
+                    .highPriorityGesture(
+                        resizeGesture(
+                            source: source,
+                            handle: handle,
+                            placement: placement,
+                            canvasSize: canvasSize
+                        )
+                    )
+            }
+        }
+        .frame(width: canvasSize.width, height: canvasSize.height)
+    }
+
+    private func resizeHandle(_ handle: SourceResizeHandle) -> some View {
+        Circle()
+            .fill(.background)
+            .frame(width: 11, height: 11)
+            .overlay {
+                Circle().stroke(Color.accentColor, lineWidth: 2)
+            }
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .accessibilityLabel(handle.accessibilityLabel)
+            .accessibilityHint("Drag to resize the selected source.")
+    }
+
+    private func selectionFrame(
+        placement: SourcePlacementSnapshot,
+        translation: CGSize,
+        canvasSize: CGSize
+    ) -> CGRect {
+        CGRect(
+            x: canvasSize.width * (placement.centerX - placement.width / 2) + translation.width,
+            y: canvasSize.height * (placement.centerY - placement.height / 2) + translation.height,
+            width: canvasSize.width * placement.width,
+            height: canvasSize.height * placement.height
+        )
+    }
+
+    private func resizeAnchorFrame(
+        for source: StudioCanvasSource,
+        handle: SourceResizeHandle,
+        canvasSize: CGSize
+    ) -> CGRect? {
+        guard let resizeSession,
+              resizeSession.source == source,
+              resizeSession.handle == handle else { return nil }
+        return selectionFrame(
+            placement: resizeSession.placement,
+            translation: .zero,
+            canvasSize: canvasSize
+        )
+    }
+
+    private func resizeGesture(
+        source: StudioCanvasSource,
+        handle: SourceResizeHandle,
+        placement: SourcePlacementSnapshot,
+        canvasSize: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard !isLocked else { return }
+                select(source)
+                if resizeSession?.source != source || resizeSession?.handle != handle {
+                    resizeSession = ResizeSession(source: source, handle: handle, placement: placement)
+                }
+                guard let resizeSession else { return }
+                setPlacement(
+                    SourcePlacementManipulator.resized(
+                        resizeSession.placement,
+                        from: handle,
+                        translation: value.translation,
+                        canvasSize: canvasSize
+                    ),
+                    for: source
+                )
+            }
+            .onEnded { _ in
+                guard !isLocked else { return }
+                presentation = presentation.validated()
+                resizeSession = nil
+            }
+    }
+
+    private func setPlacement(_ placement: SourcePlacementSnapshot, for source: StudioCanvasSource) {
+        switch source {
+        case .screen:
+            presentation.screen = placement
+        case .camera:
+            presentation.camera = placement
+        }
+    }
+
+    private func select(_ source: StudioCanvasSource) {
+        guard !isLocked, isAvailable(source) else { return }
+        selectedSource = source
+        isStageFocused = true
+    }
+
+    private func isAvailable(_ source: StudioCanvasSource) -> Bool {
+        switch source {
+        case .screen:
+            screenImage != nil && presentation.screen.isVisible
+        case .camera:
+            cameraSession != nil && presentation.camera.isVisible
+        }
+    }
+
+    private func nudgeSelectedSource(_ direction: MoveCommandDirection) {
+        guard !isLocked, let selectedSource, isAvailable(selectedSource) else {
+            if selectedSource != nil { selectedSource = nil }
+            return
+        }
+        let canvas = presentation.canvas.validated()
+        let horizontalStep = 1 / CGFloat(canvas.width)
+        let verticalStep = 1 / CGFloat(canvas.height)
+        var placement: SourcePlacementSnapshot = switch selectedSource {
+        case .screen: presentation.screen
+        case .camera: presentation.camera
+        }
+        switch direction {
+        case .left: placement.centerX -= horizontalStep
+        case .right: placement.centerX += horizontalStep
+        case .up: placement.centerY -= verticalStep
+        case .down: placement.centerY += verticalStep
+        @unknown default: return
+        }
+        setPlacement(placement.validated(), for: selectedSource)
+        presentation = presentation.validated()
+    }
+
     private func sourceShape(for placement: SourcePlacementSnapshot, size: CGSize) -> AnyShape {
         switch placement.shape {
         case .rectangle:
@@ -2079,12 +2402,24 @@ private struct LiveProgramPreview: View {
         DragGesture(minimumDistance: 2)
             .updating($screenDrag) { value, state, _ in
                 guard !isLocked else { return }
-                state = value.translation
+                let moved = SourcePlacementManipulator.moved(
+                    presentation.screen,
+                    translation: value.translation,
+                    canvasSize: size
+                )
+                state = CGSize(
+                    width: (moved.centerX - presentation.screen.centerX) * size.width,
+                    height: (moved.centerY - presentation.screen.centerY) * size.height
+                )
             }
+            .onChanged { _ in select(.screen) }
             .onEnded { value in
                 guard !isLocked, size.width > 0, size.height > 0 else { return }
-                presentation.screen.centerX += value.translation.width / size.width
-                presentation.screen.centerY += value.translation.height / size.height
+                presentation.screen = SourcePlacementManipulator.moved(
+                    presentation.screen,
+                    translation: value.translation,
+                    canvasSize: size
+                )
                 presentation = presentation.validated()
             }
     }
@@ -2093,12 +2428,24 @@ private struct LiveProgramPreview: View {
         DragGesture(minimumDistance: 2)
             .updating($cameraDrag) { value, state, _ in
                 guard !isLocked else { return }
-                state = value.translation
+                let moved = SourcePlacementManipulator.moved(
+                    presentation.camera,
+                    translation: value.translation,
+                    canvasSize: size
+                )
+                state = CGSize(
+                    width: (moved.centerX - presentation.camera.centerX) * size.width,
+                    height: (moved.centerY - presentation.camera.centerY) * size.height
+                )
             }
+            .onChanged { _ in select(.camera) }
             .onEnded { value in
                 guard !isLocked, size.width > 0, size.height > 0 else { return }
-                presentation.camera.centerX += value.translation.width / size.width
-                presentation.camera.centerY += value.translation.height / size.height
+                presentation.camera = SourcePlacementManipulator.moved(
+                    presentation.camera,
+                    translation: value.translation,
+                    canvasSize: size
+                )
                 presentation = presentation.validated()
             }
     }

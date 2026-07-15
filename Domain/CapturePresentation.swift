@@ -302,6 +302,142 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+enum SourceResizeHandle: String, CaseIterable, Identifiable, Sendable {
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+
+    var id: String { rawValue }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .topLeft: "Top-left resize handle"
+        case .topRight: "Top-right resize handle"
+        case .bottomLeft: "Bottom-left resize handle"
+        case .bottomRight: "Bottom-right resize handle"
+        }
+    }
+}
+
+enum SourcePlacementManipulator {
+    private static let minimumDimension: CGFloat = 0.08
+
+    static func moved(
+        _ placement: SourcePlacementSnapshot,
+        translation: CGSize,
+        canvasSize: CGSize
+    ) -> SourcePlacementSnapshot {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            return placement.validated()
+        }
+        var result = placement.validated()
+        result.centerX += translation.width / canvasSize.width
+        result.centerY += translation.height / canvasSize.height
+        return result.validated()
+    }
+
+    static func resized(
+        _ placement: SourcePlacementSnapshot,
+        from handle: SourceResizeHandle,
+        translation: CGSize,
+        canvasSize: CGSize
+    ) -> SourcePlacementSnapshot {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            return placement.validated()
+        }
+
+        let placement = placement.validated()
+        var minimumX = placement.centerX - placement.width / 2
+        var maximumX = placement.centerX + placement.width / 2
+        var minimumY = placement.centerY - placement.height / 2
+        var maximumY = placement.centerY + placement.height / 2
+        let deltaX = translation.width / canvasSize.width
+        let deltaY = translation.height / canvasSize.height
+
+        switch handle {
+        case .topLeft, .bottomLeft:
+            minimumX = min(max(minimumX + deltaX, 0), maximumX - minimumDimension)
+        case .topRight, .bottomRight:
+            maximumX = max(min(maximumX + deltaX, 1), minimumX + minimumDimension)
+        }
+
+        switch handle {
+        case .topLeft, .topRight:
+            minimumY = min(max(minimumY + deltaY, 0), maximumY - minimumDimension)
+        case .bottomLeft, .bottomRight:
+            maximumY = max(min(maximumY + deltaY, 1), minimumY + minimumDimension)
+        }
+
+        return SourcePlacementSnapshot(
+            centerX: (minimumX + maximumX) / 2,
+            centerY: (minimumY + maximumY) / 2,
+            width: maximumX - minimumX,
+            height: maximumY - minimumY,
+            shape: placement.shape,
+            cornerRadius: placement.cornerRadius,
+            isVisible: placement.isVisible,
+            isMirrored: placement.isMirrored
+        ).validated()
+    }
+
+    static func resizeHandlePosition(
+        _ handle: SourceResizeHandle,
+        sourceFrame: CGRect,
+        canvasSize: CGSize,
+        hitTargetSize: CGFloat,
+        anchorSourceFrame: CGRect? = nil
+    ) -> CGPoint {
+        let rawPosition = rawResizeHandlePosition(handle, sourceFrame: sourceFrame)
+        let anchorOffset: CGSize
+        if let anchorSourceFrame {
+            let rawAnchor = rawResizeHandlePosition(handle, sourceFrame: anchorSourceFrame)
+            let visibleAnchor = clampedHandlePosition(
+                rawAnchor,
+                canvasSize: canvasSize,
+                hitTargetSize: hitTargetSize
+            )
+            anchorOffset = CGSize(
+                width: visibleAnchor.x - rawAnchor.x,
+                height: visibleAnchor.y - rawAnchor.y
+            )
+        } else {
+            anchorOffset = .zero
+        }
+        return clampedHandlePosition(
+            CGPoint(x: rawPosition.x + anchorOffset.width, y: rawPosition.y + anchorOffset.height),
+            canvasSize: canvasSize,
+            hitTargetSize: hitTargetSize
+        )
+    }
+
+    private static func rawResizeHandlePosition(
+        _ handle: SourceResizeHandle,
+        sourceFrame: CGRect
+    ) -> CGPoint {
+        switch handle {
+        case .topLeft: CGPoint(x: sourceFrame.minX, y: sourceFrame.minY)
+        case .topRight: CGPoint(x: sourceFrame.maxX, y: sourceFrame.minY)
+        case .bottomLeft: CGPoint(x: sourceFrame.minX, y: sourceFrame.maxY)
+        case .bottomRight: CGPoint(x: sourceFrame.maxX, y: sourceFrame.maxY)
+        }
+    }
+
+    private static func clampedHandlePosition(
+        _ position: CGPoint,
+        canvasSize: CGSize,
+        hitTargetSize: CGFloat
+    ) -> CGPoint {
+        let inset = max(hitTargetSize / 2, 0)
+        let maximumX = max(canvasSize.width - inset, inset)
+        let maximumY = max(canvasSize.height - inset, inset)
+        return CGPoint(
+            x: min(max(position.x, inset), maximumX),
+            y: min(max(position.y, inset), maximumY)
+        )
+    }
+}
+
 struct CursorTreatmentSnapshot: Codable, Equatable, Sendable {
     var scale: CGFloat
     var highlightsClicks: Bool
