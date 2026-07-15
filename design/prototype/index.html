@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio Recorder — Projects</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-side">
+        <div class="traffic-lights" aria-label="Window controls">
+          <span class="traffic-light close"></span>
+          <span class="traffic-light minimize"></span>
+          <span class="traffic-light maximize"></span>
+        </div>
+      </div>
+      <div class="titlebar-main">
+        <div class="toolbar-heading">Projects</div>
+        <div class="toolbar-actions">
+          <label class="search-field">
+            <span data-icon="search"></span>
+            <input type="search" placeholder="Search projects" aria-label="Search projects">
+          </label>
+          <a class="button primary" href="studio-ready.html">
+            <span data-icon="plus"></span>
+            New Recording
+            <span class="kbd">⌘N</span>
+          </a>
+          <a class="icon-button" href="settings.html" aria-label="Settings"><span data-icon="settings"></span></a>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>
+            <span class="brand-name">Studio Recorder</span>
+            <span class="brand-build">CAPTURE SLICE</span>
+          </span>
+        </div>
+
+        <nav class="nav-group" aria-label="Main navigation">
+          <a class="nav-item active" href="index.html"><span data-icon="projects"></span><span>Projects</span></a>
+          <a class="nav-item" href="studio-ready.html"><span data-icon="studio"></span><span>Studio</span></a>
+        </nav>
+
+        <div class="nav-label">Attention</div>
+        <nav class="nav-group" aria-label="Recovery navigation">
+          <a class="nav-item" href="recovery.html">
+            <span data-icon="recovery"></span><span>Recovery</span><span class="badge warning">1</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="storage-line"><span>Recording storage</span><span class="mono">182 GB free</span></div>
+          <div class="progress-track" aria-label="Storage used"><span style="width: 36%"></span></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <div class="workspace-scroll">
+          <div class="page">
+            <div class="page-header">
+              <div>
+                <p class="eyebrow">Monday, 13 July</p>
+                <h1>Your projects</h1>
+                <p class="lede">Raw tracks stay recoverable. Layout and cuts remain non-destructive.</p>
+              </div>
+            </div>
+
+            <div class="notice">
+              <span class="source-icon"><span data-icon="warning"></span></span>
+              <div class="notice-copy">
+                <strong>One recording did not close cleanly</strong>
+                <span>Two screen tracks finalized; the primary audio track needs review.</span>
+              </div>
+              <a class="button" href="recovery.html">Review Recovery <span data-icon="chevron"></span></a>
+            </div>
+
+            <article class="project-feature">
+              <a class="project-thumb" href="editor.html" aria-label="Open ScreenCaptureKit deep dive">
+                <span class="thumb-window"></span>
+                <span class="thumb-camera"></span>
+                <span class="duration-pill">00:28:14</span>
+              </a>
+              <div class="feature-copy">
+                <span class="badge accent" style="align-self: flex-start; margin-bottom: 10px;">Most recent</span>
+                <h2>ScreenCaptureKit deep dive</h2>
+                <p class="muted">Two displays, system audio, and microphone captured as recoverable raw tracks.</p>
+                <div class="metadata-line mono">
+                  <span>Today 10:42</span>
+                  <span>1080p · 30 fps</span>
+                  <span>4.8 GB</span>
+                </div>
+                <div class="feature-actions">
+                  <a class="button primary" href="editor.html">Open Project</a>
+                  <button class="button" data-toast-message="Project package revealed in Finder."><span data-icon="folder"></span>Show in Finder</button>
+                </div>
+              </div>
+            </article>
+
+            <div class="section-heading">
+              <h2>Earlier recordings</h2>
+              <button class="button ghost" data-toast-message="Project sort menu opened.">Date created <span data-icon="chevron"></span></button>
+            </div>
+
+            <section class="project-list" aria-label="Earlier recordings">
+              <a class="project-row" href="editor.html">
+                <span class="row-thumb"><span class="thumb-window"></span><span class="duration-pill">14:09</span></span>
+                <span>
+                  <h3>Party Hard speaker walkthrough</h3>
+                  <span class="row-meta mono"><span>Yesterday 19:12</span><span>1 display</span><span>2.1 GB</span></span>
+                </span>
+                <span class="row-actions"><span class="badge healthy">Finalized</span><span data-icon="chevron"></span></span>
+              </a>
+              <a class="project-row" href="editor.html">
+                <span class="row-thumb"><span class="thumb-window"></span><span class="duration-pill">42:31</span></span>
+                <span>
+                  <h3>QA CoE stream rehearsal</h3>
+                  <span class="row-meta mono"><span>11 Jul 18:40</span><span>2 displays</span><span>7.6 GB</span></span>
+                </span>
+                <span class="row-actions"><span class="badge">Raw tracks</span><span data-icon="chevron"></span></span>
+              </a>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast" data-toast-region role="status"><span data-icon="check"></span><span data-toast-copy></span></div>
+  <script src="assets/prototype.js"></script>
+</body>
+</html>

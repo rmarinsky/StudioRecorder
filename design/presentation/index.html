@@ -1,0 +1,1560 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Studio Recorder — Design Direction</title>
+  <style>
+    :root {
+      --bg: #18191b;
+      --deep: #111214;
+      --panel: #222326;
+      --raised: #2b2c30;
+      --line: #3a3b3f;
+      --text: #f2f0eb;
+      --muted: #a7a49f;
+      --faint: #77777c;
+      --coral: #e6675b;
+      --green: #62b982;
+      --amber: #d5a44e;
+      --paper: #f1efea;
+      --slide-w: 1280px;
+      --slide-h: 720px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--deep);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .viewport {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 14% 12%, rgba(230, 103, 91, 0.08), transparent 26%),
+        var(--deep);
+    }
+
+    .deck {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: var(--slide-w);
+      height: var(--slide-h);
+      transform: translate(-50%, -50%) scale(1);
+      transform-origin: center;
+      overflow: hidden;
+      border-radius: 3px;
+      background: var(--bg);
+      box-shadow: 0 28px 88px rgba(0, 0, 0, 0.46);
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      padding: 48px 72px 42px;
+      overflow: hidden;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      background: var(--bg);
+      transition: opacity 180ms ease;
+    }
+
+    .slide.active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      z-index: 2;
+    }
+
+    .slide.cover,
+    .slide.decision {
+      background: var(--deep);
+    }
+
+    .slide-header {
+      position: relative;
+      z-index: 2;
+      min-height: 106px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--coral);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.045em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      margin-bottom: 30px;
+      font-size: 80px;
+      line-height: 0.96;
+      letter-spacing: -0.045em;
+      font-weight: 680;
+    }
+
+    h2 {
+      margin: 0;
+      max-width: 1136px;
+      font-size: 48px;
+      line-height: 1;
+      letter-spacing: -0.035em;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 25px;
+      line-height: 1.12;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      font-size: 20px;
+      line-height: 1.36;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size: 24px;
+      line-height: 1.3;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .small {
+      font-size: 15px;
+    }
+
+    .mono {
+      font-family: "SF Mono", Menlo, Monaco, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-content {
+      position: relative;
+      z-index: 1;
+      min-height: 0;
+    }
+
+    .footer {
+      position: absolute;
+      left: 72px;
+      right: 72px;
+      bottom: 17px;
+      z-index: 4;
+      display: flex;
+      justify-content: space-between;
+      color: var(--faint);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .brand-mark {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--raised);
+    }
+
+    .brand-mark::before,
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      top: 13px;
+      bottom: 13px;
+      width: 5px;
+      border-radius: 4px;
+      background: var(--coral);
+    }
+
+    .brand-mark::before {
+      left: 14px;
+    }
+
+    .brand-mark::after {
+      right: 14px;
+    }
+
+    .cover {
+      display: block;
+      padding-top: 68px;
+    }
+
+    .cover .eyebrow {
+      margin-top: 38px;
+    }
+
+    .cover h1 {
+      margin-top: 62px;
+    }
+
+    .cover-subtitle {
+      margin-bottom: 35px;
+      color: var(--muted);
+      font-size: 32px;
+      line-height: 1.2;
+    }
+
+    .accent-rule {
+      width: 144px;
+      height: 4px;
+      margin: 0 0 42px;
+      border-radius: 2px;
+      background: var(--coral);
+    }
+
+    .cover-note {
+      max-width: 750px;
+      font-size: 25px;
+    }
+
+    .cover-meta {
+      position: absolute;
+      left: 72px;
+      right: 72px;
+      bottom: 46px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--faint);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0.045em;
+    }
+
+    .split {
+      height: 100%;
+      display: grid;
+      align-items: center;
+      gap: 48px;
+    }
+
+    .split.media-right {
+      grid-template-columns: 326px minmax(0, 1fr);
+    }
+
+    .split.media-left {
+      grid-template-columns: minmax(0, 1fr) 304px;
+    }
+
+    .mockup {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1.6;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border: 8px solid var(--raised);
+      border-radius: 18px;
+      background: var(--deep);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), inset 0 0 0 1px var(--line);
+    }
+
+    .mockup img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+    }
+
+    .point-list {
+      display: grid;
+      gap: 24px;
+    }
+
+    .point {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .point-number {
+      color: var(--coral);
+      font-size: 27px;
+      line-height: 1;
+      font-weight: 650;
+    }
+
+    .point h3 {
+      font-size: 22px;
+    }
+
+    .point p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .section-label {
+      margin: 0 0 10px;
+      color: var(--coral);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .divider {
+      height: 1px;
+      margin: 28px 0;
+      background: var(--line);
+    }
+
+    .product-flow {
+      position: relative;
+      height: 405px;
+      margin-top: 22px;
+    }
+
+    .flow-line {
+      position: absolute;
+      left: 105px;
+      right: 105px;
+      top: 191px;
+      height: 3px;
+      background: var(--line);
+    }
+
+    .flow-nodes {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 190px 250px 190px 190px;
+      justify-content: space-between;
+      align-items: start;
+      padding: 70px 16px 0;
+    }
+
+    .flow-node {
+      height: 96px;
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--panel);
+      text-align: center;
+    }
+
+    .flow-node.project {
+      height: 128px;
+      margin-top: -32px;
+      color: #fff8f5;
+      border-color: transparent;
+      background: var(--coral);
+      box-shadow: 0 14px 28px rgba(84, 20, 16, 0.28);
+    }
+
+    .node-kicker {
+      color: var(--faint);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.035em;
+    }
+
+    .project .node-kicker {
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .node-title {
+      font-size: 25px;
+      line-height: 1.05;
+      font-weight: 620;
+    }
+
+    .flow-dots {
+      position: absolute;
+      left: 102px;
+      right: 102px;
+      top: 185px;
+      z-index: 2;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+
+    .flow-dots i {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: var(--coral);
+    }
+
+    .flow-promise {
+      position: absolute;
+      left: 176px;
+      right: 176px;
+      bottom: 4px;
+      padding: 19px 28px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--deep);
+      text-align: center;
+    }
+
+    .flow-promise strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 25px;
+    }
+
+    .flow-promise span {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .ia-copy {
+      display: grid;
+      align-content: start;
+      gap: 14px;
+    }
+
+    .ia-copy h3 {
+      margin-bottom: 5px;
+      color: var(--coral);
+      font-size: 17px;
+      letter-spacing: 0.035em;
+    }
+
+    .ia-copy p {
+      margin-bottom: 14px;
+      font-size: 21px;
+    }
+
+    .context-row strong {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 21px;
+    }
+
+    .context-row.recovery strong {
+      color: var(--amber);
+    }
+
+    .context-row span {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .visual-system {
+      display: grid;
+      grid-template-columns: 720px minmax(0, 1fr);
+      gap: 58px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .token-copy {
+      display: grid;
+      align-content: center;
+      gap: 25px;
+    }
+
+    .token-copy .kicker {
+      margin: 0;
+      color: var(--faint);
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .token-copy > h3 {
+      margin: -12px 0 0;
+      font-size: 30px;
+    }
+
+    .token-row {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr);
+      gap: 15px;
+      align-items: start;
+    }
+
+    .swatch {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+    }
+
+    .swatch.coral {
+      background: var(--coral);
+    }
+
+    .swatch.green {
+      background: var(--green);
+    }
+
+    .token-row strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 20px;
+    }
+
+    .token-row span {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .surface-swatches {
+      display: flex;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    .surface-swatches i {
+      width: 48px;
+      height: 28px;
+      border-radius: 7px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .surface-swatches i:nth-child(1) {
+      background: var(--paper);
+    }
+
+    .surface-swatches i:nth-child(2) {
+      background: var(--panel);
+    }
+
+    .surface-swatches i:nth-child(3) {
+      background: var(--raised);
+    }
+
+    .ready-layout,
+    .editor-layout {
+      height: 100%;
+      display: grid;
+      grid-template-columns: 820px minmax(0, 1fr);
+      gap: 38px;
+      align-items: center;
+    }
+
+    .trust-copy {
+      display: grid;
+      align-content: center;
+      gap: 25px;
+    }
+
+    .trust-statement {
+      margin-bottom: 4px;
+      font-size: 28px;
+      line-height: 1.12;
+      font-weight: 620;
+    }
+
+    .trust-copy .accent-rule {
+      width: 260px;
+      height: 3px;
+      margin-bottom: 5px;
+    }
+
+    .trust-item {
+      font-size: 21px;
+      font-weight: 570;
+    }
+
+    .trust-item.healthy {
+      color: var(--green);
+    }
+
+    .recovery-copy > p:first-of-type {
+      margin-bottom: 24px;
+      color: var(--text);
+      font-size: 24px;
+      line-height: 1.28;
+    }
+
+    .amber-rule {
+      width: 290px;
+      height: 3px;
+      margin: 0 0 28px;
+      background: var(--amber);
+    }
+
+    .recovery-state {
+      margin-bottom: 24px;
+    }
+
+    .recovery-state strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 21px;
+    }
+
+    .recovery-state.finalized strong {
+      color: var(--green);
+    }
+
+    .recovery-state.partial strong {
+      color: var(--amber);
+    }
+
+    .recovery-state span {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .target-copy {
+      display: grid;
+      align-content: center;
+      gap: 24px;
+    }
+
+    .target-copy .eyebrow {
+      margin-bottom: 2px;
+    }
+
+    .target-copy h3 {
+      font-size: 30px;
+      line-height: 1.16;
+    }
+
+    .target-item {
+      font-size: 21px;
+    }
+
+    .target-boundary {
+      margin-top: 2px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      text-align: center;
+    }
+
+    .target-boundary strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--amber);
+      font-size: 17px;
+    }
+
+    .target-boundary span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .settings-list {
+      display: grid;
+      gap: 23px;
+      margin-top: 28px;
+    }
+
+    .settings-list span {
+      font-size: 21px;
+      font-weight: 560;
+    }
+
+    .locked {
+      margin-top: 30px;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--coral);
+      background: var(--deep);
+      font-size: 18px;
+      font-weight: 650;
+      text-align: center;
+    }
+
+    .roadmap {
+      position: relative;
+      height: 445px;
+      margin-top: 13px;
+    }
+
+    .roadmap-line {
+      position: absolute;
+      left: 60px;
+      right: 60px;
+      top: 173px;
+      height: 4px;
+      background: var(--line);
+    }
+
+    .phase-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 36px;
+    }
+
+    .phase {
+      position: relative;
+      padding-top: 76px;
+    }
+
+    .phase::after {
+      content: "";
+      position: absolute;
+      top: 161px;
+      left: 47px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--coral);
+    }
+
+    .phase.future::after {
+      background: var(--faint);
+    }
+
+    .phase-number {
+      color: var(--coral);
+      font-size: 42px;
+      line-height: 1;
+      font-weight: 650;
+    }
+
+    .future .phase-number {
+      color: var(--faint);
+    }
+
+    .phase-status {
+      margin-top: 8px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .phase:nth-child(n+3) .phase-status {
+      color: var(--faint);
+    }
+
+    .phase h3 {
+      margin-top: 108px;
+      font-size: 25px;
+    }
+
+    .phase p {
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .roadmap-promise {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 17px 24px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--deep);
+      text-align: center;
+    }
+
+    .roadmap-promise strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 24px;
+    }
+
+    .roadmap-promise span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .decision {
+      display: block;
+      padding-top: 62px;
+    }
+
+    .decision .eyebrow {
+      margin-top: 42px;
+    }
+
+    .decision h2 {
+      margin-top: 62px;
+      font-size: 64px;
+    }
+
+    .decision-lead {
+      margin-top: 48px;
+      color: var(--muted);
+      font-size: 28px;
+    }
+
+    .decision-rule {
+      height: 1px;
+      margin: 48px 0 42px;
+      background: var(--line);
+    }
+
+    .decision-actions {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 52px;
+    }
+
+    .decision-action strong {
+      display: block;
+      margin-bottom: 22px;
+      color: var(--coral);
+      font-size: 34px;
+    }
+
+    .decision-action h3 {
+      font-size: 23px;
+    }
+
+    .decision-action p {
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .decision-note {
+      position: absolute;
+      left: 76px;
+      bottom: 44px;
+      color: var(--faint);
+      font-size: 14px;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+
+    .slide.active .reveal {
+      animation: reveal 420ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+      animation-delay: var(--delay, 0ms);
+    }
+
+    @keyframes reveal {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .progress {
+      position: fixed;
+      z-index: 20;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .progress span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: var(--coral);
+      transition: width 220ms ease;
+    }
+
+    .controls {
+      position: fixed;
+      z-index: 30;
+      right: 18px;
+      bottom: 16px;
+      display: flex;
+      gap: 7px;
+      padding: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      background: rgba(34, 35, 38, 0.82);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24);
+      backdrop-filter: blur(18px) saturate(160%);
+      opacity: 0.28;
+      transition: opacity 160ms ease;
+    }
+
+    .controls:hover,
+    .controls:focus-within {
+      opacity: 1;
+    }
+
+    .control {
+      min-width: 34px;
+      height: 30px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 6px;
+      color: var(--text);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .control:hover {
+      background: var(--raised);
+    }
+
+    .control:focus-visible {
+      outline: 2px solid var(--coral);
+      outline-offset: 2px;
+    }
+
+    .counter {
+      position: fixed;
+      z-index: 24;
+      left: 18px;
+      bottom: 18px;
+      color: var(--faint);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .overview,
+    .help {
+      position: fixed;
+      z-index: 60;
+      inset: 0;
+      display: none;
+      overflow: auto;
+      padding: 42px;
+      background: rgba(17, 18, 20, 0.95);
+      backdrop-filter: blur(20px);
+    }
+
+    .overview.open,
+    .help.open {
+      display: block;
+    }
+
+    .overview-header,
+    .help-card {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
+
+    .overview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+    }
+
+    .overview-header h2 {
+      font-size: 38px;
+    }
+
+    .overview-grid {
+      width: min(1180px, 100%);
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 0 auto;
+    }
+
+    .overview-card {
+      min-height: 116px;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      align-items: center;
+      gap: 14px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      background: var(--panel);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .overview-card:hover,
+    .overview-card.current {
+      border-color: var(--coral);
+      background: var(--raised);
+    }
+
+    .overview-card strong {
+      color: var(--coral);
+      font-size: 22px;
+    }
+
+    .overview-card span {
+      font-size: 17px;
+      line-height: 1.2;
+    }
+
+    .help {
+      display: none;
+      place-items: center;
+    }
+
+    .help.open {
+      display: grid;
+    }
+
+    .help-card {
+      max-width: 620px;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+    }
+
+    .help-card h2 {
+      margin-bottom: 28px;
+      font-size: 38px;
+    }
+
+    .shortcut-grid {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 14px 18px;
+      align-items: center;
+      font-size: 18px;
+    }
+
+    kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      padding: 3px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--raised);
+      font: 14px/1 "SF Mono", Menlo, monospace;
+    }
+
+    @media (max-width: 860px) {
+      .controls {
+        opacity: 0.9;
+      }
+
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    @media print {
+      @page {
+        size: 13.333in 7.5in;
+        margin: 0;
+      }
+
+      html,
+      body {
+        width: auto;
+        height: auto;
+        overflow: visible;
+        background: #fff;
+      }
+
+      .viewport {
+        width: auto;
+        height: auto;
+        overflow: visible;
+        background: #fff;
+      }
+
+      .deck {
+        position: static;
+        width: 1280px;
+        height: auto;
+        transform: none !important;
+        box-shadow: none;
+      }
+
+      .slide {
+        position: relative;
+        display: grid;
+        width: 1280px;
+        height: 720px;
+        opacity: 1;
+        visibility: visible;
+        page-break-after: always;
+      }
+
+      .reveal {
+        opacity: 1;
+        transform: none;
+      }
+
+      .progress,
+      .controls,
+      .counter,
+      .overview,
+      .help {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="viewport" id="viewport">
+    <div class="deck" id="deck" aria-live="polite">
+      <section class="slide cover active" data-title="Studio Recorder">
+        <div class="brand-mark reveal"></div>
+        <p class="eyebrow reveal" style="--delay: 70ms">Native macOS · Product / UX</p>
+        <h1 class="reveal" style="--delay: 130ms">Studio Recorder</h1>
+        <p class="cover-subtitle reveal" style="--delay: 190ms">Capture first. Non-destructive editing later.</p>
+        <div class="accent-rule reveal" style="--delay: 240ms"></div>
+        <p class="cover-note reveal" style="--delay: 290ms">Дизайн-напрямок для зрозумілої, надійної студії запису</p>
+        <div class="cover-meta">
+          <span>JULY 2026</span>
+          <span>PRODUCT DESIGN DIRECTION</span>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Permission state пояснює блокер">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Current UX debt</p>
+          <h2>Permission state має пояснювати блокер</h2>
+        </header>
+        <div class="slide-content split media-right">
+          <div class="reveal" style="--delay: 80ms">
+            <p class="lead">Замість нескінченного “Checking…” користувач отримує діагноз і наступну дію.</p>
+            <div class="point-list">
+              <div class="point"><span class="point-number">01</span><div><h3>Назвати permission</h3><p>Screen Recording, Microphone або Camera.</p></div></div>
+              <div class="point"><span class="point-number">02</span><div><h3>Дати repair action</h3><p>Open System Settings без пошуку потрібного меню.</p></div></div>
+              <div class="point"><span class="point-number">03</span><div><h3>Перевірити повторно</h3><p>Автоматично після повернення в апку.</p></div></div>
+            </div>
+          </div>
+          <div class="mockup reveal" style="--delay: 160ms">
+            <img src="../previews/onboarding.png" alt="Permission diagnosis screen">
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>02</span></div>
+      </section>
+
+      <section class="slide" data-title="Project — центр продукту">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Product model</p>
+          <h2>Project — центр продукту</h2>
+        </header>
+        <div class="slide-content">
+          <p class="lead reveal" style="--delay: 80ms">Capture створює durable package. Editor і Recovery працюють з ним, а не з випадковими файлами.</p>
+          <div class="product-flow reveal" style="--delay: 150ms">
+            <div class="flow-line"></div>
+            <div class="flow-dots"><i></i><i></i><i></i><i></i></div>
+            <div class="flow-nodes">
+              <div class="flow-node"><span class="node-kicker">CAPTURE</span><span class="node-title">Session</span></div>
+              <div class="flow-node project"><span class="node-kicker">PROJECT PACKAGE</span><span class="node-title">Raw tracks<br>Manifest + journal</span></div>
+              <div class="flow-node"><span class="node-kicker">TARGET STATE</span><span class="node-title">Editor</span></div>
+              <div class="flow-node"><span class="node-kicker">DERIVED</span><span class="node-title">Export</span></div>
+            </div>
+            <div class="flow-promise"><strong>Raw files залишаються недоторканими</strong><span>Recovery читає той самий journal. Editor зберігає лише інструкції для derived output.</span></div>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>03</span></div>
+      </section>
+
+      <section class="slide" data-title="Два постійні простори">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Information architecture</p>
+          <h2>Два постійні простори. Решта — контекст.</h2>
+        </header>
+        <div class="slide-content split media-right">
+          <div class="ia-copy reveal" style="--delay: 80ms">
+            <div><h3>PROJECTS</h3><p>Відкрити, продовжити або знайти durable project.</p></div>
+            <div><h3>STUDIO</h3><p>Налаштувати sources, перевірити audio і записати.</p></div>
+            <div class="divider"></div>
+            <div class="context-row recovery"><strong>Recovery</strong><span>з’являється лише для interrupted package</span></div>
+            <div class="context-row"><strong>Settings</strong><span>окреме compact preferences window</span></div>
+          </div>
+          <div class="mockup reveal" style="--delay: 160ms">
+            <img src="../previews/index.png" alt="Projects screen">
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>04</span></div>
+      </section>
+
+      <section class="slide" data-title="Студійна тиша. Один сигнал.">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Visual system</p>
+          <h2>Студійна тиша. Один сигнал.</h2>
+        </header>
+        <div class="slide-content visual-system">
+          <div class="mockup reveal" style="--delay: 80ms">
+            <img src="../previews/studio-ready-light.png" alt="Studio Recorder light appearance">
+          </div>
+          <div class="token-copy reveal" style="--delay: 160ms">
+            <p class="kicker">DARK PRIMARY</p>
+            <h3>Media first</h3>
+            <p class="muted">Темний production desk тримає увагу на preview і timeline.</p>
+            <div class="token-row"><i class="swatch coral"></i><div><strong>Signal Coral</strong><span>record · selection · playhead</span></div></div>
+            <div class="token-row"><i class="swatch green"></i><div><strong>Semantic only</strong><span>healthy sources, not a second accent</span></div></div>
+            <div class="surface-swatches"><i></i><i></i><i></i></div>
+            <span class="muted small">Light mode designed separately</span>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>05</span></div>
+      </section>
+
+      <section class="slide" data-title="Ready відповідає на чотири питання">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Studio · Before recording</p>
+          <h2>Ready має відповісти на чотири питання</h2>
+        </header>
+        <div class="slide-content ready-layout">
+          <div class="mockup reveal" style="--delay: 80ms">
+            <img src="../previews/studio-ready.png" alt="Studio ready state">
+          </div>
+          <div class="point-list reveal" style="--delay: 160ms">
+            <div class="point"><span class="point-number">01</span><div><h3>Що пишемо?</h3><p>Displays, system audio, microphone.</p></div></div>
+            <div class="point"><span class="point-number">02</span><div><h3>Що в кадрі?</h3><p>Великий 16:9 program preview.</p></div></div>
+            <div class="point"><span class="point-number">03</span><div><h3>Чи є audio?</h3><p>Live confidence meter перед стартом.</p></div></div>
+            <div class="point"><span class="point-number">04</span><div><h3>Куди пишемо?</h3><p>Path, storage headroom, journal.</p></div></div>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>06</span></div>
+      </section>
+
+      <section class="slide" data-title="Recording показує довіру">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Studio · Live</p>
+          <h2>Recording показує довіру, не налаштування</h2>
+        </header>
+        <div class="slide-content split media-left">
+          <div class="mockup reveal" style="--delay: 80ms">
+            <img src="../previews/studio-recording.png" alt="Studio live recording state">
+          </div>
+          <div class="trust-copy reveal" style="--delay: 160ms">
+            <div class="trust-statement">Sources locked<br>під час запису.</div>
+            <div class="accent-rule"></div>
+            <div class="trust-item">Таймер і Stop</div>
+            <div class="trust-item">Source health</div>
+            <div class="trust-item">Dropped frames</div>
+            <div class="trust-item">Disk headroom</div>
+            <div class="trust-item healthy">Journal heartbeat</div>
+            <p class="muted small">Єдина primary action — Stop (⌘R).</p>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>07</span></div>
+      </section>
+
+      <section class="slide" data-title="Recovery — продуктова обіцянка">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Resilience</p>
+          <h2>Recovery — продуктова обіцянка</h2>
+        </header>
+        <div class="slide-content split media-right">
+          <div class="recovery-copy reveal" style="--delay: 80ms">
+            <p>Не “error”, а точна відповідь: що вижило і що робити далі.</p>
+            <div class="amber-rule"></div>
+            <div class="recovery-state finalized"><strong>Finalized</strong><span>Кожен raw track має власний статус.</span></div>
+            <div class="recovery-state partial"><strong>Partial</strong><span>Проблемний tail не ховається за загальним alert.</span></div>
+            <div class="recovery-state"><strong>Actionable</strong><span>Open recovered project або discard package.</span></div>
+          </div>
+          <div class="mockup reveal" style="--delay: 160ms">
+            <img src="../previews/recovery.png" alt="Recovery screen">
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>08</span></div>
+      </section>
+
+      <section class="slide" data-title="Editor не змінює raw tracks">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Target state</p>
+          <h2>Editor не змінює raw tracks</h2>
+        </header>
+        <div class="slide-content editor-layout">
+          <div class="mockup reveal" style="--delay: 80ms">
+            <img src="../previews/editor.png" alt="Target-state editor">
+          </div>
+          <div class="target-copy reveal" style="--delay: 160ms">
+            <p class="eyebrow">Non-destructive</p>
+            <h3>Preview + timeline + inspector</h3>
+            <div class="target-item">Layout</div>
+            <div class="target-item">Camera keyframes</div>
+            <div class="target-item">Transcript cuts</div>
+            <div class="target-item">Derived export</div>
+            <div class="target-boundary"><strong>Не MVP capture slice</strong><span>Окремий наступний шар</span></div>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>09</span></div>
+      </section>
+
+      <section class="slide" data-title="Settings фіксують capture-контракт">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Preferences</p>
+          <h2>Settings фіксують capture-контракт</h2>
+        </header>
+        <div class="slide-content split media-right">
+          <div class="reveal" style="--delay: 80ms">
+            <p class="lead">Не “options soup”, а defaults для нової session.</p>
+            <div class="settings-list">
+              <span>1080p adaptive</span>
+              <span>30 fps baseline</span>
+              <span>HEVC → H.264 fallback</span>
+              <span>Cursor included</span>
+              <span>Project location</span>
+            </div>
+            <div class="locked">Locked while recording</div>
+          </div>
+          <div class="mockup reveal" style="--delay: 160ms">
+            <img src="../previews/settings.png" alt="Capture settings screen">
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>10</span></div>
+      </section>
+
+      <section class="slide" data-title="UI нарощуємо в правильному порядку">
+        <header class="slide-header reveal">
+          <p class="eyebrow">Implementation order</p>
+          <h2>UI нарощуємо в правильному порядку</h2>
+        </header>
+        <div class="slide-content">
+          <p class="lead reveal" style="--delay: 60ms">Спершу робимо working capture зрозумілим. Лише потім додаємо editing surface.</p>
+          <div class="roadmap reveal" style="--delay: 130ms">
+            <div class="roadmap-line"></div>
+            <div class="phase-grid">
+              <div class="phase"><div class="phase-number">00</div><div class="phase-status">NEXT</div><h3>Permissions</h3><p>Diagnosis<br>+ repair action</p></div>
+              <div class="phase"><div class="phase-number">01</div><div class="phase-status">BUILD</div><h3>Studio shell</h3><p>Stage · sources<br>recording health</p></div>
+              <div class="phase"><div class="phase-number">02</div><div class="phase-status">THEN</div><h3>Projects</h3><p>Discovery<br>+ Recovery</p></div>
+              <div class="phase future"><div class="phase-number">03</div><div class="phase-status">LATER</div><h3>Editor</h3><p>Camera · transcript<br>export · streaming</p></div>
+            </div>
+            <div class="roadmap-promise"><strong>Existing coordinator stays. We replace the presentation layer first.</strong><span>No compositor or transcript promise inside the capture MVP.</span></div>
+          </div>
+        </div>
+        <div class="footer"><span>STUDIO RECORDER · DESIGN DIRECTION</span><span>11</span></div>
+      </section>
+
+      <section class="slide decision" data-title="Спершу зробити запис зрозумілим">
+        <div class="brand-mark reveal"></div>
+        <p class="eyebrow reveal" style="--delay: 60ms">Decision</p>
+        <h2 class="reveal" style="--delay: 120ms">Спершу зробити запис зрозумілим</h2>
+        <p class="decision-lead reveal" style="--delay: 180ms">Схвалити project-centric напрямок і перейти до capture shell.</p>
+        <div class="decision-rule reveal" style="--delay: 220ms"></div>
+        <div class="decision-actions reveal" style="--delay: 270ms">
+          <div class="decision-action"><strong>01</strong><h3>Permission diagnosis</h3><p>Прибрати indefinite checking.</p></div>
+          <div class="decision-action"><strong>02</strong><h3>Studio ready / recording</h3><p>Stage, sources, health, Stop.</p></div>
+          <div class="decision-action"><strong>03</strong><h3>Projects + Recovery</h3><p>Відкрити durable package.</p></div>
+        </div>
+        <div class="decision-note">HTML prototype and Stitch-ready design system are already prepared.</div>
+      </section>
+    </div>
+
+    <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+    <div class="counter mono" id="counter">01 / 12</div>
+    <nav class="controls" aria-label="Presentation controls">
+      <button class="control" data-action="prev" title="Previous slide">←</button>
+      <button class="control" data-action="next" title="Next slide">→</button>
+      <button class="control" data-action="overview" title="Overview (O)">O</button>
+      <button class="control" data-action="fullscreen" title="Fullscreen (F)">F</button>
+      <button class="control" data-action="help" title="Keyboard shortcuts (?)">?</button>
+    </nav>
+  </main>
+
+  <section class="overview" id="overview" aria-label="Slide overview">
+    <div class="overview-header">
+      <h2>Overview</h2>
+      <button class="control" data-action="overview" aria-label="Close overview">Close</button>
+    </div>
+    <div class="overview-grid" id="overviewGrid"></div>
+  </section>
+
+  <section class="help" id="help" aria-label="Keyboard shortcuts">
+    <div class="help-card">
+      <h2>Keyboard shortcuts</h2>
+      <div class="shortcut-grid">
+        <kbd>← / →</kbd><span>Previous / next slide</span>
+        <kbd>Space</kbd><span>Next slide</span>
+        <kbd>Shift Space</kbd><span>Previous slide</span>
+        <kbd>O</kbd><span>Overview</span>
+        <kbd>F</kbd><span>Fullscreen</span>
+        <kbd>Home / End</kbd><span>First / last slide</span>
+        <kbd>Esc</kbd><span>Close overlay</span>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    (function () {
+      const deck = document.getElementById("deck");
+      const slides = Array.from(document.querySelectorAll(".slide"));
+      const counter = document.getElementById("counter");
+      const progressBar = document.getElementById("progressBar");
+      const overview = document.getElementById("overview");
+      const overviewGrid = document.getElementById("overviewGrid");
+      const help = document.getElementById("help");
+      let current = Math.max(0, Math.min(slides.length - 1, Number(location.hash.slice(1) || 1) - 1));
+      let pointerStart = null;
+
+      function resizeDeck() {
+        const padding = 24;
+        const scale = Math.min(
+          (window.innerWidth - padding) / 1280,
+          (window.innerHeight - padding) / 720
+        );
+        deck.style.transform = "translate(-50%, -50%) scale(" + Math.max(0.1, scale) + ")";
+      }
+
+      function showSlide(index, updateUrl) {
+        current = Math.max(0, Math.min(slides.length - 1, index));
+        slides.forEach(function (slide, slideIndex) {
+          const active = slideIndex === current;
+          slide.classList.toggle("active", active);
+          slide.setAttribute("aria-hidden", String(!active));
+        });
+        counter.textContent = String(current + 1).padStart(2, "0") + " / " + String(slides.length).padStart(2, "0");
+        progressBar.style.width = ((current + 1) / slides.length * 100) + "%";
+        document.title = slides[current].dataset.title + " — Studio Recorder";
+        if (updateUrl !== false) history.replaceState(null, "", "#" + (current + 1));
+        refreshOverview();
+      }
+
+      function goNext() {
+        showSlide(current + 1);
+      }
+
+      function goPrevious() {
+        showSlide(current - 1);
+      }
+
+      function toggleOverview(force) {
+        const open = typeof force === "boolean" ? force : !overview.classList.contains("open");
+        overview.classList.toggle("open", open);
+        if (open) overview.querySelector(".overview-card.current")?.focus();
+      }
+
+      function toggleHelp(force) {
+        const open = typeof force === "boolean" ? force : !help.classList.contains("open");
+        help.classList.toggle("open", open);
+      }
+
+      async function toggleFullscreen() {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await document.documentElement.requestFullscreen();
+        }
+      }
+
+      function refreshOverview() {
+        overviewGrid.querySelectorAll(".overview-card").forEach(function (card, index) {
+          card.classList.toggle("current", index === current);
+        });
+      }
+
+      slides.forEach(function (slide, index) {
+        const card = document.createElement("button");
+        card.className = "overview-card";
+        card.dataset.slide = String(index);
+        const number = document.createElement("strong");
+        number.textContent = String(index + 1).padStart(2, "0");
+        const title = document.createElement("span");
+        title.textContent = slide.dataset.title;
+        card.append(number, title);
+        card.addEventListener("click", function () {
+          toggleOverview(false);
+          showSlide(index);
+        });
+        overviewGrid.appendChild(card);
+      });
+
+      document.querySelectorAll("[data-action]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          const action = button.dataset.action;
+          if (action === "prev") goPrevious();
+          if (action === "next") goNext();
+          if (action === "overview") toggleOverview();
+          if (action === "fullscreen") toggleFullscreen();
+          if (action === "help") toggleHelp();
+        });
+      });
+
+      window.addEventListener("keydown", function (event) {
+        if (event.target.matches("input, textarea, select")) return;
+        if (event.key === "Escape") {
+          toggleOverview(false);
+          toggleHelp(false);
+          return;
+        }
+        if (overview.classList.contains("open") || help.classList.contains("open")) return;
+        if (event.key === "ArrowRight" || event.key === "PageDown" || (event.key === " " && !event.shiftKey)) {
+          event.preventDefault();
+          goNext();
+        } else if (event.key === "ArrowLeft" || event.key === "PageUp" || (event.key === " " && event.shiftKey)) {
+          event.preventDefault();
+          goPrevious();
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          showSlide(0);
+        } else if (event.key === "End") {
+          event.preventDefault();
+          showSlide(slides.length - 1);
+        } else if (event.key.toLowerCase() === "o") {
+          event.preventDefault();
+          toggleOverview();
+        } else if (event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          toggleFullscreen();
+        } else if (event.key === "?" || event.key.toLowerCase() === "h") {
+          event.preventDefault();
+          toggleHelp();
+        }
+      });
+
+      deck.addEventListener("pointerdown", function (event) {
+        if (event.target.closest("button")) return;
+        pointerStart = event.clientX;
+      });
+
+      deck.addEventListener("pointerup", function (event) {
+        if (pointerStart === null) return;
+        const delta = event.clientX - pointerStart;
+        pointerStart = null;
+        if (Math.abs(delta) < 70) return;
+        if (delta < 0) goNext();
+        else goPrevious();
+      });
+
+      window.addEventListener("resize", resizeDeck);
+      window.addEventListener("hashchange", function () {
+        const fromHash = Number(location.hash.slice(1));
+        if (Number.isFinite(fromHash)) showSlide(fromHash - 1, false);
+      });
+
+      resizeDeck();
+      showSlide(current, false);
+    })();
+  </script>
+</body>
+</html>

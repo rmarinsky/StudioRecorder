@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio Recorder — Recovery</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-side"><div class="traffic-lights"><span class="traffic-light close"></span><span class="traffic-light minimize"></span><span class="traffic-light maximize"></span></div></div>
+      <div class="titlebar-main"><div class="toolbar-heading">Recovery</div><div class="toolbar-actions"><span class="status"><span class="status-dot warning"></span>1 interrupted project</span><a class="icon-button" href="settings.html"><span data-icon="settings"></span></a></div></div>
+    </header>
+
+    <div class="main-grid">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"></span><span><span class="brand-name">Studio Recorder</span><span class="brand-build">RECOVERY REVIEW</span></span></div>
+        <nav class="nav-group"><a class="nav-item" href="index.html"><span data-icon="projects"></span><span>Projects</span></a><a class="nav-item" href="studio-ready.html"><span data-icon="studio"></span><span>Studio</span></a></nav>
+        <div class="nav-label">Attention</div>
+        <nav class="nav-group"><a class="nav-item active" href="recovery.html"><span data-icon="recovery"></span><span>Recovery</span><span class="badge warning">1</span></a></nav>
+        <div class="sidebar-footer"><p class="caption" style="margin:0">Recovery disappears from navigation when all interrupted packages are resolved.</p></div>
+      </aside>
+
+      <main class="workspace recovery-layout">
+        <section class="recovery-list">
+          <p class="eyebrow" style="padding:0 8px">Interrupted</p>
+          <h1>Review capture</h1>
+          <a class="recovery-item" href="recovery.html"><strong>QA CoE live rehearsal</strong><span class="mono">Today 09:18 · 2 displays</span><span style="margin-top:5px;color:var(--warning)">Needs review</span></a>
+        </section>
+
+        <section class="recovery-detail">
+          <div class="page-header" style="align-items:flex-start">
+            <div><p class="eyebrow">Interrupted project</p><h1>QA CoE live rehearsal</h1><p class="lede">The app stopped before the project manifest closed. Finalized tracks remain usable.</p></div>
+            <span class="badge warning">Partial audio</span>
+          </div>
+
+          <div class="recovery-summary">
+            <div class="summary-cell"><strong>18:42</strong><span>Recovered duration</span></div>
+            <div class="summary-cell"><strong>2 / 2</strong><span>Screen tracks finalized</span></div>
+            <div class="summary-cell"><strong>3.1 GB</strong><span>Package size</span></div>
+          </div>
+
+          <div class="section-heading"><h2>Recovered tracks</h2><span class="caption mono">1080p-adaptive-30fps</span></div>
+          <div class="recovery-tracks">
+            <div class="recovery-track"><span class="source-icon"><span data-icon="display"></span></span><span><strong>Display 1</strong><span class="caption">screen-1.mov · 2560 × 1440 raw</span></span><span class="badge healthy">Finalized</span></div>
+            <div class="recovery-track"><span class="source-icon"><span data-icon="display"></span></span><span><strong>Display 2</strong><span class="caption">screen-2.mov · 3840 × 2160 raw</span></span><span class="badge healthy">Finalized</span></div>
+            <div class="recovery-track warning"><span class="source-icon"><span data-icon="waveform"></span></span><span><strong>Primary audio</strong><span class="caption">Embedded in Display 1 until the final checkpoint</span></span><span class="badge warning">Review tail</span></div>
+          </div>
+
+          <div class="journal">09:18:02 project-created · 1080p-adaptive-30fps<br>09:18:03 display-1 track-started<br>09:18:03 display-2 track-started<br>09:36:45 display-2 track-finished<br>09:36:45 last durable journal event</div>
+
+          <div class="feature-actions">
+            <a class="button primary" href="editor.html">Open Recovered Project</a>
+            <button class="button" data-toast-message="Project package revealed in Finder."><span data-icon="folder"></span>Show Package</button>
+            <button class="button danger-ghost" data-toast-message="Discard requires explicit confirmation.">Discard Package</button>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" data-toast-region role="status"><span data-icon="warning"></span><span data-toast-copy></span></div>
+  <script src="assets/prototype.js"></script>
+</body>
+</html>

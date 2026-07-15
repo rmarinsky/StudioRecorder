@@ -29,11 +29,12 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Native cursor capture | implemented, always on | configurable per new session | cursor-following program composition |
 | Project package + journal | implemented, schema v1 | schema v2 snapshot, typed events, v1 reader | edit/export metadata |
 | Interrupted-project detection | implemented from `stoppedAt == nil` | per-track recovery report | segment repair tooling |
-| Project library | not implemented | package indexing, search, summary | thumbnails and richer metadata |
+| Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
 | Program compositor | not implemented | no working control shown | 1080p program output |
 | Camera isolation | not implemented | `Next slice` only where useful | raw camera track and layout |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
-| Export / streaming | not implemented | absent from MVP UI | derived export, then RTMPS |
+| Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
+| Streaming | not implemented | absent from MVP UI | reconsider only after recorder/editor adoption |
 
 ## 3. Canonical data flow
 
@@ -253,7 +254,7 @@ Use UserDefaults for scalar preferences. Persist a selected destination as a boo
 
 ### Later seams
 
-`EditorEngine`, `TranscriptionClient`, and `ExportEngine` are not introduced in the capture UI wave. Their future interface consumes a finalized Project and produces edit decisions or derived outputs without mutating raw tracks.
+`EditorEngine`, `TranscriptionClient`, and a general `ExportEngine` are not introduced in the capture UI wave. A bounded `ProjectMediaExporter` may create a PNG frame or short GIF directly from a finalized raw movie; general export still consumes a finalized Project and produces edit decisions or derived outputs without mutating raw tracks.
 
 ## 7. Screen contracts
 
@@ -307,9 +308,9 @@ Camera is optional and marked `Next slice`; it never blocks Record in the curren
 
 **Shows:** project name, creation/duration/profile, each raw track and finalization state, package location, capture contract.
 
-**Actions:** reveal package, open a raw track with the system player, return to Projects. Rename is allowed only after package-safe rename logic is implemented.
+**Actions:** play a selected raw track, reveal the package, open/share/drag the movie, save the current frame as PNG, create a bounded five-second GIF, and return to Projects. Every share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
 
-**Not shown yet:** timeline, camera layout, transcript, Export, or an editable preview.
+**Not shown yet:** timeline editing, selected export range, camera layout, transcript, compatible movie rendering, or an editable program preview.
 
 The route remains `.projects(selection: id)`, so Project Summary can later be replaced by the Editor without changing library or recovery navigation.
 

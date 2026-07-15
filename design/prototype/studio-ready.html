@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio Recorder — Ready</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body data-record-shortcut="studio-recording.html">
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-side">
+        <div class="traffic-lights" aria-label="Window controls">
+          <span class="traffic-light close"></span><span class="traffic-light minimize"></span><span class="traffic-light maximize"></span>
+        </div>
+      </div>
+      <div class="titlebar-main">
+        <div class="toolbar-heading">Studio <span class="muted">/ New Recording</span></div>
+        <div class="toolbar-actions">
+          <span class="status"><span class="status-dot healthy"></span>Ready</span>
+          <button class="icon-button" data-toast-message="Command palette opened." aria-label="Command palette"><span data-icon="search"></span></button>
+          <a class="icon-button" href="settings.html" aria-label="Settings"><span data-icon="settings"></span></a>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"></span><span><span class="brand-name">Studio Recorder</span><span class="brand-build">CAPTURE SLICE</span></span></div>
+        <nav class="nav-group" aria-label="Main navigation">
+          <a class="nav-item" href="index.html"><span data-icon="projects"></span><span>Projects</span></a>
+          <a class="nav-item active" href="studio-ready.html"><span data-icon="studio"></span><span>Studio</span></a>
+        </nav>
+        <div class="nav-label">Attention</div>
+        <nav class="nav-group"><a class="nav-item" href="recovery.html"><span data-icon="recovery"></span><span>Recovery</span><span class="badge warning">1</span></a></nav>
+        <div class="sidebar-footer">
+          <div class="storage-line"><span>Capture estimate</span><span class="mono">3h 24m</span></div>
+          <div class="progress-track"><span style="width: 36%"></span></div>
+        </div>
+      </aside>
+
+      <main class="workspace studio-workspace">
+        <section class="stage-pane">
+          <div class="stage-heading">
+            <strong>Program preview</strong>
+            <div class="stage-meta"><span>1920 × 1080</span><span class="mono">30 fps</span><span class="badge">Preview contract</span></div>
+          </div>
+
+          <div class="program-stage">
+            <div class="program-frame">
+              <div class="screen-canvas"></div>
+              <div class="screen-app">
+                <div class="screen-app-bar"><span></span><span></span><span></span></div>
+                <div class="screen-content"><aside><i></i><i></i><i></i><i></i></aside><div class="screen-copy"><h4></h4><i></i><i></i><i></i></div></div>
+              </div>
+              <div class="camera-preview"></div>
+              <span class="preview-chip left"><span data-icon="display"></span>Studio Display</span>
+              <span class="preview-chip right"><span data-icon="cursor"></span>Cursor follow ready</span>
+            </div>
+          </div>
+
+          <div class="control-deck">
+            <div class="deck-side">
+              <span class="source-icon"><span data-icon="mic"></span></span>
+              <div class="deck-stat"><strong>Microphone is clear</strong><span>MacBook Pro Microphone</span></div>
+              <span class="level-meter" aria-label="Microphone level"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span>
+            </div>
+            <a class="record-control" href="studio-recording.html"><span class="record-symbol"></span>Record <span class="kbd">⌘R</span></a>
+            <div class="deck-side end">
+              <span class="source-icon"><span data-icon="disk"></span></span>
+              <div class="deck-stat"><strong>182 GB free</strong><span>~/Movies/Studio Recorder</span></div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="inspector">
+          <section class="inspector-section">
+            <div class="inspector-heading"><h2>Sources</h2><button class="icon-button" data-toast-message="Capture sources refreshed." aria-label="Refresh sources"><span data-icon="recovery"></span></button></div>
+            <div class="source-list">
+              <div class="source-row"><span class="source-icon"><span data-icon="display"></span></span><span class="source-copy"><strong>Studio Display</strong><span>2560 × 1440 native capture</span></span><button class="toggle is-on" data-toggle aria-pressed="true" aria-label="Toggle Studio Display"></button></div>
+              <div class="source-row"><span class="source-icon"><span data-icon="display"></span></span><span class="source-copy"><strong>LG UltraFine</strong><span>3840 × 2160 native capture</span></span><button class="toggle is-on" data-toggle aria-pressed="true" aria-label="Toggle LG UltraFine"></button></div>
+              <div class="source-row"><span class="source-icon"><span data-icon="audio"></span></span><span class="source-copy"><strong>System audio</strong><span>Primary display track</span></span><button class="toggle is-on" data-toggle aria-pressed="true" aria-label="Toggle system audio"></button></div>
+              <div class="source-row"><span class="source-icon"><span data-icon="mic"></span></span><span class="source-copy"><strong>Microphone</strong><span>MacBook Pro Microphone</span></span><span class="source-state"><span class="level-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></span></div>
+              <div class="source-row"><span class="source-icon"><span data-icon="camera"></span></span><span class="source-copy"><strong>Camera</strong><span>Isolated camera track</span></span><span class="badge">Next slice</span></div>
+            </div>
+          </section>
+
+          <section class="inspector-section">
+            <div class="inspector-heading"><h2>Program layout</h2><span class="badge">Preview only</span></div>
+            <div class="segmented" style="width: 100%;">
+              <button class="active" style="flex: 1;">Overlay</button><button style="flex: 1;">Screen</button><button style="flex: 1;">Split</button>
+            </div>
+          </section>
+
+          <section class="inspector-section">
+            <div class="inspector-heading"><h2>Capture</h2></div>
+            <div class="setting-row"><span>Program</span><span class="setting-value mono">1920 × 1080</span></div>
+            <div class="setting-row"><span>Frame rate</span><span class="setting-value mono">30 fps</span></div>
+            <div class="setting-row"><span>Codec</span><span class="setting-value">HEVC · H.264 fallback</span></div>
+            <div class="setting-row"><span>Cursor</span><span class="setting-value">Included</span></div>
+          </section>
+
+          <section class="inspector-section">
+            <div class="inspector-heading"><h2>Resilience</h2><span class="badge healthy">Enabled</span></div>
+            <p class="caption" style="margin: 0;">Raw tracks and an append-only journal are written into one recoverable project package.</p>
+          </section>
+        </aside>
+      </main>
+    </div>
+  </div>
+  <div class="toast" data-toast-region role="status"><span data-icon="check"></span><span data-toast-copy></span></div>
+  <script src="assets/prototype.js"></script>
+</body>
+</html>
