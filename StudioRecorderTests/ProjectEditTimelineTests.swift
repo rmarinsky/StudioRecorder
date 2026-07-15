@@ -128,7 +128,8 @@ final class ProjectEditTimelineTests: XCTestCase {
                     style: .blur
                 )
             ],
-            sceneTimeline: sceneTimeline
+            sceneTimeline: sceneTimeline,
+            audioAdjustment: ProjectAudioAdjustment(gain: 0.45)
         )
         let store = ProjectEditStore()
 
@@ -215,6 +216,66 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         XCTAssertEqual(document.schemaVersion, 3)
         XCTAssertNil(document.sceneTimeline)
+    }
+
+    func testLegacyEditDefaultsToUnchangedAudioAndCurrentEditPersistsAdjustment() async throws {
+        let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let legacyData = Data(
+            """
+            {"schemaVersion":4,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-15T12:00:00Z","timelines":[],"presentation":null,"privacyOverlays":[],"sceneTimeline":null}
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let legacy = try decoder.decode(ProjectEditDocument.self, from: legacyData)
+
+        XCTAssertEqual(legacy.audioAdjustment, .unchanged)
+
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        var current = ProjectEditDocument(projectID: projectID, timelines: [])
+        current.replaceAudioAdjustment(ProjectAudioAdjustment(gain: 0.35, isMuted: true))
+
+        try await ProjectEditStore().save(current, in: rootURL)
+        let loaded = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+        let reloaded = try XCTUnwrap(loaded)
+
+        XCTAssertEqual(reloaded.audioAdjustment.gain, 0.35, accuracy: 0.001)
+        XCTAssertEqual(reloaded.audioAdjustment.isMuted, true)
+        XCTAssertEqual(reloaded.audioAdjustment.effectiveGain, 0)
+    }
+
+    func testEditStoreRejectsAnOutOfRangeAudioAdjustment() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let projectID = UUID()
+        var document = ProjectEditDocument(projectID: projectID, timelines: [])
+        document.audioAdjustment.gain = 1.5
+
+        do {
+            try await ProjectEditStore().save(document, in: rootURL)
+            XCTFail("An out-of-range audio adjustment must not cross the edit-document trust boundary.")
+        } catch {
+            XCTAssertEqual(error as? ProjectEditStoreError, .invalidAudioAdjustment)
+        }
+
+        let corruptData = Data(
+            """
+            {"schemaVersion":5,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-16T00:00:00Z","timelines":[],"presentation":null,"privacyOverlays":[],"sceneTimeline":null,"audioAdjustment":{"gain":1.5,"isMuted":false}}
+            """.utf8
+        )
+        try corruptData.write(to: rootURL.appending(path: ProjectEditStore.filename))
+        do {
+            _ = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+            XCTFail("Corrupt persisted audio gain must not be silently clamped.")
+        } catch {
+            XCTAssertEqual(error as? ProjectEditStoreError, .invalidAudioAdjustment)
+        }
     }
 
     func testEditStoreMigratesLegacyDocumentToCurrentSchema() async throws {

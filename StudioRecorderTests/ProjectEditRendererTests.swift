@@ -4,6 +4,103 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    @MainActor
+    func testQuickEditResetPersistsUnchangedAudio() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let track = RecordingTrackDescriptor(
+            id: "program",
+            kind: .program,
+            displayID: nil,
+            relativePath: "program.caf"
+        )
+        let timeline = try ProjectEditTimeline(trackID: track.id, sourceDuration: 0.1)
+        let store = ProjectEditStore()
+        try await store.save(
+            ProjectEditDocument(
+                projectID: projectID,
+                timelines: [timeline],
+                audioAdjustment: ProjectAudioAdjustment(gain: 0.4, isMuted: true)
+            ),
+            in: rootURL
+        )
+        let session = ProjectEditSession(store: store)
+        await session.load(
+            projectID: projectID,
+            projectRootURL: rootURL,
+            track: track,
+            sourceURL: sourceURL,
+            programSources: nil,
+            initialPresentation: .default
+        )
+        XCTAssertTrue(session.audioAdjustment.isMuted)
+
+        await session.reset()
+        try await Task.sleep(for: .milliseconds(250))
+        session.stop()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
+        let reloaded = try XCTUnwrap(loaded)
+        XCTAssertEqual(reloaded.audioAdjustment, .unchanged)
+    }
+
+    func testPlayerPreviewAppliesPersistedAudioGainWithoutChangingTheSource() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.caf")
+        let mutedURL = directory.appending(path: "muted.mov")
+        try writeAudioFile(to: sourceURL)
+        let rawBytes = try Data(contentsOf: sourceURL)
+        let timeline = try ProjectEditTimeline(trackID: "audio", sourceDuration: 0.1)
+
+        let item = try await ProjectEditRenderer().makePlayerItem(
+            from: sourceURL,
+            timeline: timeline,
+            audioAdjustment: ProjectAudioAdjustment(gain: 0.35)
+        )
+
+        let parameters = try XCTUnwrap(item.audioMix?.inputParameters.first)
+        var startVolume: Float = -1
+        var endVolume: Float = -1
+        var timeRange = CMTimeRange.invalid
+        XCTAssertTrue(parameters.getVolumeRamp(
+            for: .zero,
+            startVolume: &startVolume,
+            endVolume: &endVolume,
+            timeRange: &timeRange
+        ))
+        XCTAssertEqual(startVolume, 0.35, accuracy: 0.001)
+        XCTAssertEqual(endVolume, 0.35, accuracy: 0.001)
+
+        try await ProjectEditRenderer().exportMovie(
+            from: sourceURL,
+            timeline: timeline,
+            audioAdjustment: ProjectAudioAdjustment(gain: 1, isMuted: true),
+            to: mutedURL
+        )
+        let mutedFile = try AVAudioFile(forReading: mutedURL)
+        let mutedBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: mutedFile.processingFormat,
+            frameCapacity: AVAudioFrameCount(mutedFile.length)
+        ))
+        try mutedFile.read(into: mutedBuffer)
+        let channels = try XCTUnwrap(mutedBuffer.floatChannelData)
+        var peak: Float = 0
+        for channel in 0..<Int(mutedBuffer.format.channelCount) {
+            for frame in 0..<Int(mutedBuffer.frameLength) {
+                peak = max(peak, abs(channels[channel][frame]))
+            }
+        }
+        XCTAssertLessThan(peak, 0.000_1)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+    }
+
     func testProgramRendererReplaysSafeShortcutTelemetryWithoutChangingRawMedia() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -534,6 +631,18 @@ final class ProjectEditRendererTests: XCTestCase {
         guard writer.status == .completed else {
             throw writer.error ?? NSError(domain: "ProjectEditRendererTests", code: 1)
         }
+    }
+
+    private func writeAudioFile(to url: URL) throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+        buffer.frameLength = 4_800
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for index in 0..<Int(buffer.frameLength) {
+            samples[index] = sin(Float(index) * 0.02) * 0.2
+        }
+        try file.write(from: buffer)
     }
 
     private func writeSplitMovie(to url: URL) async throws {

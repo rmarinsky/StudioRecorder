@@ -23,16 +23,35 @@ enum ProjectEditRendererError: LocalizedError, Equatable {
 
 @MainActor
 final class ProjectEditRenderer {
-    func makePlayerItem(from sourceURL: URL, timeline: ProjectEditTimeline) async throws -> AVPlayerItem {
-        AVPlayerItem(asset: try await makeComposition(from: sourceURL, timeline: timeline))
+    func makePlayerItem(
+        from sourceURL: URL,
+        timeline: ProjectEditTimeline,
+        audioAdjustment: ProjectAudioAdjustment = .unchanged
+    ) async throws -> AVPlayerItem {
+        let composition = try await makeComposition(from: sourceURL, timeline: timeline)
+        let item = AVPlayerItem(asset: composition)
+        item.audioMix = ProjectAudioMixFactory.make(
+            for: composition.tracks(withMediaType: .audio),
+            adjustment: audioAdjustment
+        )
+        return item
     }
 
-    func exportMovie(from sourceURL: URL, timeline: ProjectEditTimeline, to destinationURL: URL) async throws {
+    func exportMovie(
+        from sourceURL: URL,
+        timeline: ProjectEditTimeline,
+        audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        to destinationURL: URL
+    ) async throws {
         try validateDestination(destinationURL, for: sourceURL)
         let composition = try await makeComposition(from: sourceURL, timeline: timeline)
         guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw ProjectEditRendererError.exportUnavailable
         }
+        session.audioMix = ProjectAudioMixFactory.make(
+            for: composition.tracks(withMediaType: .audio),
+            adjustment: audioAdjustment
+        )
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
@@ -95,5 +114,21 @@ final class ProjectEditRenderer {
             throw ProjectEditRendererError.noMediaTracks
         }
         return composition
+    }
+}
+
+enum ProjectAudioMixFactory {
+    static func make(
+        for tracks: [AVAssetTrack],
+        adjustment: ProjectAudioAdjustment
+    ) -> AVAudioMix? {
+        guard !tracks.isEmpty, !adjustment.isUnchanged else { return nil }
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = tracks.map { track in
+            let parameters = AVMutableAudioMixInputParameters(track: track)
+            parameters.setVolume(adjustment.effectiveGain, at: .zero)
+            return parameters
+        }
+        return mix
     }
 }

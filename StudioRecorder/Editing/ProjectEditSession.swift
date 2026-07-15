@@ -20,6 +20,7 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var presentation = CapturePresentationSnapshot.default
     @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
     @Published private(set) var sceneTimeline: StudioSceneTimeline?
+    @Published private(set) var audioAdjustment = ProjectAudioAdjustment.unchanged
     @Published var selectedSegmentID: UUID?
     @Published var selectedPrivacyOverlayID: UUID?
     @Published var selectedManualZoomTransitionIndex: Int?
@@ -61,7 +62,8 @@ final class ProjectEditSession: ObservableObject {
     var isEdited: Bool {
         timeline?.isIdentity == false ||
             !privacyOverlays.isEmpty ||
-            sceneTimeline != programSources?.sceneTimeline
+            sceneTimeline != programSources?.sceneTimeline ||
+            !audioAdjustment.isUnchanged
     }
     var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
     var canEditManualZoom: Bool { canPersistEdits && timeline != nil && sceneTimeline != nil }
@@ -109,6 +111,7 @@ final class ProjectEditSession: ObservableObject {
         timeline = nil
         privacyOverlays = []
         sceneTimeline = nil
+        audioAdjustment = .unchanged
         document = nil
         selectedSegmentID = nil
         selectedPrivacyOverlayID = nil
@@ -145,6 +148,7 @@ final class ProjectEditSession: ObservableObject {
                 editDocument.replaceTimeline(editTimeline)
             }
             sceneTimeline = loadedSceneTimeline
+            audioAdjustment = editDocument.audioAdjustment
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
                 timeline: editTimeline,
@@ -231,6 +235,9 @@ final class ProjectEditSession: ObservableObject {
             if errorMessage == nil, sceneTimeline != programSources?.sceneTimeline {
                 updateSceneTimeline(programSources?.sceneTimeline, selectedIndex: nil)
             }
+            if errorMessage == nil, !audioAdjustment.isUnchanged {
+                updateAudioAdjustment(.unchanged)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -266,11 +273,27 @@ final class ProjectEditSession: ObservableObject {
                 timeline: timeline,
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
+                audioAdjustment: audioAdjustment,
                 to: destinationURL
             )
         } else {
-            try await renderer.exportMovie(from: sourceURL, timeline: timeline, to: destinationURL)
+            try await renderer.exportMovie(
+                from: sourceURL,
+                timeline: timeline,
+                audioAdjustment: audioAdjustment,
+                to: destinationURL
+            )
         }
+    }
+
+    func updateAudioAdjustment(_ next: ProjectAudioAdjustment) {
+        guard !isWorking, var nextDocument = document, let projectRootURL else { return }
+        let validated = ProjectAudioAdjustment(gain: next.gain, isMuted: next.isMuted)
+        audioAdjustment = validated
+        nextDocument.replaceAudioAdjustment(validated)
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
     }
 
     func updatePresentation(_ next: CapturePresentationSnapshot) {
@@ -350,7 +373,8 @@ final class ProjectEditSession: ObservableObject {
         guard let timeline else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
-        guard !timeline.isIdentity || programSources != nil || !privacyOverlays.isEmpty else {
+        guard !timeline.isIdentity || programSources != nil || !privacyOverlays.isEmpty
+                || !audioAdjustment.isUnchanged else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         let directory = FileManager.default.temporaryDirectory
@@ -363,10 +387,16 @@ final class ProjectEditSession: ObservableObject {
                 timeline: timeline,
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
+                audioAdjustment: audioAdjustment,
                 to: outputURL
             )
         } else {
-            try await renderer.exportMovie(from: sourceURL, timeline: timeline, to: outputURL)
+            try await renderer.exportMovie(
+                from: sourceURL,
+                timeline: timeline,
+                audioAdjustment: audioAdjustment,
+                to: outputURL
+            )
         }
         return PreparedProjectMedia(url: outputURL, isTemporary: true)
     }
@@ -454,10 +484,15 @@ final class ProjectEditSession: ObservableObject {
                 sources: renderSources,
                 timeline: timeline,
                 presentation: programSources == nil ? bakedProgramPresentation(from: presentation) : presentation,
-                privacyOverlays: privacyOverlays
+                privacyOverlays: privacyOverlays,
+                audioAdjustment: audioAdjustment
             )
         }
-        return try await renderer.makePlayerItem(from: sourceURL, timeline: timeline)
+        return try await renderer.makePlayerItem(
+            from: sourceURL,
+            timeline: timeline,
+            audioAdjustment: audioAdjustment
+        )
     }
 
     private func scheduleProgramRefresh(force: Bool = false) {

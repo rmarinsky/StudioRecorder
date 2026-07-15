@@ -61,7 +61,8 @@ final class ProjectProgramRenderer {
         sources: ProjectProgramSources,
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
-        privacyOverlays: [ProjectPrivacyOverlay] = []
+        privacyOverlays: [ProjectPrivacyOverlay] = [],
+        audioAdjustment: ProjectAudioAdjustment = .unchanged
     ) async throws -> AVPlayerItem {
         let rendered = try await makeComposition(
             sources: sources,
@@ -71,6 +72,10 @@ final class ProjectProgramRenderer {
         )
         let item = AVPlayerItem(asset: rendered.asset)
         item.videoComposition = rendered.videoComposition
+        item.audioMix = ProjectAudioMixFactory.make(
+            for: rendered.asset.tracks(withMediaType: .audio),
+            adjustment: audioAdjustment
+        )
         return item
     }
 
@@ -79,6 +84,7 @@ final class ProjectProgramRenderer {
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
+        audioAdjustment: ProjectAudioAdjustment = .unchanged,
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, sources: sources)
@@ -92,6 +98,10 @@ final class ProjectProgramRenderer {
             throw ProjectEditRendererError.exportUnavailable
         }
         session.videoComposition = rendered.videoComposition
+        session.audioMix = ProjectAudioMixFactory.make(
+            for: rendered.asset.tracks(withMediaType: .audio),
+            adjustment: audioAdjustment
+        )
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-program-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }

@@ -5,6 +5,7 @@ struct ProjectQuickEditorView: View {
     let onExportMovie: () -> Void
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
+    @State private var audioExpanded = false
 
     var body: some View {
         Group {
@@ -81,6 +82,7 @@ struct ProjectQuickEditorView: View {
             }
             .buttonStyle(.bordered)
 
+            audioEditor
             zoomEditor(timeline)
             privacyEditor(timeline)
 
@@ -92,12 +94,16 @@ struct ProjectQuickEditorView: View {
                 }
                 .labelStyle(.iconOnly)
                 .disabled(!session.canUndo)
+                .help("Undo the last timeline trim, split, or deletion")
+                .accessibilityLabel("Undo timeline edit")
 
                 Button("Redo", systemImage: "arrow.uturn.forward") {
                     Task { await session.redo() }
                 }
                 .labelStyle(.iconOnly)
                 .disabled(!session.canRedo)
+                .help("Redo the last timeline trim, split, or deletion")
+                .accessibilityLabel("Redo timeline edit")
 
                 Button("Reset", systemImage: "arrow.counterclockwise") {
                     Task { await session.reset() }
@@ -125,6 +131,63 @@ struct ProjectQuickEditorView: View {
                     .foregroundStyle(.orange)
             }
         }
+    }
+
+    private var audioEditor: some View {
+        DisclosureGroup(isExpanded: $audioExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Button {
+                        var next = session.audioAdjustment
+                        next.isMuted.toggle()
+                        session.updateAudioAdjustment(next)
+                    } label: {
+                        Label(
+                            session.audioAdjustment.isMuted ? "Unmute" : "Mute",
+                            systemImage: session.audioAdjustment.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+
+                    Slider(value: audioGainBinding, in: 0...1, step: 0.05)
+                        .disabled(session.audioAdjustment.isMuted)
+                        .accessibilityLabel("Program volume")
+                    Text("\(Int((session.audioAdjustment.gain * 100).rounded()))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+
+                Text("Applies to preview and derived exports. The captured screen, microphone, and system-audio tracks remain unchanged.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 7) {
+                Label("Audio", systemImage: session.audioAdjustment.isMuted ? "speaker.slash" : "waveform")
+                    .font(.subheadline.weight(.semibold))
+                if !session.audioAdjustment.isUnchanged {
+                    Text(session.audioAdjustment.isMuted ? "MUTED" : "\(Int((session.audioAdjustment.gain * 100).rounded()))%")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+        }
+        .disabled(!session.canPersistEdits || session.isWorking)
+    }
+
+    private var audioGainBinding: Binding<Double> {
+        Binding(
+            get: { session.audioAdjustment.gain },
+            set: { gain in
+                var next = session.audioAdjustment
+                next.gain = gain
+                session.updateAudioAdjustment(next)
+            }
+        )
     }
 
     private func zoomEditor(_ timeline: ProjectEditTimeline) -> some View {

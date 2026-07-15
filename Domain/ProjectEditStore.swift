@@ -1,11 +1,36 @@
 import Foundation
 
+struct ProjectAudioAdjustment: Codable, Equatable, Sendable {
+    static let unchanged = Self(gain: 1, isMuted: false)
+
+    var gain: Double
+    var isMuted: Bool
+
+    var effectiveGain: Float { isMuted ? 0 : Float(gain) }
+    var isUnchanged: Bool { !isMuted && abs(gain - 1) < 0.001 }
+    var isPersistable: Bool { gain.isFinite && (0...1).contains(gain) }
+
+    init(gain: Double = 1, isMuted: Bool = false) {
+        self.gain = min(max(gain.isFinite ? gain : 1, 0), 1)
+        self.isMuted = isMuted
+    }
+
+    private enum CodingKeys: String, CodingKey { case gain, isMuted }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        gain = try container.decodeIfPresent(Double.self, forKey: .gain) ?? 1
+        isMuted = try container.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+    }
+}
+
 enum ProjectEditStoreError: LocalizedError, Equatable {
     case unsupportedSchema(Int)
     case projectMismatch
     case invalidTimeline(String)
     case invalidPrivacyOverlay
     case invalidSceneTimeline
+    case invalidAudioAdjustment
 
     var errorDescription: String? {
         switch self {
@@ -19,12 +44,14 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
             "A saved privacy overlay is invalid."
         case .invalidSceneTimeline:
             "The saved Scene timeline is invalid."
+        case .invalidAudioAdjustment:
+            "The saved audio adjustment is invalid."
         }
     }
 }
 
 struct ProjectEditDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     let schemaVersion: Int
     let projectID: UUID
@@ -33,6 +60,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
     var presentation: CapturePresentationSnapshot?
     var privacyOverlays: [ProjectPrivacyOverlay]
     var sceneTimeline: StudioSceneTimeline?
+    var audioAdjustment: ProjectAudioAdjustment
 
     init(
         projectID: UUID,
@@ -40,7 +68,8 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         timelines: [ProjectEditTimeline],
         presentation: CapturePresentationSnapshot? = nil,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
-        sceneTimeline: StudioSceneTimeline? = nil
+        sceneTimeline: StudioSceneTimeline? = nil,
+        audioAdjustment: ProjectAudioAdjustment = .unchanged
     ) {
         schemaVersion = Self.currentSchemaVersion
         self.projectID = projectID
@@ -49,6 +78,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.presentation = presentation
         self.privacyOverlays = privacyOverlays
         self.sceneTimeline = sceneTimeline
+        self.audioAdjustment = audioAdjustment
     }
 
     func timeline(for trackID: String) -> ProjectEditTimeline? {
@@ -88,8 +118,20 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    mutating func replaceAudioAdjustment(
+        _ audioAdjustment: ProjectAudioAdjustment,
+        updatedAt: Date = Date()
+    ) {
+        self.audioAdjustment = ProjectAudioAdjustment(
+            gain: audioAdjustment.gain,
+            isMuted: audioAdjustment.isMuted
+        )
+        self.updatedAt = updatedAt
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays, sceneTimeline
+        case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays, sceneTimeline,
+             audioAdjustment
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +143,10 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         presentation = try container.decodeIfPresent(CapturePresentationSnapshot.self, forKey: .presentation)
         privacyOverlays = try container.decodeIfPresent([ProjectPrivacyOverlay].self, forKey: .privacyOverlays) ?? []
         sceneTimeline = try container.decodeIfPresent(StudioSceneTimeline.self, forKey: .sceneTimeline)
+        audioAdjustment = try container.decodeIfPresent(
+            ProjectAudioAdjustment.self,
+            forKey: .audioAdjustment
+        ) ?? .unchanged
     }
 }
 
@@ -132,7 +178,8 @@ actor ProjectEditStore {
             timelines: document.timelines,
             presentation: document.presentation,
             privacyOverlays: document.privacyOverlays,
-            sceneTimeline: document.sceneTimeline
+            sceneTimeline: document.sceneTimeline,
+            audioAdjustment: document.audioAdjustment
         )
     }
 
@@ -151,7 +198,7 @@ actor ProjectEditStore {
         allowsLegacy: Bool
     ) throws {
         guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion
-                || (allowsLegacy && (1...3).contains(document.schemaVersion)) else {
+                || (allowsLegacy && (1...4).contains(document.schemaVersion)) else {
             throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
         }
         guard document.projectID == expectedProjectID else {
@@ -179,6 +226,9 @@ actor ProjectEditStore {
         guard document.privacyOverlays.allSatisfy(\.isPersistable),
               Set(document.privacyOverlays.map(\.id)).count == document.privacyOverlays.count else {
             throw ProjectEditStoreError.invalidPrivacyOverlay
+        }
+        guard document.audioAdjustment.isPersistable else {
+            throw ProjectEditStoreError.invalidAudioAdjustment
         }
         if let sceneTimeline = document.sceneTimeline {
             guard sceneTimeline.schemaVersion == 1,
