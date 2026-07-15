@@ -54,8 +54,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
-    private var cursorTelemetryStartedAt: TimeInterval?
-    private var cursorSamples: [CursorSceneSample] = []
+    nonisolated private let cursorSynchronizer = CursorFrameSynchronizer()
+    nonisolated private let cursorTelemetryQueue = DispatchQueue(
+        label: "ua.com.rmarinsky.studiorecorder.cursor-frames",
+        qos: .userInteractive
+    )
     private var startedOutputIDs: Set<ObjectIdentifier> = []
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
     private var outputCompletion: CheckedContinuation<Bool, Never>?
@@ -142,6 +145,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             activeProject = project
             activeCaptureRequest = request
             let ownApplication = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            startCursorTelemetry(request: request)
 
             for display in selected {
                 let isPrimaryAudioDisplay = display.displayID == request.audio.primaryAudioDisplayID
@@ -164,6 +168,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
                 try stream.addRecordingOutput(output)
+                if needsCursorTelemetry(request) {
+                    try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
+                    cursorSynchronizer.register(
+                        streamID: ObjectIdentifier(stream),
+                        space: cursorCaptureSpace(for: display, request: request)
+                    )
+                }
                 captures[display.displayID] = Capture(displayID: display.displayID, stream: stream, output: output)
             }
 
@@ -171,8 +182,6 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 try await capture.stream.startCapture()
                 startedOutputIDs.insert(ObjectIdentifier(capture.output))
             }
-            startCursorTelemetry(for: selected, request: request)
-
             if let camera = request.camera {
                 guard let outputURL = projectStore.rawTrackURL(for: "camera", in: project) else {
                     throw CameraTrackRecorderError.outputUnavailable
@@ -231,7 +240,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     project: activeProject,
                     request: activeCaptureRequest,
                     projectStore: projectStore,
-                    cursorTimeline: cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+                    cursorTimeline: recordedCursorTimeline
                 )
             } catch {
                 do {
@@ -308,40 +317,58 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func startCursorTelemetry(for displays: [SCDisplay], request: CaptureRequest) {
+    private func startCursorTelemetry(request: CaptureRequest) {
         cursorTelemetryTask?.cancel()
-        cursorSamples.removeAll(keepingCapacity: true)
-        cursorTelemetryStartedAt = nil
-        let needsFramingTelemetry = request.presentation.framing.mode == .followCursor
-        let needsCursorRendering = request.profile.includeCursor
-            && request.profile.resolvedCursorRendering == .composited
-        guard needsFramingTelemetry || needsCursorRendering,
-              !displays.isEmpty else { return }
+        cursorSynchronizer.reset()
+        guard needsCursorTelemetry(request) else { return }
 
-        cursorTelemetryStartedAt = ProcessInfo.processInfo.systemUptime
+        recordCursorHostSample()
         cursorTelemetryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                recordCursorSample(displays: displays)
-                try? await Task.sleep(for: .milliseconds(33))
+                recordCursorHostSample()
+                try? await Task.sleep(for: .milliseconds(8))
             }
         }
     }
 
-    private func recordCursorSample(displays: [SCDisplay]) {
-        guard let cursorTelemetryStartedAt else { return }
+    private func recordCursorHostSample() {
         let location = CGEvent(source: nil)?.location ?? .zero
-        let display = displays.first(where: { $0.frame.contains(location) }) ?? displays[0]
-        let frame = display.frame
-        guard frame.width > 0, frame.height > 0 else { return }
-        cursorSamples.append(
-            CursorSceneSample(
-                time: ProcessInfo.processInfo.systemUptime - cursorTelemetryStartedAt,
-                displayID: display.displayID,
-                normalizedX: (location.x - frame.minX) / frame.width,
-                normalizedY: (location.y - frame.minY) / frame.height,
+        cursorSynchronizer.record(
+            CursorHostSample(
+                hostTime: CMClockConvertHostTimeToSystemUnits(CMClockGetTime(CMClockGetHostTimeClock())),
+                location: location,
                 isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
-            ).validated()
+            )
+        )
+    }
+
+    private func needsCursorTelemetry(_ request: CaptureRequest) -> Bool {
+        request.presentation.framing.mode == .followCursor
+            || (request.profile.includeCursor && request.profile.resolvedCursorRendering == .composited)
+    }
+
+    private func cursorCaptureSpace(for display: SCDisplay, request: CaptureRequest) -> CursorCaptureSpace {
+        let displayFrame = display.frame
+        guard request.presentation.framing.mode == .fixedRegion else {
+            return CursorCaptureSpace(displayID: display.displayID, visibleFrame: displayFrame)
+        }
+        let sourceRect = CaptureGeometryPlanner.sourceRect(
+            displaySize: CGSize(width: display.width, height: display.height),
+            canvasSize: request.presentation.canvas.pixelSize,
+            framing: request.presentation.framing
+        )
+        guard display.width > 0, display.height > 0, !sourceRect.isEmpty else {
+            return CursorCaptureSpace(displayID: display.displayID, visibleFrame: displayFrame)
+        }
+        return CursorCaptureSpace(
+            displayID: display.displayID,
+            visibleFrame: CGRect(
+                x: displayFrame.minX + (sourceRect.minX / CGFloat(display.width)) * displayFrame.width,
+                y: displayFrame.minY + (sourceRect.minY / CGFloat(display.height)) * displayFrame.height,
+                width: (sourceRect.width / CGFloat(display.width)) * displayFrame.width,
+                height: (sourceRect.height / CGFloat(display.height)) * displayFrame.height
+            )
         )
     }
 
@@ -351,8 +378,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func persistCursorTelemetry(in project: RecordingProject) throws {
-        guard !cursorSamples.isEmpty else { return }
-        try projectStore.writeCursorTimeline(CursorSceneTimeline(samples: cursorSamples), in: project)
+        guard let recordedCursorTimeline else { return }
+        try projectStore.writeCursorTimeline(recordedCursorTimeline, in: project)
+    }
+
+    private var recordedCursorTimeline: CursorSceneTimeline? {
+        let samples = cursorSynchronizer.timelineSamples()
+        return samples.isEmpty ? nil : CursorSceneTimeline(samples: samples)
     }
 
     private func stopCaptures() async -> [String] {
@@ -449,8 +481,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     private func clearCaptureState() {
         stopCursorTelemetry()
-        cursorTelemetryStartedAt = nil
-        cursorSamples.removeAll(keepingCapacity: false)
+        cursorSynchronizer.reset()
         captures.removeAll()
         cameraRecorder = nil
         startedOutputIDs.removeAll()
@@ -487,5 +518,27 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             self.finishOutput(recordingOutput)
             await self.beginInterruptedTeardown(reason: error.localizedDescription)
         }
+    }
+}
+
+extension RecordingCoordinator: SCStreamOutput {
+    nonisolated func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                  sampleBuffer,
+                  createIfNecessary: false
+              ) as? [[SCStreamFrameInfo: Any]],
+              let frameInfo = attachments.first,
+              let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value else {
+            return
+        }
+        cursorSynchronizer.alignFrame(
+            streamID: ObjectIdentifier(stream),
+            hostTime: displayTime
+        )
     }
 }

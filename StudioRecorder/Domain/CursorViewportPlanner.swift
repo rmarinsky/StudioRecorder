@@ -1,5 +1,113 @@
 import CoreGraphics
+import CoreMedia
 import Foundation
+
+struct CursorHostSample: Equatable, Sendable {
+    let hostTime: UInt64
+    let location: CGPoint
+    let isPrimaryButtonDown: Bool
+}
+
+struct CursorCaptureSpace: Equatable, Sendable {
+    let displayID: UInt32
+    let visibleFrame: CGRect
+}
+
+final class CursorFrameSynchronizer: @unchecked Sendable {
+    private struct State {
+        var history: [CursorHostSample] = []
+        var spaces: [ObjectIdentifier: CursorCaptureSpace] = [:]
+        var firstFrameHostTimes: [ObjectIdentifier: UInt64] = [:]
+        var alignedSamples: [CursorSceneSample] = []
+    }
+
+    private let lock = NSLock()
+    private let historyLimit: Int
+    private var state = State()
+
+    init(historyLimit: Int = 240) {
+        self.historyLimit = max(historyLimit, 2)
+    }
+
+    func register(streamID: ObjectIdentifier, space: CursorCaptureSpace) {
+        lock.withLock {
+            state.spaces[streamID] = space
+        }
+    }
+
+    func record(_ sample: CursorHostSample) {
+        lock.withLock {
+            state.history.append(sample)
+            if state.history.count > historyLimit {
+                state.history.removeFirst(state.history.count - historyLimit)
+            }
+        }
+    }
+
+    func sample(forFrameAt hostTime: UInt64) -> CursorHostSample? {
+        lock.withLock { Self.sample(in: state.history, at: hostTime) }
+    }
+
+    @discardableResult
+    func alignFrame(
+        streamID: ObjectIdentifier,
+        hostTime: UInt64,
+        recordsTimeline: Bool = true
+    ) -> CursorSceneSample? {
+        lock.withLock {
+            guard let space = state.spaces[streamID],
+                  space.visibleFrame.width > 0,
+                  space.visibleFrame.height > 0,
+                  let hostSample = Self.sample(in: state.history, at: hostTime) else {
+                return nil
+            }
+            let firstHostTime = state.firstFrameHostTimes[streamID] ?? hostTime
+            state.firstFrameHostTimes[streamID] = firstHostTime
+            let sample = CursorSceneSample(
+                time: Self.seconds(from: firstHostTime, to: hostTime),
+                displayID: space.displayID,
+                normalizedX: (hostSample.location.x - space.visibleFrame.minX) / space.visibleFrame.width,
+                normalizedY: (hostSample.location.y - space.visibleFrame.minY) / space.visibleFrame.height,
+                isPrimaryButtonDown: hostSample.isPrimaryButtonDown
+            ).validated()
+            if recordsTimeline {
+                state.alignedSamples.append(sample)
+            }
+            return sample
+        }
+    }
+
+    func timelineSamples() -> [CursorSceneSample] {
+        lock.withLock { state.alignedSamples }
+    }
+
+    func reset() {
+        lock.withLock { state = State() }
+    }
+
+    private static func sample(in history: [CursorHostSample], at hostTime: UInt64) -> CursorHostSample? {
+        var lower = 0
+        var upper = history.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if history[middle].hostTime <= hostTime {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        guard lower > 0 else { return nil }
+        return history[lower - 1]
+    }
+
+    private static func seconds(from start: UInt64, to end: UInt64) -> TimeInterval {
+        guard end >= start else { return 0 }
+        let startTime = CMClockMakeHostTimeFromSystemUnits(start)
+        let endTime = CMClockMakeHostTimeFromSystemUnits(end)
+        let seconds = CMTimeSubtract(endTime, startTime).seconds
+        return seconds.isFinite ? max(seconds, 0) : 0
+    }
+}
 
 struct CursorSceneSample: Codable, Equatable, Sendable {
     let time: TimeInterval

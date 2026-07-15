@@ -50,9 +50,10 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated(unsafe) private var cameraBackground = CameraBackgroundSnapshot.off
     nonisolated private let cameraBackgroundLock = NSLock()
     nonisolated(unsafe) private var streamPipeline: LiveProgramPipeline?
-    nonisolated(unsafe) private var streamDisplayFrame: CGRect?
     nonisolated private let streamPipelineLock = NSLock()
+    nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer()
     private var streamAudioConfiguration: LiveStreamAudioConfiguration?
+    private var cursorTelemetryTask: Task<Void, Never>?
     private var screenStream: SCStream?
     private var previewedDisplayID: UInt32?
     private var cameraInput: AVCaptureDeviceInput?
@@ -107,11 +108,19 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             if streamAudioConfiguration?.capturesMicrophone == true {
                 try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: screenQueue)
             }
+            streamCursorSynchronizer.reset()
+            streamCursorSynchronizer.register(
+                streamID: ObjectIdentifier(stream),
+                space: CursorCaptureSpace(displayID: display.displayID, visibleFrame: display.frame)
+            )
+            startCursorTelemetry()
             try await stream.startCapture()
             screenStream = stream
             previewedDisplayID = displayID
-            streamPipelineLock.withLock { streamDisplayFrame = display.frame }
         } catch {
+            cursorTelemetryTask?.cancel()
+            cursorTelemetryTask = nil
+            streamCursorSynchronizer.reset()
             screenPreviewError = error.localizedDescription
         }
     }
@@ -121,7 +130,9 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         screenStream = nil
         previewedDisplayID = nil
         screenImage = nil
-        streamPipelineLock.withLock { streamDisplayFrame = nil }
+        cursorTelemetryTask?.cancel()
+        cursorTelemetryTask = nil
+        streamCursorSynchronizer.reset()
         guard let stream else { return }
         try? await stream.stopCapture()
     }
@@ -169,6 +180,27 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 continuation.resume()
             }
         }
+    }
+
+    private func startCursorTelemetry() {
+        cursorTelemetryTask?.cancel()
+        recordCursorHostSample()
+        cursorTelemetryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.recordCursorHostSample()
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+        }
+    }
+
+    private func recordCursorHostSample() {
+        streamCursorSynchronizer.record(
+            CursorHostSample(
+                hostTime: CMClockConvertHostTimeToSystemUnits(CMClockGetTime(CMClockGetHostTimeClock())),
+                location: CGEvent(source: nil)?.location ?? .zero,
+                isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
+            )
+        )
     }
 
     private func configureCameraPreview() {
@@ -294,19 +326,21 @@ extension LiveSceneCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        let pipelineContext = streamPipelineLock.withLock { (streamPipeline, streamDisplayFrame) }
-        if let pipeline = pipelineContext.0 {
+        let pipeline = streamPipelineLock.withLock { streamPipeline }
+        if let pipeline {
             let box = SendableSampleBuffer(value: sampleBuffer)
             switch outputType {
             case .screen:
-                let cursor = pipelineContext.1.flatMap { frame -> ProgramCursorState? in
-                    guard frame.width > 0, frame.height > 0,
-                          let location = CGEvent(source: nil)?.location,
-                          frame.contains(location) else { return nil }
+                let cursor = frameDisplayTime(in: sampleBuffer).flatMap { displayTime -> ProgramCursorState? in
+                    guard let sample = streamCursorSynchronizer.alignFrame(
+                        streamID: ObjectIdentifier(stream),
+                        hostTime: displayTime,
+                        recordsTimeline: false
+                    ) else { return nil }
                     return ProgramCursorState(
-                        normalizedX: (location.x - frame.minX) / frame.width,
-                        normalizedY: (location.y - frame.minY) / frame.height,
-                        isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
+                        normalizedX: sample.normalizedX,
+                        normalizedY: sample.normalizedY,
+                        isPrimaryButtonDown: sample.isPrimaryButtonDown
                     )
                 }
                 Task { await pipeline.appendScreen(box, cursor: cursor) }
@@ -336,6 +370,15 @@ extension LiveSceneCoordinator: SCStreamOutput {
             self.screenImage = NSImage(cgImage: cgImage, size: .zero)
             self.frameDeliveryLock.withLock { self.isFrameDeliveryPending = false }
         }
+    }
+
+    nonisolated private func frameDisplayTime(in sampleBuffer: CMSampleBuffer) -> UInt64? {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+        let frameInfo = attachments.first else { return nil }
+        return (frameInfo[.displayTime] as? NSNumber)?.uint64Value
     }
 }
 

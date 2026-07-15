@@ -3,6 +3,54 @@ import XCTest
 @testable import StudioRecorder
 
 final class CursorViewportPlannerTests: XCTestCase {
+    func testDelayedFrameUsesCursorPositionFromItsDisplayTimeInsteadOfTheNewerDeliveryPosition() throws {
+        let synchronizer = CursorFrameSynchronizer(historyLimit: 8)
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 100,
+                location: CGPoint(x: 200, y: 400),
+                isPrimaryButtonDown: true
+            )
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 200,
+                location: CGPoint(x: 800, y: 400),
+                isPrimaryButtonDown: true
+            )
+        )
+
+        let frameAligned = try XCTUnwrap(synchronizer.sample(forFrameAt: 150))
+
+        XCTAssertEqual(frameAligned.location.x, 200)
+        XCTAssertTrue(frameAligned.isPrimaryButtonDown)
+    }
+
+    func testFrameAlignmentNormalizesCursorInsideTheActuallyCapturedRegion() throws {
+        let synchronizer = CursorFrameSynchronizer(historyLimit: 8)
+        let streamID = ObjectIdentifier(NSObject())
+        synchronizer.register(
+            streamID: streamID,
+            space: CursorCaptureSpace(
+                displayID: 7,
+                visibleFrame: CGRect(x: 1_000, y: 200, width: 800, height: 600)
+            )
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 100,
+                location: CGPoint(x: 1_200, y: 500),
+                isPrimaryButtonDown: false
+            )
+        )
+
+        let aligned = try XCTUnwrap(synchronizer.alignFrame(streamID: streamID, hostTime: 100))
+
+        XCTAssertEqual(aligned.normalizedX, 0.25, accuracy: 0.001)
+        XCTAssertEqual(aligned.normalizedY, 0.5, accuracy: 0.001)
+        XCTAssertEqual(aligned.time, 0, accuracy: 0.001)
+    }
+
     func testRecordedCursorTimelineReturnsTheScenePositionAtPlaybackTime() throws {
         let timeline = CursorSceneTimeline(samples: [
             CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.15, normalizedY: 0.4, isPrimaryButtonDown: false),
