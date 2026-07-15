@@ -24,6 +24,27 @@ struct LiveStreamHealthSnapshot: Equatable, Sendable {
     }
 }
 
+struct LiveStreamReconnectPolicy: Equatable, Sendable {
+    let maximumAttempts: Int
+    let baseDelaySeconds: TimeInterval
+    let maximumDelaySeconds: TimeInterval
+
+    init(
+        maximumAttempts: Int = 10,
+        baseDelaySeconds: TimeInterval = 1,
+        maximumDelaySeconds: TimeInterval = 8
+    ) {
+        self.maximumAttempts = max(maximumAttempts, 1)
+        self.baseDelaySeconds = max(baseDelaySeconds, 0)
+        self.maximumDelaySeconds = max(maximumDelaySeconds, 0)
+    }
+
+    func delaySeconds(beforeAttempt attempt: Int) -> TimeInterval {
+        guard attempt > 0, baseDelaySeconds > 0 else { return 0 }
+        return min(baseDelaySeconds * pow(2, Double(attempt - 1)), maximumDelaySeconds)
+    }
+}
+
 @MainActor
 final class YouTubeStreamingCoordinator: ObservableObject {
     @Published private(set) var state: LiveStreamState = .idle
@@ -119,19 +140,31 @@ actor LiveProgramPipeline {
     typealias StateHandler = @MainActor @Sendable (LiveStreamState) -> Void
 
     private let sink: any LiveProgramSink
+    private let reconnectPolicy: LiveStreamReconnectPolicy
     private let compositor = ProgramFrameCompositor(personQuality: .live)
     private var presentation = CapturePresentationSnapshot.default
     private var rendersCursor = false
     private var latestCamera: SendableSampleBuffer?
     private var pixelBufferPool: CVPixelBufferPool?
     private var isRunning = false
+    private var isTransportLive = false
+    private var streamGeneration = 0
+    private var activeConfiguration: YouTubeStreamConfiguration?
+    private var activeAudioConfiguration: LiveStreamAudioConfiguration?
+    private var activeStateHandler: StateHandler?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectRequestedWhileRetrying = false
     private var healthStartedAt: TimeInterval?
     private var composedVideoFrames = 0
     private var droppedVideoFrames = 0
     private var totalRenderDuration: TimeInterval = 0
 
-    init(sink: any LiveProgramSink = YouTubeStreamSink()) {
+    init(
+        sink: any LiveProgramSink = YouTubeStreamSink(),
+        reconnectPolicy: LiveStreamReconnectPolicy = LiveStreamReconnectPolicy()
+    ) {
         self.sink = sink
+        self.reconnectPolicy = reconnectPolicy
     }
 
     func start(
@@ -142,8 +175,14 @@ actor LiveProgramPipeline {
         stateHandler: @escaping StateHandler
     ) async throws {
         guard !isRunning else { return }
+        streamGeneration += 1
+        let generation = streamGeneration
         self.presentation = presentation.validated()
         rendersCursor = includesCursor
+        activeConfiguration = configuration
+        activeAudioConfiguration = audioConfiguration
+        activeStateHandler = stateHandler
+        isTransportLive = false
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
         healthStartedAt = nil
         composedVideoFrames = 0
@@ -151,15 +190,29 @@ actor LiveProgramPipeline {
         totalRenderDuration = 0
         isRunning = true
         do {
-            try await sink.connect(
+            try await connectSink(
                 configuration: configuration,
                 audioConfiguration: audioConfiguration,
-                stateHandler: stateHandler
+                stateHandler: stateHandler,
+                generation: generation,
+                reconnectAttempt: nil
             )
+            guard isRunning, streamGeneration == generation else {
+                await sink.disconnect()
+                throw CancellationError()
+            }
+            if reconnectTask == nil {
+                isTransportLive = true
+                await stateHandler(.live)
+            }
         } catch {
             isRunning = false
+            isTransportLive = false
             latestCamera = nil
             pixelBufferPool = nil
+            activeConfiguration = nil
+            activeAudioConfiguration = nil
+            activeStateHandler = nil
             await sink.disconnect()
             throw error
         }
@@ -167,9 +220,17 @@ actor LiveProgramPipeline {
 
     func stop() async {
         guard isRunning else { return }
+        streamGeneration += 1
         isRunning = false
+        isTransportLive = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectRequestedWhileRetrying = false
         latestCamera = nil
         pixelBufferPool = nil
+        activeConfiguration = nil
+        activeAudioConfiguration = nil
+        activeStateHandler = nil
         await sink.disconnect()
     }
 
@@ -188,6 +249,10 @@ actor LiveProgramPipeline {
         guard isRunning else { return }
         let renderStartedAt = ProcessInfo.processInfo.systemUptime
         healthStartedAt = healthStartedAt ?? renderStartedAt
+        guard isTransportLive else {
+            droppedVideoFrames += 1
+            return
+        }
         guard let sourceBuffer = sampleBuffer.value.imageBuffer,
               let outputBuffer = makePixelBuffer() else {
             droppedVideoFrames += 1
@@ -232,8 +297,146 @@ actor LiveProgramPipeline {
     }
 
     func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) async {
-        guard isRunning else { return }
+        guard isRunning, isTransportLive else { return }
         await sink.appendAudio(sampleBuffer, track: track)
+    }
+
+    private func connectSink(
+        configuration: YouTubeStreamConfiguration,
+        audioConfiguration: LiveStreamAudioConfiguration,
+        stateHandler: @escaping StateHandler,
+        generation: Int,
+        reconnectAttempt: Int?
+    ) async throws {
+        try await sink.connect(
+            configuration: configuration,
+            audioConfiguration: audioConfiguration,
+            eventHandler: { [weak self] event in
+                await self?.handleSinkEvent(
+                    event,
+                    stateHandler: stateHandler,
+                    generation: generation,
+                    reconnectAttempt: reconnectAttempt
+                )
+            }
+        )
+    }
+
+    private func handleSinkEvent(
+        _ event: LiveProgramSinkEvent,
+        stateHandler: @escaping StateHandler,
+        generation: Int,
+        reconnectAttempt: Int?
+    ) async {
+        guard isRunning, streamGeneration == generation else { return }
+        switch event {
+        case .connecting:
+            if reconnectAttempt == nil { await stateHandler(.connecting) }
+        case .connected:
+            break
+        case .disconnected:
+            beginReconnect(generation: generation)
+        case .failed(let message):
+            if reconnectAttempt == nil { await stateHandler(.failed(message)) }
+        case .idle:
+            await stateHandler(.idle)
+        case .stopping:
+            await stateHandler(.stopping)
+        }
+    }
+
+    private func beginReconnect(generation: Int) {
+        guard isRunning,
+              streamGeneration == generation else { return }
+        isTransportLive = false
+        guard reconnectTask == nil else {
+            reconnectRequestedWhileRetrying = true
+            return
+        }
+        reconnectRequestedWhileRetrying = false
+        reconnectTask = Task { [weak self] in
+            await self?.runReconnectLoop(generation: generation)
+        }
+    }
+
+    private func runReconnectLoop(generation: Int) async {
+        guard let configuration = activeConfiguration,
+              let audioConfiguration = activeAudioConfiguration,
+              let stateHandler = activeStateHandler else {
+            reconnectTask = nil
+            return
+        }
+        var lastError: Error?
+        for attempt in 1...reconnectPolicy.maximumAttempts {
+            guard isRunning, streamGeneration == generation, !Task.isCancelled else {
+                reconnectTask = nil
+                return
+            }
+            reconnectRequestedWhileRetrying = false
+            await stateHandler(.reconnecting(
+                attempt: attempt,
+                maximumAttempts: reconnectPolicy.maximumAttempts
+            ))
+            do {
+                let delay = reconnectPolicy.delaySeconds(beforeAttempt: attempt)
+                if delay > 0 {
+                    try await Task.sleep(for: .seconds(delay))
+                }
+                try Task.checkCancellation()
+                try await connectSink(
+                    configuration: configuration,
+                    audioConfiguration: audioConfiguration,
+                    stateHandler: stateHandler,
+                    generation: generation,
+                    reconnectAttempt: attempt
+                )
+                guard isRunning, streamGeneration == generation, !Task.isCancelled else {
+                    await sink.disconnect()
+                    reconnectTask = nil
+                    return
+                }
+                if reconnectRequestedWhileRetrying {
+                    await sink.disconnect()
+                    continue
+                }
+                isTransportLive = true
+                await stateHandler(.live)
+                if reconnectRequestedWhileRetrying {
+                    isTransportLive = false
+                    await sink.disconnect()
+                    continue
+                }
+                reconnectTask = nil
+                return
+            } catch is CancellationError {
+                if Task.isCancelled || !isRunning || streamGeneration != generation {
+                    reconnectTask = nil
+                    return
+                }
+                lastError = CancellationError()
+                await sink.disconnect()
+            } catch {
+                lastError = error
+                await sink.disconnect()
+            }
+        }
+        guard isRunning, streamGeneration == generation else {
+            reconnectTask = nil
+            return
+        }
+        isRunning = false
+        isTransportLive = false
+        latestCamera = nil
+        pixelBufferPool = nil
+        activeConfiguration = nil
+        activeAudioConfiguration = nil
+        activeStateHandler = nil
+        reconnectTask = nil
+        reconnectRequestedWhileRetrying = false
+        let detail = lastError?.localizedDescription ?? "The connection did not recover."
+        await stateHandler(.failed(
+            "YouTube reconnect failed after \(reconnectPolicy.maximumAttempts) attempts. \(detail)"
+        ))
     }
 
     private func streamFraming(cursorPosition: CGPoint?) -> ScreenFramingSnapshot? {

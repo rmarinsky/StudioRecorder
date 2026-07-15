@@ -549,6 +549,12 @@ struct StudioRecorderRootView: View {
                     Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                         .font(.caption)
                         .foregroundStyle(streaming.state == .live ? .red : .secondary)
+                    if snapshot.captureState == .recording,
+                       streaming.state.isReconnecting || streaming.state.hasFailed {
+                        Label("Local recording continues", systemImage: "record.circle")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.orange)
+                    }
                     if let health = streaming.health, streaming.state.isActive {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(streamHealthOutputSummary(health))

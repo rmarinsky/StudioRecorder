@@ -5,6 +5,25 @@ import XCTest
 
 @MainActor
 final class YouTubeStreamingTests: XCTestCase {
+    func testReconnectPolicyUsesBoundedExponentialBackoff() {
+        let policy = LiveStreamReconnectPolicy(
+            maximumAttempts: 5,
+            baseDelaySeconds: 1,
+            maximumDelaySeconds: 8
+        )
+
+        XCTAssertEqual((1...5).map(policy.delaySeconds), [1, 2, 4, 8, 8])
+    }
+
+    func testDefaultReconnectPolicyCoversASixtySecondOutage() {
+        let policy = LiveStreamReconnectPolicy()
+
+        let retryWindow = (1...policy.maximumAttempts)
+            .map(policy.delaySeconds)
+            .reduce(0, +)
+        XCTAssertGreaterThanOrEqual(retryWindow, 60)
+    }
+
     func testConfigurationRequiresRTMPSAndAStreamKey() {
         let credentials = MemoryStreamCredentials()
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
@@ -49,7 +68,7 @@ final class YouTubeStreamingTests: XCTestCase {
             frameRate: 30,
             videoBitRate: 3_000_000
         )
-        var observedStates: [LiveStreamState] = []
+        let observedEvents = StreamEventRecorder()
 
         do {
             try await sink.connect(
@@ -60,13 +79,14 @@ final class YouTubeStreamingTests: XCTestCase {
                     microphoneDeviceID: nil,
                     excludesStudioRecorderAudio: true
                 )
-            ) { state in
-                observedStates.append(state)
+            ) { event in
+                await observedEvents.append(event)
             }
             XCTFail("An unavailable local endpoint must not become live.")
         } catch {
-            XCTAssertEqual(observedStates.first, .connecting)
-            guard case .failed = observedStates.last else {
+            let events = await observedEvents.events()
+            XCTAssertEqual(events.first, .connecting)
+            guard case .failed = events.last else {
                 return XCTFail("The sink must publish a failed state.")
             }
         }
@@ -222,6 +242,172 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertTrue(wasDisconnected)
     }
 
+    func testLivePipelineReconnectsAfterDropAndResumesSendingFrames() async throws {
+        let sink = ReconnectableStreamSink()
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 3,
+                baseDelaySeconds: 0,
+                maximumDelaySeconds: 0
+            )
+        )
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: CGSize(width: 640, height: 360),
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        var observedStates: [LiveStreamState] = []
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: .default,
+            audioConfiguration: audio
+        ) { observedStates.append($0) }
+
+        await sink.dropConnection()
+        await sink.waitForConnectionCount(2)
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil
+        )
+
+        XCTAssertTrue(observedStates.contains(.reconnecting(attempt: 1, maximumAttempts: 3)))
+        XCTAssertEqual(observedStates.last, .live)
+        let videoCount = await sink.videoCount()
+        XCTAssertEqual(videoCount, 1)
+        await pipeline.stop()
+    }
+
+    func testDropDuringReconnectCompletionStartsAnotherReconnectInsteadOfGoingFalseLive() async throws {
+        let sink = ReconnectableStreamSink(dropsOnSuccessfulReconnects: 1)
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 3,
+                baseDelaySeconds: 0,
+                maximumDelaySeconds: 0
+            )
+        )
+        let secondReconnect = expectation(description: "Second reconnect starts")
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration()
+        ) { state in
+            if state == .reconnecting(attempt: 2, maximumAttempts: 3) {
+                secondReconnect.fulfill()
+            }
+        }
+
+        await sink.dropConnection()
+        await fulfillment(of: [secondReconnect], timeout: 1)
+
+        let connectionCount = await sink.currentConnectionCount()
+        XCTAssertEqual(connectionCount, 3)
+        await pipeline.stop()
+    }
+
+    func testLivePipelineFailsHonestlyAfterReconnectBudgetIsExhausted() async throws {
+        let sink = ReconnectableStreamSink(reconnectFailures: 3)
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 3,
+                baseDelaySeconds: 0,
+                maximumDelaySeconds: 0
+            )
+        )
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: CGSize(width: 640, height: 360),
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        let failed = expectation(description: "Reconnect budget exhausted")
+        var finalState: LiveStreamState?
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: .default,
+            audioConfiguration: audio
+        ) { state in
+            if case .failed = state {
+                finalState = state
+                failed.fulfill()
+            }
+        }
+
+        await sink.dropConnection()
+        await fulfillment(of: [failed], timeout: 1)
+
+        let connectionCount = await sink.currentConnectionCount()
+        XCTAssertEqual(connectionCount, 4)
+        guard case .failed(let message) = finalState else {
+            return XCTFail("Reconnect exhaustion must end in a failed state.")
+        }
+        XCTAssertTrue(message.contains("after 3 attempts"))
+        XCTAssertFalse(message.contains("Local recording"))
+    }
+
+    func testStoppingDuringReconnectBackoffCancelsFutureAttempts() async throws {
+        let sink = ReconnectableStreamSink()
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 3,
+                baseDelaySeconds: 5,
+                maximumDelaySeconds: 5
+            )
+        )
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: CGSize(width: 640, height: 360),
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        let reconnecting = expectation(description: "Reconnect backoff begins")
+        var didObserveReconnect = false
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: .default,
+            audioConfiguration: audio
+        ) { state in
+            if case .reconnecting = state, !didObserveReconnect {
+                didObserveReconnect = true
+                reconnecting.fulfill()
+            }
+        }
+
+        await sink.dropConnection()
+        await fulfillment(of: [reconnecting], timeout: 1)
+        await pipeline.stop()
+        try await Task.sleep(for: .milliseconds(20))
+
+        let connectionCount = await sink.currentConnectionCount()
+        XCTAssertEqual(connectionCount, 1)
+    }
+
     private func videoSampleBuffer(color: CIColor) throws -> CMSampleBuffer {
         var pixelBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
@@ -269,6 +455,25 @@ final class YouTubeStreamingTests: XCTestCase {
         return try XCTUnwrap(sampleBuffer)
     }
 
+    private func streamConfiguration() -> YouTubeStreamConfiguration {
+        YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: CGSize(width: 640, height: 360),
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+    }
+
+    private func streamAudioConfiguration() -> LiveStreamAudioConfiguration {
+        LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+    }
+
     private func pixel(in image: CIImage, x: Int, y: Int) throws -> (red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
         let context = CIContext()
         let extent = CGRect(x: x, y: y, width: 1, height: 1)
@@ -309,10 +514,10 @@ private actor InspectableStreamSink: LiveProgramSink {
     func connect(
         configuration: YouTubeStreamConfiguration,
         audioConfiguration: LiveStreamAudioConfiguration,
-        stateHandler: @escaping LiveStreamStateHandler
+        eventHandler: @escaping LiveProgramSinkEventHandler
     ) async throws {
         self.audioConfiguration = audioConfiguration
-        await stateHandler(.live)
+        await eventHandler(.connected)
     }
 
     func appendVideo(_ sampleBuffer: SendableSampleBuffer) {
@@ -337,7 +542,7 @@ private actor BlockingStreamSink: LiveProgramSink {
     func connect(
         configuration: YouTubeStreamConfiguration,
         audioConfiguration: LiveStreamAudioConfiguration,
-        stateHandler: @escaping LiveStreamStateHandler
+        eventHandler: @escaping LiveProgramSinkEventHandler
     ) async throws {
         connectStarted = true
         connectWaiters.forEach { $0.resume() }
@@ -364,4 +569,86 @@ private actor BlockingStreamSink: LiveProgramSink {
     }
 
     func wasDisconnected() -> Bool { disconnected }
+}
+
+private actor ReconnectableStreamSink: LiveProgramSink {
+    private var eventHandler: LiveProgramSinkEventHandler?
+    private var connectionCount = 0
+    private var videos: [SendableSampleBuffer] = []
+    private var reconnectFailures: Int
+    private var dropsOnSuccessfulReconnects: Int
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    init(reconnectFailures: Int = 0, dropsOnSuccessfulReconnects: Int = 0) {
+        self.reconnectFailures = reconnectFailures
+        self.dropsOnSuccessfulReconnects = dropsOnSuccessfulReconnects
+    }
+
+    func connect(
+        configuration: YouTubeStreamConfiguration,
+        audioConfiguration: LiveStreamAudioConfiguration,
+        eventHandler: @escaping LiveProgramSinkEventHandler
+    ) async throws {
+        self.eventHandler = eventHandler
+        connectionCount += 1
+        await eventHandler(.connecting)
+        if connectionCount > 1, reconnectFailures > 0 {
+            reconnectFailures -= 1
+            let error = ReconnectableStreamSinkError.connectionFailed
+            await eventHandler(.failed(error.localizedDescription))
+            resumeReadyWaiters()
+            throw error
+        }
+        await eventHandler(.connected)
+        if connectionCount > 1, dropsOnSuccessfulReconnects > 0 {
+            dropsOnSuccessfulReconnects -= 1
+            await eventHandler(.disconnected)
+            resumeReadyWaiters()
+            throw CancellationError()
+        }
+        resumeReadyWaiters()
+    }
+
+    func appendVideo(_ sampleBuffer: SendableSampleBuffer) {
+        videos.append(sampleBuffer)
+    }
+
+    func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) {}
+    func disconnect() {}
+
+    func dropConnection() async {
+        await eventHandler?(.disconnected)
+    }
+
+    func waitForConnectionCount(_ count: Int) async {
+        guard connectionCount < count else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append((count, continuation))
+        }
+    }
+
+    func videoCount() -> Int { videos.count }
+    func currentConnectionCount() -> Int { connectionCount }
+
+    private func resumeReadyWaiters() {
+        let ready = waiters.filter { connectionCount >= $0.count }
+        waiters.removeAll { connectionCount >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+    }
+}
+
+private enum ReconnectableStreamSinkError: LocalizedError {
+    case connectionFailed
+
+    var errorDescription: String? { "Synthetic reconnect failure." }
+}
+
+private actor StreamEventRecorder {
+    private var recorded: [LiveProgramSinkEvent] = []
+
+    func append(_ event: LiveProgramSinkEvent) {
+        recorded.append(event)
+    }
+
+    func events() -> [LiveProgramSinkEvent] { recorded }
 }

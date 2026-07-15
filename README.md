@@ -29,7 +29,7 @@ public brand.
 ## Deliberately not claimed as complete
 
 A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing and the custom cursor/click renderer. Editable tracks keeps the full display recoverable; Program movie only deliberately trades later layout changes for one share-ready file. Synchronized waveforms, speed/volume edits, and local transcripts remain future slices. Quick edits never rewrite retained source media.
-YouTube OAuth/API broadcast creation, automatic reconnect, and long horizontal/vertical ingest soak tests remain before streaming is release-ready. Cloud hosting and a general OBS-style scene graph remain out of scope.
+YouTube streaming now retries an interrupted established connection for at least one minute (ten attempts with bounded backoff), with an honest reconnect state and cancellable Stop behavior. Record + Stream keeps its independent local recording alive while YouTube reconnects; Stream-only mode does not yet create a local archive. YouTube OAuth/API broadcast creation, initial-connect preflight, and long horizontal/vertical ingest soak tests remain before streaming is release-ready. Cloud hosting and a general OBS-style scene graph remain out of scope.
 
 ## Build and run
 
