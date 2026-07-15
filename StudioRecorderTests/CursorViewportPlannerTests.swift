@@ -3,6 +3,49 @@ import XCTest
 @testable import StudioRecorder
 
 final class CursorViewportPlannerTests: XCTestCase {
+    func testFrameAlignmentUsesScreenContentLatencyInsteadOfLeadingTextSelection() throws {
+        let synchronizer = CursorFrameSynchronizer(
+            historyLimit: 8,
+            contentLatencySystemUnits: 20
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 180,
+                location: CGPoint(x: 420, y: 400),
+                isPrimaryButtonDown: true
+            )
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 200,
+                location: CGPoint(x: 460, y: 400),
+                isPrimaryButtonDown: true
+            )
+        )
+
+        let frameAligned = try XCTUnwrap(synchronizer.sample(forFrameAt: 200))
+
+        XCTAssertEqual(frameAligned.location.x, 420)
+    }
+
+    func testContentLatencyFallsBackToCurrentSampleWhileHistoryWarmsUp() throws {
+        let synchronizer = CursorFrameSynchronizer(
+            historyLimit: 8,
+            contentLatencySystemUnits: 20
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 200,
+                location: CGPoint(x: 460, y: 400),
+                isPrimaryButtonDown: false
+            )
+        )
+
+        let frameAligned = try XCTUnwrap(synchronizer.sample(forFrameAt: 200))
+
+        XCTAssertEqual(frameAligned.location.x, 460)
+    }
+
     func testDelayedFrameUsesCursorPositionFromItsDisplayTimeInsteadOfTheNewerDeliveryPosition() throws {
         let synchronizer = CursorFrameSynchronizer(historyLimit: 8)
         synchronizer.record(

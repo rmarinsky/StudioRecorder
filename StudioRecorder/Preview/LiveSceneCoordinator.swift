@@ -51,7 +51,9 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let cameraBackgroundLock = NSLock()
     nonisolated(unsafe) private var streamPipeline: LiveProgramPipeline?
     nonisolated private let streamPipelineLock = NSLock()
-    nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer()
+    nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
+        contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
+    )
     private var streamAudioConfiguration: LiveStreamAudioConfiguration?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var screenStream: SCStream?

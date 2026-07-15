@@ -54,7 +54,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
-    nonisolated private let cursorSynchronizer = CursorFrameSynchronizer()
+    nonisolated private let cursorSynchronizer = CursorFrameSynchronizer(
+        contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
+    )
     nonisolated private let cursorTelemetryQueue = DispatchQueue(
         label: "ua.com.rmarinsky.studiorecorder.cursor-frames",
         qos: .userInteractive

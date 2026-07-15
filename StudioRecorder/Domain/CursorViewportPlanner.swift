@@ -14,6 +14,11 @@ struct CursorCaptureSpace: Equatable, Sendable {
 }
 
 final class CursorFrameSynchronizer: @unchecked Sendable {
+    // App-rendered selection/highlight pixels trail the hardware cursor plane by roughly one refresh.
+    static let screenContentLatencySystemUnits = CMClockConvertHostTimeToSystemUnits(
+        CMTime(value: 1, timescale: 60)
+    )
+
     private struct State {
         var history: [CursorHostSample] = []
         var spaces: [ObjectIdentifier: CursorCaptureSpace] = [:]
@@ -23,10 +28,12 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
 
     private let lock = NSLock()
     private let historyLimit: Int
+    private let contentLatencySystemUnits: UInt64
     private var state = State()
 
-    init(historyLimit: Int = 240) {
+    init(historyLimit: Int = 240, contentLatencySystemUnits: UInt64 = 0) {
         self.historyLimit = max(historyLimit, 2)
+        self.contentLatencySystemUnits = contentLatencySystemUnits
     }
 
     func register(streamID: ObjectIdentifier, space: CursorCaptureSpace) {
@@ -45,7 +52,13 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
     }
 
     func sample(forFrameAt hostTime: UInt64) -> CursorHostSample? {
-        lock.withLock { Self.sample(in: state.history, at: hostTime) }
+        lock.withLock {
+            Self.contentAlignedSample(
+                in: state.history,
+                at: hostTime,
+                latencySystemUnits: contentLatencySystemUnits
+            )
+        }
     }
 
     @discardableResult
@@ -58,7 +71,11 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
             guard let space = state.spaces[streamID],
                   space.visibleFrame.width > 0,
                   space.visibleFrame.height > 0,
-                  let hostSample = Self.sample(in: state.history, at: hostTime) else {
+                  let hostSample = Self.contentAlignedSample(
+                      in: state.history,
+                      at: hostTime,
+                      latencySystemUnits: contentLatencySystemUnits
+                  ) else {
                 return nil
             }
             let firstHostTime = state.firstFrameHostTimes[streamID] ?? hostTime
@@ -100,12 +117,29 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
         return history[lower - 1]
     }
 
+    private static func contentAlignedSample(
+        in history: [CursorHostSample],
+        at hostTime: UInt64,
+        latencySystemUnits: UInt64
+    ) -> CursorHostSample? {
+        sample(
+            in: history,
+            at: hostTime.saturatingSubtracting(latencySystemUnits)
+        ) ?? sample(in: history, at: hostTime)
+    }
+
     private static func seconds(from start: UInt64, to end: UInt64) -> TimeInterval {
         guard end >= start else { return 0 }
         let startTime = CMClockMakeHostTimeFromSystemUnits(start)
         let endTime = CMClockMakeHostTimeFromSystemUnits(end)
         let seconds = CMTimeSubtract(endTime, startTime).seconds
         return seconds.isFinite ? max(seconds, 0) : 0
+    }
+}
+
+private extension UInt64 {
+    func saturatingSubtracting(_ value: UInt64) -> UInt64 {
+        self >= value ? self - value : 0
     }
 }
 
