@@ -2736,41 +2736,8 @@ private struct SceneSwitcherBar: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(scenes) { scene in
-                            let issue = incompatibility(scene)
-                            Button { onSelect(scene) } label: {
-                                HStack(spacing: 6) {
-                                    if scene.id == selectedSceneID, isLive {
-                                        Circle().fill(.red).frame(width: 7, height: 7)
-                                    }
-                                    Text(scene.name).lineLimit(1)
-                                    if issue != nil {
-                                        Image(systemName: "lock.fill").font(.caption2)
-                                    }
-                                }
-                                .font(.subheadline.weight(scene.id == selectedSceneID ? .semibold : .medium))
-                                .padding(.horizontal, 12)
-                                .frame(minHeight: 40)
-                                .contentShape(Rectangle())
-                                .background(
-                                    scene.id == selectedSceneID
-                                        ? Color.accentColor.opacity(0.18)
-                                        : Color.primary.opacity(0.055),
-                                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                )
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .stroke(
-                                            scene.id == selectedSceneID
-                                                ? Color.accentColor.opacity(0.45)
-                                                : Color.clear,
-                                            lineWidth: 1
-                                        )
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .help(issue?.message ?? "Switch to \(scene.name)")
-                            .accessibilityHint(issue?.message ?? "Switches to this saved scene")
+                        ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                            sceneButton(scene, index: index)
                         }
                     }
                 }
@@ -2826,6 +2793,69 @@ private struct SceneSwitcherBar: View {
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func sceneButton(_ scene: StudioScenePreset, index: Int) -> some View {
+        let issue = incompatibility(scene)
+        let shortcutNumber = index < 9 ? index + 1 : nil
+        let button = Button { onSelect(scene) } label: {
+            HStack(spacing: 7) {
+                if scene.id == selectedSceneID, isLive {
+                    Circle().fill(.red).frame(width: 7, height: 7)
+                }
+                Text(scene.name).lineLimit(1)
+                if issue != nil {
+                    Image(systemName: "lock.fill").font(.caption2)
+                }
+                if let shortcutNumber {
+                    Text("⌥\(shortcutNumber)")
+                        .font(.caption2.monospaced().weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .font(.subheadline.weight(scene.id == selectedSceneID ? .semibold : .medium))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .background(
+                scene.id == selectedSceneID
+                    ? Color.accentColor.opacity(0.18)
+                    : Color.primary.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(
+                        scene.id == selectedSceneID
+                            ? Color.accentColor.opacity(0.45)
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .help(sceneButtonHelp(scene, issue: issue, shortcutNumber: shortcutNumber))
+        .accessibilityHint(issue?.message ?? "Switches to this saved scene")
+
+        if let shortcutNumber {
+            button.keyboardShortcut(KeyEquivalent(Character(String(shortcutNumber))), modifiers: [.option])
+        } else {
+            button
+        }
+    }
+
+    private func sceneButtonHelp(
+        _ scene: StudioScenePreset,
+        issue: StudioSceneLiveIncompatibility?,
+        shortcutNumber: Int?
+    ) -> String {
+        if let issue { return issue.message }
+        guard let shortcutNumber else { return "Switch to \(scene.name)" }
+        return "Switch to \(scene.name) (⌥\(shortcutNumber))"
     }
 }
 
