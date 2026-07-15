@@ -9,7 +9,7 @@ struct ProjectDetailView: View {
     let onClose: () -> Void
 
     @State private var selectedTrackID: String?
-    @State private var player: AVPlayer
+    @StateObject private var editSession: ProjectEditSession
     @State private var isExporting = false
     @State private var exportMessage: String?
     @State private var exportError: String?
@@ -21,11 +21,7 @@ struct ProjectDetailView: View {
         self.onClose = onClose
         let firstTrack = project.tracks.first
         _selectedTrackID = State(initialValue: firstTrack?.id)
-        if let firstTrack {
-            _player = State(initialValue: AVPlayer(url: project.rootURL.appending(path: firstTrack.relativePath)))
-        } else {
-            _player = State(initialValue: AVPlayer())
-        }
+        _editSession = StateObject(wrappedValue: ProjectEditSession())
     }
 
     var body: some View {
@@ -36,15 +32,18 @@ struct ProjectDetailView: View {
             if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(spacing: 14) {
-                        NativeVideoPlayer(player: player)
+                        NativeVideoPlayer(player: editSession.player)
                             .background(Color.black)
                             .aspectRatio(16 / 9, contentMode: .fit)
+                            .frame(maxHeight: 420)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 12)
                                     .stroke(.primary.opacity(0.10), lineWidth: 0.5)
                             }
                             .accessibilityLabel(selectedTrack?.kind == .camera ? "Recorded camera track preview" : "Recorded screen track preview")
+
+                        ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
 
                         shareActions(for: selectedTrackURL)
                     }
@@ -67,8 +66,8 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
-        .onChange(of: selectedTrackID) { _, _ in loadSelectedTrack() }
-        .onDisappear { player.pause() }
+        .task(id: selectedTrackID) { await loadSelectedTrack() }
+        .onDisappear { editSession.stop() }
         .overlay(alignment: .bottom) {
             if let exportMessage {
                 Label(exportMessage, systemImage: "checkmark.circle.fill")
@@ -165,7 +164,7 @@ struct ProjectDetailView: View {
                 metadataRow("Status", value: lifecycleLabel)
                 metadataRow("Format", value: "Recoverable package")
 
-                Text("Raw tracks stay unchanged. Screenshots and GIFs are separate share files made from the current playhead.")
+                Text("Raw tracks stay unchanged. edit.json stores cuts; screenshots, GIFs, and edited movies are derived files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(14)
@@ -175,17 +174,17 @@ struct ProjectDetailView: View {
 
     private func shareActions(for trackURL: URL) -> some View {
         HStack(spacing: 10) {
-            Button("Save Frame", systemImage: "photo") { exportScreenshot(from: trackURL) }
+            Button("Save Frame", systemImage: "photo") { exportScreenshot() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
-            Button("Make 5s GIF", systemImage: "sparkles.rectangle.stack") { exportGIF(from: trackURL) }
+            Button("Make 5s GIF", systemImage: "sparkles.rectangle.stack") { exportGIF() }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
 
             if isExporting {
                 ProgressView().controlSize(.small).padding(.leading, 2)
             }
 
-            Label("Drag Movie", systemImage: "arrow.up.right.square")
+            Label("Drag Raw Movie", systemImage: "arrow.up.right.square")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .draggable(trackURL)
@@ -193,12 +192,12 @@ struct ProjectDetailView: View {
 
             Spacer()
 
-            Button("Open Movie", systemImage: "arrow.up.forward.app") {
+            Button("Open Raw Movie", systemImage: "arrow.up.forward.app") {
                 NSWorkspace.shared.open(trackURL)
             }
 
             ShareLink(item: trackURL) {
-                Label("Share Movie", systemImage: "square.and.arrow.up")
+                Label("Share Raw Movie", systemImage: "square.and.arrow.up")
             }
         }
         .buttonStyle(.bordered)
@@ -220,38 +219,57 @@ struct ProjectDetailView: View {
         )
     }
 
-    private func loadSelectedTrack() {
-        player.pause()
-        player.replaceCurrentItem(with: selectedTrackURL.map(AVPlayerItem.init(url:)))
+    private func loadSelectedTrack() async {
+        guard let selectedTrack, let selectedTrackURL else {
+            editSession.stop()
+            return
+        }
+        await editSession.load(
+            projectID: project.identity.manifestID,
+            projectRootURL: project.rootURL,
+            track: selectedTrack,
+            sourceURL: selectedTrackURL
+        )
     }
 
-    private func exportScreenshot(from sourceURL: URL) {
+    private func exportScreenshot() {
         guard let destinationURL = saveURL(type: .png, suggestedName: "Recording frame.png") else { return }
-        let seconds = player.currentTime().seconds
+        let seconds = editSession.playhead
         performExport(success: "Screenshot saved") {
+            let media = try await editSession.prepareMediaForDerivedExport()
+            defer { media.removeIfTemporary() }
             try await exporter.exportScreenshot(
-                from: sourceURL,
+                from: media.url,
                 at: seconds.isFinite ? seconds : 0,
                 to: destinationURL
             )
         }
     }
 
-    private func exportGIF(from sourceURL: URL) {
+    private func exportGIF() {
         guard let destinationURL = saveURL(type: .gif, suggestedName: "Recording clip.gif") else { return }
-        let seconds = player.currentTime().seconds
+        let seconds = editSession.playhead
         performExport(success: "GIF saved") {
+            let media = try await editSession.prepareMediaForDerivedExport()
+            defer { media.removeIfTemporary() }
             try await exporter.exportGIF(
-                from: sourceURL,
+                from: media.url,
                 settings: GIFExportSettings(startTime: seconds.isFinite ? max(seconds, 0) : 0),
                 to: destinationURL
             )
         }
     }
 
+    private func exportEditedMovie() {
+        guard let destinationURL = saveURL(type: .quickTimeMovie, suggestedName: "Recording edited.mov") else { return }
+        performExport(success: "Edited movie saved") {
+            try await editSession.exportEditedMovie(to: destinationURL)
+        }
+    }
+
     private func performExport(
         success message: String,
-        operation: @escaping @Sendable () async throws -> Void
+        operation: @escaping () async throws -> Void
     ) {
         isExporting = true
         exportError = nil

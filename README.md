@@ -15,13 +15,15 @@ public brand.
 - provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
 - opens finalized raw tracks with native playback controls and immediate Reveal, Open, Share, and drag actions;
 - exports the current playhead as a full-resolution PNG or a bounded five-second GIF without modifying raw media;
+- saves versioned non-destructive edits in `edit.json`, with trim, split/delete, undo/redo, edited playback, and compatible MOV export;
 - includes unit and media-integration tests for project recovery, capture preferences, navigation, screenshots, and multi-frame GIF output.
 
 ## Deliberately not claimed as complete
 
-A separately encoded program `.mov`, quick trim/split, camera layout instructions,
-interaction metadata, and local transcripts remain future slices. The current program
-preview is an honest capture contract, not a compositor; the camera stays independent.
+A separately encoded program `.mov`, synchronized multi-track waveforms, speed/volume edits,
+camera layout instructions, interaction metadata, and local transcripts remain future slices.
+The current program preview is an honest capture contract, not a compositor; the camera stays
+independent, and quick edits never rewrite raw tracks.
 Livestreaming, cloud hosting, and an OBS-style scene system are explicit non-goals for
 this product phase.
 

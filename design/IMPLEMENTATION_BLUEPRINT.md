@@ -14,7 +14,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 6. The Capture Request is written into the project manifest before any stream starts.
 7. Recording exposes health and Stop, not configuration.
 8. Raw tracks are never modified by layout, transcript, or export operations.
-9. The first shippable UI ends in **Project Summary**. The full Editor remains a later vertical slice and must not be faked.
+9. The first shippable UI ends in **Project Summary**. Its Quick Edit foundation is now real; synchronized multi-track composition remains a later vertical slice and must not be faked.
 10. Current capture remains 30 fps by default. A 60 fps option stays unavailable until runtime capability tests and sustained multi-display tests exist.
 
 ## 2. Scope truth
@@ -34,6 +34,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Camera isolation | implemented | optional permission-aware camera source | fragmented raw camera track; layout remains next |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
+| Quick edit foundation | implemented | ordered source ranges, trim, split/delete, undo/redo/reset | synchronized tracks, waveform, speed and volume |
 | Streaming | not implemented | absent from MVP UI | reconsider only after recorder/editor adoption |
 
 ## 3. Canonical data flow
@@ -252,9 +253,9 @@ It owns ScreenCaptureKit streams, output delegates, duration, health telemetry, 
 
 Use UserDefaults for scalar preferences. Persist a selected destination as a bookmark plus a human-readable fallback path. If the bookmark fails, fall back to `~/Movies/Studio Recorder` and show a Storage warning.
 
-### Later seams
+### Editing seams
 
-`EditorEngine`, `TranscriptionClient`, and a general `ExportEngine` are not introduced in the capture UI wave. A bounded `ProjectMediaExporter` may create a PNG frame or short GIF directly from a finalized raw movie; general export still consumes a finalized Project and produces edit decisions or derived outputs without mutating raw tracks.
+`ProjectEditTimeline`, `ProjectEditStore`, and `ProjectEditRenderer` form the bounded Quick Edit seam. They persist ordered source ranges in `edit.json`, render edited playback, and export a compatible MOV without mutating raw tracks. `TranscriptionClient`, synchronized multi-track composition, and a general export engine remain later seams.
 
 ## 7. Screen contracts
 
@@ -302,15 +303,15 @@ Camera is optional and permission-aware. When enabled, its selected device is fr
 
 ### 7.3 Project Summary — first shippable post-capture screen
 
-**Purpose:** close the journey honestly before the Editor exists.
+**Purpose:** close the journey with immediate sharing plus a bounded Quick Edit surface.
 
 **Reads:** normalized project, track descriptors, file sizes/durations, lifecycle, last journal events.
 
 **Shows:** project name, creation/duration/profile, each raw track and finalization state, package location, capture contract.
 
-**Actions:** play a selected raw track, reveal the package, open/share/drag the movie, save the current frame as PNG, create a bounded five-second GIF, and return to Projects. Every share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
+**Actions:** play a selected track, persist non-destructive trim/split/delete decisions, undo/redo/reset, export an edited MOV, reveal the package, open/share/drag the raw movie, save the edited playhead frame as PNG, create a bounded five-second GIF from edited playback, and return to Projects. Every edit/share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
 
-**Not shown yet:** timeline editing, selected export range, camera layout, transcript, compatible movie rendering, or an editable program preview.
+**Not shown yet:** synchronized multi-track waveform editing, arbitrary selected export range, speed/volume, camera layout, transcript, or an editable program canvas.
 
 The route remains `.projects(selection: id)`, so Project Summary can later be replaced by the Editor without changing library or recovery navigation.
 
@@ -453,9 +454,9 @@ Do not build a shortcut recorder in this wave.
 - Settings values are never consulted by an active session; the Capture Request is authoritative.
 - After the session finishes, the next new draft clones the latest saved defaults.
 
-### 7.10 Editor — later target state
+### 7.10 Editor — Quick Edit foundation plus later composition target
 
-Entry requires a finalized or explicitly recovered project. `EditorEngine` reads raw tracks plus edit decisions. Preview, timeline, layout, camera keyframes, transcript cuts, and Export operate on derived instructions/output only. Editor implementation begins only after Project Summary and recovery flows are stable.
+Entry requires a finalized or explicitly recovered project. The implemented foundation reads one selected raw track plus its persisted edit timeline; preview and compatible export render ordered source ranges. Future synchronized tracks, layout, camera keyframes, transcript cuts, speed, volume, and richer Export continue to operate on derived instructions/output only.
 
 ## 8. Intent and transition matrix
 
@@ -557,6 +558,16 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 - continue with a visible degraded program and journal evidence if the optional camera or microphone fails; stop safely into Recovery if a required screen fails.
 
 **Done:** live pre-record layout changes are reflected in the composed output, the immutable request records requested/effective profile and layout, optional-source loss remains inspectable, and required-screen loss ends in Recovery without corrupting raw media.
+
+### Slice 11 — Non-destructive Quick Edit foundation
+
+- persist a versioned `edit.json` beside the manifest and journal;
+- represent the edited movie as ordered source ranges without rewriting raw tracks;
+- implement trim-before/after, split, segment delete, undo/redo, and reset;
+- use the same edit timeline for native playback, PNG/GIF derivation, and compatible MOV export;
+- keep synchronized multi-track composition, waveforms, speed, and volume as explicit next work.
+
+**Done:** edit decisions survive relaunch, raw bytes remain unchanged, edited playback/export use the same ordered ranges, and renderer tests prove deleted source ranges are absent from the compatible movie.
 
 ### Slice 8 — Recovery resolution
 

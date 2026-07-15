@@ -1,0 +1,109 @@
+import Foundation
+
+enum ProjectEditStoreError: LocalizedError, Equatable {
+    case unsupportedSchema(Int)
+    case projectMismatch
+    case invalidTimeline(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema(let version):
+            "This edit uses unsupported schema version \(version)."
+        case .projectMismatch:
+            "The edit document belongs to a different recording project."
+        case .invalidTimeline(let trackID):
+            "The saved edit for track \(trackID) is invalid."
+        }
+    }
+}
+
+struct ProjectEditDocument: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let projectID: UUID
+    var updatedAt: Date
+    var timelines: [ProjectEditTimeline]
+
+    init(projectID: UUID, updatedAt: Date = Date(), timelines: [ProjectEditTimeline]) {
+        schemaVersion = Self.currentSchemaVersion
+        self.projectID = projectID
+        self.updatedAt = updatedAt
+        self.timelines = timelines
+    }
+
+    func timeline(for trackID: String) -> ProjectEditTimeline? {
+        timelines.first { $0.trackID == trackID }
+    }
+
+    mutating func replaceTimeline(_ timeline: ProjectEditTimeline, updatedAt: Date = Date()) {
+        if let index = timelines.firstIndex(where: { $0.trackID == timeline.trackID }) {
+            timelines[index] = timeline
+        } else {
+            timelines.append(timeline)
+        }
+        self.updatedAt = updatedAt
+    }
+}
+
+actor ProjectEditStore {
+    static let filename = "edit.json"
+
+    private let fileManager: FileManager
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+    }
+
+    func load(from projectRootURL: URL, expectedProjectID: UUID) throws -> ProjectEditDocument? {
+        let url = editURL(in: projectRootURL)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let document = try decoder.decode(ProjectEditDocument.self, from: Data(contentsOf: url))
+        try validate(document, expectedProjectID: expectedProjectID)
+        return document
+    }
+
+    func save(_ document: ProjectEditDocument, in projectRootURL: URL) throws {
+        try validate(document, expectedProjectID: document.projectID)
+        try encoder.encode(document).write(to: editURL(in: projectRootURL), options: .atomic)
+    }
+
+    func editURL(in projectRootURL: URL) -> URL {
+        projectRootURL.appending(path: Self.filename)
+    }
+
+    private func validate(_ document: ProjectEditDocument, expectedProjectID: UUID) throws {
+        guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion else {
+            throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
+        }
+        guard document.projectID == expectedProjectID else {
+            throw ProjectEditStoreError.projectMismatch
+        }
+        var seenTrackIDs: Set<String> = []
+        for timeline in document.timelines {
+            guard timeline.schemaVersion == ProjectEditTimeline.currentSchemaVersion,
+                  !timeline.trackID.isEmpty,
+                  seenTrackIDs.insert(timeline.trackID).inserted,
+                  timeline.sourceDuration.isFinite,
+                  timeline.sourceDuration > 0,
+                  !timeline.segments.isEmpty,
+                  timeline.segments.allSatisfy({ segment in
+                      segment.sourceStart.isFinite
+                          && segment.sourceStart >= 0
+                          && segment.duration.isFinite
+                          && segment.duration > 0
+                          && segment.sourceStart + segment.duration <= timeline.sourceDuration + 0.001
+                  }),
+                  Set(timeline.segments.map(\.id)).count == timeline.segments.count else {
+                throw ProjectEditStoreError.invalidTimeline(timeline.trackID)
+            }
+        }
+    }
+}

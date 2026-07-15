@@ -94,11 +94,12 @@ Purpose: acknowledge that media files need to close cleanly.
 - Disable closing only when absolutely necessary; explain why.
 - On timeout or failure, route to Recovery with project context preserved.
 
-### 6. Project Editor — target state
+### 6. Project Editor — foundation implemented, composition target state
 
 Purpose: compose and trim without modifying raw files.
 
 - Preview above, timeline below, inspector right.
+- Current foundation: per-track ordered source ranges, trim-before/after, split/delete, undo/redo/reset, persisted `edit.json`, edited playback, and compatible MOV export.
 - Layout and camera keyframes change the program output only.
 - Transcript sentences map to token timestamps; cuts become non-destructive timeline ranges.
 - Export is explicit. Streaming remains a later output target, not part of the capture MVP.
@@ -123,6 +124,7 @@ Purpose: show exactly what survived.
 | Project package + journal | Implemented | Project-centric UX and finalizing status |
 | Interrupted-project discovery | Implemented | Contextual Recovery flow |
 | Camera isolation | Implemented | Selected device freezes into the Capture Request and writes `raw-tracks/camera.mov` |
+| Quick edit foundation | Implemented | Versioned `edit.json`; raw tracks stay unchanged while playback/export render ordered source ranges |
 | Program compositor | Not implemented | Target-state preview/editor only |
 | Transcript editing | Not implemented | Target-state Editor only |
 | RTMPS streaming | Not implemented | Excluded from capture MVP navigation |
