@@ -22,6 +22,7 @@ struct ProjectDetailView: View {
         self.onClose = onClose
         let firstTrack = project.tracks.first
         let firstScreenTrack = project.tracks.first(where: { $0.kind == .screen })
+            ?? project.tracks.first(where: { $0.kind == .program })
         _selectedTrackID = State(initialValue: firstTrack?.id)
         _programScreenTrackID = State(initialValue: firstScreenTrack?.id)
         _editSession = StateObject(wrappedValue: ProjectEditSession())
@@ -133,17 +134,32 @@ struct ProjectDetailView: View {
                     .padding(.top, 16)
                     .padding(.bottom, 8)
 
-                ProjectPresentationEditorView(
-                    project: project,
-                    screenTrack: programScreenTrack,
-                    presentation: presentationBinding
-                )
-                .disabled(editSession.isWorking || !editSession.canPersistEdits)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 16)
+                if isProgramOnlyProject {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Scene name", text: sceneNameBinding)
+                            .textFieldStyle(.roundedBorder)
+                        Text("This scene layout is baked into the program movie. Independent screen and camera tracks were intentionally removed after verification.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 16)
+                } else {
+                    ProjectPresentationEditorView(
+                        project: project,
+                        screenTrack: programScreenTrack,
+                        presentation: presentationBinding
+                    )
+                    .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 16)
+                }
 
                 if !editSession.isLoading, !editSession.canPersistEdits {
-                    Text("Program layout is read-only because this project cannot persist versioned edits.")
+                    Text(isProgramOnlyProject
+                        ? "The scene name is read-only because this project cannot persist versioned edits."
+                        : "Program layout is read-only because this project cannot persist versioned edits.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 14)
@@ -152,7 +168,7 @@ struct ProjectDetailView: View {
 
                 Divider()
 
-                Text("RAW TRACKS · SHARING")
+                Text("MEDIA · SHARING")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
@@ -162,7 +178,7 @@ struct ProjectDetailView: View {
                 ForEach(project.tracks) { track in
                     Button {
                         selectedTrackID = track.id
-                        if track.kind == .screen {
+                        if track.kind == .screen || track.kind == .program {
                             programScreenTrackID = track.id
                         }
                     } label: {
@@ -173,10 +189,12 @@ struct ProjectDetailView: View {
                                 Text(trackTitle(track)).font(.subheadline.weight(.medium))
                                 Text(trackDetail(track)).font(.caption2).foregroundStyle(.secondary)
                                 if track.id == programScreenTrackID {
-                                    Text("Program screen source").font(.caption2).foregroundStyle(Color.accentColor)
+                                    Text(track.kind == .program ? "Composed program movie" : "Program screen source")
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
                                 }
                                 if track.id == selectedTrackID {
-                                    Text("Selected for raw sharing").font(.caption2).foregroundStyle(.secondary)
+                                    Text("Selected for sharing").font(.caption2).foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()
@@ -205,7 +223,9 @@ struct ProjectDetailView: View {
                 metadataRow("Status", value: lifecycleLabel)
                 metadataRow("Format", value: "Recoverable package")
 
-                Text("Raw tracks stay unchanged. edit.json stores cuts and program layout; screenshots, GIFs, and edited movies are derived files.")
+                Text(isProgramOnlyProject
+                    ? "The verified program movie is the retained source. edit.json stores non-destructive cuts and the scene name."
+                    : "Raw tracks stay unchanged. edit.json stores cuts and program layout; screenshots, GIFs, and edited movies are derived files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(14)
@@ -225,20 +245,20 @@ struct ProjectDetailView: View {
                 ProgressView().controlSize(.small).padding(.leading, 2)
             }
 
-            Label("Drag Raw Movie", systemImage: "arrow.up.right.square")
+            Label("Drag Movie", systemImage: "arrow.up.right.square")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .draggable(trackURL)
-                .help("Drag the raw movie into Finder or another app")
+                .help("Drag the movie into Finder or another app")
 
             Spacer()
 
-            Button("Open Raw Movie", systemImage: "arrow.up.forward.app") {
+            Button("Open Movie", systemImage: "arrow.up.forward.app") {
                 NSWorkspace.shared.open(trackURL)
             }
 
             ShareLink(item: trackURL) {
-                Label("Share Raw Movie", systemImage: "square.and.arrow.up")
+                Label("Share Movie", systemImage: "square.and.arrow.up")
             }
         }
         .buttonStyle(.bordered)
@@ -267,6 +287,17 @@ struct ProjectDetailView: View {
         )
     }
 
+    private var sceneNameBinding: Binding<String> {
+        Binding(
+            get: { editSession.presentation.name ?? editSession.presentation.resolvedName },
+            set: {
+                var presentation = editSession.presentation
+                presentation.name = String($0.prefix(80))
+                editSession.updatePresentation(presentation)
+            }
+        )
+    }
+
     private func loadProgram() async {
         guard let programScreenTrack,
               let programScreenURL = programScreenTrackURL else {
@@ -284,8 +315,9 @@ struct ProjectDetailView: View {
     }
 
     private var programScreenTrack: RecordingTrackDescriptor? {
-        project.tracks.first { $0.id == programScreenTrackID && $0.kind == .screen }
-            ?? project.tracks.first { $0.kind == .screen }
+        project.tracks.first {
+            $0.id == programScreenTrackID && ($0.kind == .screen || $0.kind == .program)
+        } ?? project.tracks.first { $0.kind == .screen || $0.kind == .program }
     }
 
     private var programScreenTrackURL: URL? {
@@ -294,6 +326,7 @@ struct ProjectDetailView: View {
 
     private var programSources: ProjectProgramSources? {
         guard let screen = programScreenTrack else { return nil }
+        guard screen.kind == .screen else { return nil }
         let camera = project.tracks.first(where: { track in
             guard track.kind == .camera else { return false }
             let url = project.rootURL.appending(path: track.relativePath)
@@ -412,11 +445,19 @@ struct ProjectDetailView: View {
     }
 
     private func trackTitle(_ track: RecordingTrackDescriptor) -> String {
-        if track.kind == .camera {
+        switch track.kind {
+        case .camera:
             return "Camera track"
+        case .program:
+            return "Program movie"
+        case .screen:
+            guard let displayID = track.displayID else { return "Screen track" }
+            return project.sources.first(where: { $0.displayID == displayID })?.name ?? "Display \(displayID)"
         }
-        guard let displayID = track.displayID else { return "Screen track" }
-        return project.sources.first(where: { $0.displayID == displayID })?.name ?? "Display \(displayID)"
+    }
+
+    private var isProgramOnlyProject: Bool {
+        project.tracks.count == 1 && project.tracks.first?.kind == .program
     }
 
     private func trackDetail(_ track: RecordingTrackDescriptor) -> String {

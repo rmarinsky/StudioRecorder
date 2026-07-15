@@ -185,6 +185,7 @@ enum AppIntent: Equatable {
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
     case setDraftPresentation(CapturePresentationSnapshot)
+    case setDraftRetentionPolicy(MediaRetentionPolicy)
     case recordWithoutMicrophone
     case recordWithoutCamera
     case changePreference(PreferenceChange)
@@ -240,6 +241,7 @@ struct StudioRecorderSnapshot: Equatable {
     var capturesCamera = false
     var studioDraft: StudioDraft?
     var activeCaptureRequest: CaptureRequest?
+    var finalizationWarning: String?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
@@ -581,6 +583,11 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft?.presentation = presentation.validated()
             result = .draftChanged
 
+        case .setDraftRetentionPolicy(let policy):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.retentionPolicy = policy
+            result = .draftChanged
+
         case .recordWithoutMicrophone:
             guard snapshot.route == .studio,
                   snapshot.captureState == .ready,
@@ -732,6 +739,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.availableCameras = coordinator.availableCameras
         snapshot.projects = coordinator.projects
         snapshot.interruptedProjects = coordinator.interruptedProjects
+        snapshot.finalizationWarning = coordinator.finalizationWarning
 
         if snapshot.studioDraft != nil {
             snapshot.studioDraft?.reconcile(

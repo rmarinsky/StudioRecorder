@@ -159,7 +159,7 @@ struct StudioRecorderRootView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Your projects").font(.largeTitle.weight(.semibold))
-                            Text("Raw tracks stay recoverable. Layout and cuts remain non-destructive.")
+                            Text("Retained source media stays recoverable. Layout and cuts remain non-destructive.")
                                 .foregroundStyle(.secondary)
                         }
 
@@ -355,6 +355,15 @@ struct StudioRecorderRootView: View {
 
     private var studioView: some View {
         VStack(spacing: 0) {
+            if let warning = snapshot.finalizationWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Color.orange.opacity(0.08))
+            }
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -431,6 +440,10 @@ struct StudioRecorderRootView: View {
                         set: { model.send(.setDraftExcludeStudioRecorderAudio($0)) }
                     ),
                     codecPolicy: snapshot.studioDraft?.codecPolicy ?? .automatic,
+                    retentionPolicy: Binding(
+                        get: { snapshot.studioDraft?.retentionPolicy ?? .editableTracks },
+                        set: { model.send(.setDraftRetentionPolicy($0)) }
+                    ),
                     presentation: presentationBinding,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                 )
@@ -707,6 +720,7 @@ private struct StudioInspector: View {
     @Binding var excludeStudioRecorder: Bool
     @Binding var excludeStudioRecorderAudio: Bool
     let codecPolicy: RecordingCodecPolicy
+    @Binding var retentionPolicy: MediaRetentionPolicy
     @Binding var presentation: CapturePresentationSnapshot
     let isLocked: Bool
 
@@ -879,6 +893,19 @@ private struct StudioInspector: View {
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Resilience")
+                Picker("After recording", selection: $retentionPolicy) {
+                    ForEach(MediaRetentionPolicy.allCases) { policy in
+                        Text(policy.label).tag(policy)
+                    }
+                }
+                .disabled(isLocked)
+                .padding(.horizontal, 14)
+                Text(retentionPolicy == .editableTracks
+                    ? "Keeps screen and camera tracks independently editable."
+                    : "Finishes one composed MOV, verifies it, then removes independent raw tracks.")
+                    .font(.caption2)
+                    .foregroundStyle(retentionPolicy == .programOnly ? .orange : .secondary)
+                    .padding(.horizontal, 14)
                 Text("Raw tracks and an append-only journal are written into one recoverable project package.")
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.bottom, 18)

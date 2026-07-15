@@ -7,28 +7,27 @@ public brand.
 ## What works now
 
 - discovers all ScreenCaptureKit displays after macOS grants Screen Recording access;
-- records each selected display as a native raw movie in parallel;
-- records the selected camera as a separate fragmented raw movie, preserving it for later layout changes;
+- records each selected display as a native raw movie in parallel by default;
+- records the selected camera as a separate fragmented raw movie, preserving it for later layout changes when Editable tracks is selected;
 - requests system audio and microphone capture through ScreenCaptureKit;
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
 - provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
 - configures horizontal, vertical, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
 - previews draggable/resizable screen and camera placement, gives camera its own free/landscape/portrait/square frame, freezes the scene into the Capture Request, records cursor/click telemetry for Follow Cursor replay, and records the native system cursor;
-- removes the camera background locally with Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; the raw camera track remains unchanged;
+- removes the camera background locally with Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; editable raw camera media remains unchanged;
 - offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; manual RTMPS credentials stay in macOS Keychain, and the stream uses the same screen/camera/background/follow compositor as local program output;
-- edits the output canvas and screen/camera placement, scale, shape, and mirroring after recording; the program layout persists in `edit.json` without touching raw tracks;
+- offers per-Scene retention: Editable tracks preserves independent screen/camera media, while Program movie only renders and verifies the exact canvas, framing, Follow Cursor motion, camera shape, background treatment, and audio before removing raw tracks;
+- edits the output canvas and screen/camera placement, scale, shape, and mirroring after recordings that retain editable tracks; the program layout persists in `edit.json` without touching raw tracks;
 - plays and exports the moving screen+camera composition through one Core Image program renderer; PNG and GIF derivation use the same composed result;
-- opens finalized raw tracks with native playback controls and immediate Reveal, Open, Share, and drag actions;
+- opens finalized editable tracks or a retained program movie with native playback controls and immediate Reveal, Open, Share, and drag actions;
 - exports the current playhead as a full-resolution PNG or a bounded five-second GIF without modifying raw media;
 - saves versioned non-destructive edits in `edit.json`, with trim, split/delete, undo/redo, edited playback, and compatible MOV export;
 - includes unit and media-integration tests for project recovery, capture preferences, navigation, screenshots, and multi-frame GIF output.
 
 ## Deliberately not claimed as complete
 
-A program movie is composed on playback/export rather than encoded during capture. Live and recorded Follow Cursor use the same scene framing while the full display remains recoverable. Custom enlarged-cursor/click-ring rendering, synchronized waveforms, speed/volume edits,
-program-only storage and local transcripts remain future slices. Camera and screen raw tracks stay independent, and quick edits
-never rewrite raw tracks.
+A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing. Editable tracks keeps the full display recoverable; Program movie only deliberately trades later layout changes for one share-ready file. Custom enlarged-cursor rendering, synchronized waveforms, speed/volume edits, and local transcripts remain future slices. Quick edits never rewrite retained source media.
 YouTube OAuth/API broadcast creation, automatic reconnect, and long horizontal/vertical ingest soak tests remain before streaming is release-ready. Cloud hosting and a general OBS-style scene graph remain out of scope.
 
 ## Build and run

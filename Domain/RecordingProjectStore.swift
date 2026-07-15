@@ -37,6 +37,7 @@ typealias CaptureRequestSnapshot = CaptureRequest
 enum RecordingTrackKind: String, Codable, Equatable, Sendable {
     case screen
     case camera
+    case program
 }
 
 struct RecordingTrackDescriptor: Codable, Equatable, Sendable, Identifiable {
@@ -109,7 +110,7 @@ struct RecordingProjectManifest: Codable, Equatable, Sendable {
     let captureRequest: CaptureRequestSnapshot?
     let appVersion: String?
     let appBuild: String?
-    let tracks: [RecordingTrackDescriptor]?
+    var tracks: [RecordingTrackDescriptor]?
 
     init(
         schemaVersion: Int,
@@ -405,6 +406,10 @@ final class RecordingProjectStore {
         try markFailure(trackID: trackID, detail: detail, in: project)
     }
 
+    func markPrepared(trackID: String, in project: RecordingProject) throws {
+        try append(.init(kind: .trackPrepared, trackID: trackID), to: project)
+    }
+
     func markStarted(trackID: String?, in project: RecordingProject) throws {
         try append(.init(kind: .trackStarted, trackID: trackID), to: project)
     }
@@ -417,10 +422,16 @@ final class RecordingProjectStore {
         try append(.init(kind: .trackFailed, trackID: trackID, detail: .init(message: detail)), to: project)
     }
 
-    func close(_ project: RecordingProject) throws {
+    func close(
+        _ project: RecordingProject,
+        replacingTracks tracks: [RecordingTrackDescriptor]? = nil
+    ) throws {
         try append(.init(kind: .finalizationStarted), to: project)
         var manifest = project.manifest
         manifest.stoppedAt = Date()
+        if let tracks {
+            manifest.tracks = tracks
+        }
         try write(manifest, to: project.rootURL.appending(path: "manifest.json"))
         try append(.init(kind: .projectClosed), to: project)
     }
@@ -445,6 +456,11 @@ final class RecordingProjectStore {
 
     func journalURL(for project: RecordingProject) -> URL {
         project.rootURL.appending(path: "journal.ndjson")
+    }
+
+    func journalEvents(for project: RecordingProject) -> [ProjectJournalEvent] {
+        guard case .success(let events) = Self.readJournal(at: journalURL(for: project)) else { return [] }
+        return events
     }
 
     func writeCursorTimeline(_ timeline: CursorSceneTimeline, in project: RecordingProject) throws {
@@ -622,6 +638,10 @@ final class RecordingProjectStore {
     nonisolated private static func safeTrackURL(for track: RecordingTrackDescriptor, in rootURL: URL) -> URL? {
         let rawTracksURL = rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory).standardizedFileURL
         let candidate = rootURL.appending(path: track.relativePath).standardizedFileURL
+        if track.kind == .program {
+            let programURL = rootURL.appending(path: "program.mov").standardizedFileURL
+            return candidate == programURL ? candidate : nil
+        }
         guard candidate.deletingLastPathComponent().standardizedFileURL == rawTracksURL,
               candidate.pathExtension == "mov" else {
             return nil

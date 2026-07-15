@@ -21,6 +21,20 @@ enum RecordingCodecPolicy: String, Codable, CaseIterable, Equatable, Sendable {
     case h264
 }
 
+enum MediaRetentionPolicy: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
+    case editableTracks
+    case programOnly
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .editableTracks: "Editable tracks"
+        case .programOnly: "Program movie only"
+        }
+    }
+}
+
 struct CaptureDefaults: Codable, Equatable, Sendable {
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
@@ -129,6 +143,7 @@ struct StudioDraft: Equatable {
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
     var presentation: CapturePresentationSnapshot
+    var retentionPolicy: MediaRetentionPolicy
     var destination: ResolvedProjectDestination
 
     mutating func reconcile(
@@ -256,7 +271,8 @@ struct StudioDraft: Equatable {
             storage: StorageCaptureSnapshot(
                 destinationURL: destination.url,
                 destinationBookmarkID: destination.bookmarkID,
-                fallbackPath: destination.fallbackPath
+                fallbackPath: destination.fallbackPath,
+                retentionPolicy: retentionPolicy
             )
         )
     }
@@ -336,6 +352,11 @@ struct StorageCaptureSnapshot: Codable, Equatable, Sendable {
     let destinationURL: URL?
     let destinationBookmarkID: String
     let fallbackPath: String
+    var retentionPolicy: MediaRetentionPolicy? = nil
+
+    var resolvedRetentionPolicy: MediaRetentionPolicy {
+        retentionPolicy ?? .editableTracks
+    }
 }
 
 struct CaptureRequest: Codable, Equatable, Sendable {
@@ -605,6 +626,7 @@ final class PreferencesStore: ObservableObject {
             frameRate: preferences.capture.frameRate,
             codecPolicy: preferences.capture.codecPolicy,
             presentation: .default,
+            retentionPolicy: .editableTracks,
             destination: destination
         )
     }

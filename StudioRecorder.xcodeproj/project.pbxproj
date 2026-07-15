@@ -20,6 +20,7 @@
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
+		8152682622CF0F90F34E778E /* RecordingRetentionFinalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067BFA6986D1345EB4D0A82C /* RecordingRetentionFinalizer.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
 		8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
 		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
@@ -60,6 +61,7 @@
 /* Begin PBXFileReference section */
 		01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditTimelineTests.swift; sourceTree = "<group>"; };
 		027D0183284B828436F04225 /* StudioRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		067BFA6986D1345EB4D0A82C /* RecordingRetentionFinalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingRetentionFinalizer.swift; sourceTree = "<group>"; };
 		158EBFAEFC92DB31BAD3CA23 /* ProjectQuickEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectQuickEditorView.swift; sourceTree = "<group>"; };
 		1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTrackRecorder.swift; sourceTree = "<group>"; };
 		17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneCoordinator.swift; sourceTree = "<group>"; };
@@ -202,6 +204,7 @@
 				1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */,
 				3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */,
 				B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */,
+				067BFA6986D1345EB4D0A82C /* RecordingRetentionFinalizer.swift */,
 				B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */,
 			);
 			path = Recording;
@@ -361,6 +364,7 @@
 				8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */,
 				BD9ED984C0ABBF99FE7490BC /* RecordingPreferences.swift in Sources */,
 				0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */,
+				8152682622CF0F90F34E778E /* RecordingRetentionFinalizer.swift in Sources */,
 				C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */,
 				13B8ECF226E15196B0B70E26 /* SettingsView.swift in Sources */,
 				DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */,

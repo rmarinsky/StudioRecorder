@@ -23,7 +23,7 @@ targets:
       properties:
         NSCameraUsageDescription: Studio Recorder will use your camera for an optional camera track.
         NSMicrophoneUsageDescription: Studio Recorder records your selected microphone as part of the primary raw capture.
-        NSScreenCaptureUsageDescription: Studio Recorder records the displays you select into recoverable raw tracks.
+        NSScreenCaptureUsageDescription: Studio Recorder records the displays you select into editable tracks or a composed program movie.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ua.com.rmarinsky.studiorecorder

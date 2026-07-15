@@ -216,6 +216,7 @@ final class PreferencesStoreTests: XCTestCase {
             scale: 0.65
         )
         draft.presentation.camera.shape = .roundedRectangle
+        draft.retentionPolicy = .programOnly
         let requestID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let createdAt = Date(timeIntervalSinceReferenceDate: 12_345)
 
@@ -238,6 +239,7 @@ final class PreferencesStoreTests: XCTestCase {
         XCTAssertEqual(request.presentation.canvas, CaptureCanvasSnapshot(preset: .verticalHD))
         XCTAssertEqual(request.presentation.framing.mode, .fixedRegion)
         XCTAssertEqual(request.presentation.camera.shape, .roundedRectangle)
+        XCTAssertEqual(request.storage.resolvedRetentionPolicy, .programOnly)
         XCTAssertEqual(request.storage.destinationURL?.path, "/tmp/Movies/Studio Recorder")
 
         draft.selectedDisplayIDs = []

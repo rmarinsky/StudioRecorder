@@ -240,6 +240,78 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(byID[recovery.id]?.recoveryReport.tracks.single?.state, .missing)
     }
 
+    func testProgramOnlyFinalizationVerifiesProgramBeforeRemovingRawTracks() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = RecordingProjectStore(baseDirectory: rootURL)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.name = "Baked Scene"
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        let request = CaptureRequest(
+            id: UUID(),
+            createdAt: Date(),
+            displaySources: [
+                DisplaySourceSnapshot(
+                    id: 7,
+                    name: "Test Display",
+                    pixelWidth: 64,
+                    pixelHeight: 64,
+                    metadataState: .known
+                ),
+            ],
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: false,
+                capturesMicrophone: false,
+                microphone: nil,
+                primaryAudioDisplayID: nil,
+                excludesStudioRecorderAudio: true
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .h264,
+                includeCursor: true,
+                excludeStudioRecorder: true,
+                programResolutionTarget: "640x360"
+            ),
+            presentation: presentation,
+            storage: StorageCaptureSnapshot(
+                destinationURL: rootURL,
+                destinationBookmarkID: "test",
+                fallbackPath: rootURL.path,
+                retentionPolicy: .programOnly
+            )
+        )
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(to: try outputURL(for: 7, in: project, store: store))
+        try store.markStarted(displayID: 7, in: project)
+        try store.markFinished(displayID: 7, in: project)
+
+        try await RecordingRetentionFinalizer().finalize(
+            project: project,
+            request: request,
+            projectStore: store,
+            cursorTimeline: nil
+        )
+
+        let programURL = project.rootURL.appending(path: "program.mov")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: programURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "raw-tracks").path))
+        let manifest = try decodeManifest(at: project.rootURL)
+        XCTAssertEqual(manifest.tracks, [RecordingRetentionFinalizer.programTrack])
+        XCTAssertNotNil(manifest.stoppedAt)
+        let asset = AVURLAsset(url: programURL)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let videoTrack = try XCTUnwrap(videoTracks.first)
+        let naturalSize = try await videoTrack.load(.naturalSize)
+        XCTAssertEqual(naturalSize, CGSize(width: 640, height: 360))
+        let snapshots = await store.discoverProjects()
+        let snapshot = try XCTUnwrap(snapshots.single)
+        XCTAssertEqual(snapshot.lifecycle, .finalized)
+        XCTAssertEqual(snapshot.presentation?.resolvedName, "Baked Scene")
+        XCTAssertEqual(snapshot.tracks.single?.kind, .program)
+        XCTAssertEqual(snapshot.recoveryReport.tracks.single?.state, .finalized)
+    }
+
     func testBrokenPackagesRemainVisibleAsUnreadable() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }

@@ -40,6 +40,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var recordedDuration: TimeInterval = 0
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
+    @Published private(set) var finalizationWarning: String?
 
     private struct Capture {
         let displayID: UInt32
@@ -48,6 +49,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private let projectStore = RecordingProjectStore()
+    private let retentionFinalizer = RecordingRetentionFinalizer()
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
@@ -122,6 +124,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         guard state == .ready else { return }
         state = .preparing
         terminalFailure = nil
+        finalizationWarning = nil
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
         }
@@ -221,13 +224,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             return
         }
 
-        if let activeProject {
+        if let activeProject, let activeCaptureRequest {
             do {
                 try persistCursorTelemetry(in: activeProject)
-                try projectStore.close(activeProject)
+                try await retentionFinalizer.finalize(
+                    project: activeProject,
+                    request: activeCaptureRequest,
+                    projectStore: projectStore,
+                    cursorTimeline: cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+                )
             } catch {
-                await completeInterruptedTeardown(reason: error.localizedDescription)
-                return
+                do {
+                    try projectStore.close(activeProject)
+                    finalizationWarning = "The program movie could not be finalized, so editable tracks were kept. \(error.localizedDescription)"
+                } catch {
+                    await completeInterruptedTeardown(reason: error.localizedDescription)
+                    return
+                }
             }
         }
 
