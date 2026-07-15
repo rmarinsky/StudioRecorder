@@ -272,6 +272,17 @@ final class PreferencesStoreTests: XCTestCase {
         )
     }
 
+    func testCameraDraftReconcileDisablesCaptureWhenTheLastCameraDisconnects() {
+        let displays = [AvailableDisplay(id: 1, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        let cameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [], cameras: cameras)
+
+        draft.reconcile(displays: displays, microphones: [], cameras: [])
+
+        XCTAssertFalse(draft.capturesCamera)
+        XCTAssertNil(draft.cameraDeviceID)
+    }
+
     func testDestinationChangesAffectOnlyFutureDrafts() throws {
         let suiteName = "PreferencesStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

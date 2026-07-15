@@ -172,19 +172,21 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 let recorder = CameraTrackRecorder { [weak self] message in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        if let activeProject {
-                            try? projectStore.markFailure(
-                                trackID: activeProject.trackID(for: .camera),
-                                detail: message,
-                                in: activeProject
-                            )
-                        }
                         terminalFailure = terminalFailure ?? message
                         await beginInterruptedTeardown(reason: message)
                     }
                 }
+                do {
+                    try await recorder.start(deviceID: camera.id, outputURL: outputURL)
+                } catch {
+                    try? projectStore.markFailure(
+                        trackID: project.trackID(for: .camera),
+                        detail: error.localizedDescription,
+                        in: project
+                    )
+                    throw error
+                }
                 cameraRecorder = recorder
-                try await recorder.start(deviceID: camera.id, outputURL: outputURL)
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
             }
 

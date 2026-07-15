@@ -61,8 +61,8 @@ struct StudioRecorderRootView: View {
         .onChange(of: snapshot.captureState) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
-        .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, cameraID in
-            liveScene.selectCamera(cameraID)
+        .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.capturesCamera) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
@@ -377,10 +377,7 @@ struct StudioRecorderRootView: View {
                     cameras: snapshot.availableCameras,
                     selectedCameraID: Binding(
                         get: { snapshot.studioDraft?.cameraDeviceID },
-                        set: {
-                            model.send(.setDraftCameraDeviceID($0))
-                            liveScene.selectCamera($0)
-                        }
+                        set: { model.send(.setDraftCameraDeviceID($0)) }
                     ),
                     capturesCamera: Binding(
                         get: { snapshot.capturesCamera },
@@ -445,15 +442,21 @@ struct StudioRecorderRootView: View {
     }
 
     private func updateLiveScene(for route: MainRoute) async {
-        if route == .studio,
-           snapshot.captureState == .ready,
-           snapshot.capturesCamera,
-           snapshot.permissionSnapshot.camera.isGranted {
+        guard route == .studio, snapshot.captureState == .ready else {
+            await liveScene.stopCameraPreview()
+            await liveScene.stopScreenPreview()
+            return
+        }
+
+        if let primarySelectedDisplayID {
+            await liveScene.startScreenPreview(for: primarySelectedDisplayID)
+        }
+
+        if snapshot.capturesCamera, snapshot.permissionSnapshot.camera.isGranted {
             liveScene.selectCamera(snapshot.studioDraft?.cameraDeviceID)
             liveScene.startCameraPreview()
         } else {
             await liveScene.stopCameraPreview()
-            await liveScene.stopScreenPreview()
         }
     }
 

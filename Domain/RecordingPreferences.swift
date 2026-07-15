@@ -141,9 +141,13 @@ struct StudioDraft: Equatable {
             selectedDisplayIDs = [firstDisplayID]
         }
 
-        if capturesCamera,
-           !cameras.contains(where: { $0.id == cameraDeviceID }) {
-            cameraDeviceID = cameras.first?.id
+        if capturesCamera {
+            if cameras.isEmpty {
+                capturesCamera = false
+                cameraDeviceID = nil
+            } else if !cameras.contains(where: { $0.id == cameraDeviceID }) {
+                cameraDeviceID = cameras.first?.id
+            }
         }
 
         if capturesMicrophone {

@@ -73,7 +73,6 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
 
     func selectCamera(_ id: String?) {
         selectedCameraID = id
-        configureCameraPreview()
     }
 
     func startCameraPreview() {
