@@ -1,5 +1,6 @@
 import AppKit
 @preconcurrency import AVFoundation
+import CoreImage
 import SwiftUI
 
 struct ProjectPresentationEditorView: View {
@@ -9,7 +10,11 @@ struct ProjectPresentationEditorView: View {
 
     @State private var screenImage: NSImage?
     @State private var cameraImage: NSImage?
+    @State private var rawCameraImage: NSImage?
     @State private var selectedSource: EditableProgramSource = .screen
+
+    private static let cameraBackgroundProcessor = CameraBackgroundProcessor(personQuality: .export)
+    private static let imageContext = CIContext(options: [.cacheIntermediates: false])
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,8 +62,10 @@ struct ProjectPresentationEditorView: View {
             async let screen = firstFrame(for: screenTrack)
             async let camera = firstFrame(for: project.tracks.first(where: { $0.kind == .camera }))
             screenImage = await screen
-            cameraImage = await camera
+            rawCameraImage = await camera
+            refreshCameraImage()
         }
+        .onChange(of: presentation.cameraBackground) { _, _ in refreshCameraImage() }
     }
 
     @ViewBuilder
@@ -72,6 +79,25 @@ struct ProjectPresentationEditorView: View {
                     ForEach(SourceAspectPreset.allCases) { preset in
                         Text(preset.label).tag(preset)
                     }
+                }
+                Picker("Background", selection: cameraBackgroundModeBinding) {
+                    ForEach(CameraBackgroundMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                if presentation.resolvedCameraBackground.mode == .person {
+                    Text("Person keeps the person only; use Green Screen when a foreground microphone must remain.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if presentation.resolvedCameraBackground.mode == .greenScreen {
+                    Picker("Key color", selection: chromaKeyColorBinding) {
+                        ForEach(ChromaKeyColor.allCases) { color in
+                            Text(color.label).tag(color)
+                        }
+                    }
+                    labeledSlider("Tolerance", value: chromaToleranceBinding, range: 0.02...0.8)
+                    labeledSlider("Edge softness", value: chromaSoftnessBinding, range: 0.01...0.5)
+                    labeledSlider("Spill suppression", value: chromaSpillBinding)
                 }
             }
             Picker("Shape", selection: placement.shape) {
@@ -150,6 +176,47 @@ struct ProjectPresentationEditorView: View {
         )
     }
 
+    private var cameraBackgroundModeBinding: Binding<CameraBackgroundMode> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.mode },
+            set: { mode in updateCameraBackground { $0.mode = mode } }
+        )
+    }
+
+    private var chromaKeyColorBinding: Binding<ChromaKeyColor> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.keyColor },
+            set: { value in updateCameraBackground { $0.keyColor = value } }
+        )
+    }
+
+    private var chromaToleranceBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.tolerance },
+            set: { value in updateCameraBackground { $0.tolerance = value } }
+        )
+    }
+
+    private var chromaSoftnessBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.softness },
+            set: { value in updateCameraBackground { $0.softness = value } }
+        )
+    }
+
+    private var chromaSpillBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.spillSuppression },
+            set: { value in updateCameraBackground { $0.spillSuppression = value } }
+        )
+    }
+
+    private func updateCameraBackground(_ update: (inout CameraBackgroundSnapshot) -> Void) {
+        var background = presentation.resolvedCameraBackground
+        update(&background)
+        presentation.cameraBackground = background.validated()
+    }
+
     private func firstFrame(for track: RecordingTrackDescriptor?) async -> NSImage? {
         guard let track else { return nil }
         let url = project.rootURL.appending(path: track.relativePath)
@@ -160,6 +227,24 @@ struct ProjectPresentationEditorView: View {
         generator.requestedTimeToleranceAfter = .positiveInfinity
         guard let generated = try? await generator.image(at: .zero) else { return nil }
         return NSImage(cgImage: generated.image, size: .zero)
+    }
+
+    private func refreshCameraImage() {
+        guard let rawCameraImage,
+              presentation.resolvedCameraBackground.mode != .off,
+              let cgImage = rawCameraImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            cameraImage = rawCameraImage
+            return
+        }
+        let processed = Self.cameraBackgroundProcessor.process(
+            CIImage(cgImage: cgImage),
+            background: presentation.resolvedCameraBackground
+        )
+        guard let output = Self.imageContext.createCGImage(processed, from: processed.extent) else {
+            cameraImage = rawCameraImage
+            return
+        }
+        cameraImage = NSImage(cgImage: output, size: .zero)
     }
 }
 

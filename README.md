@@ -15,6 +15,7 @@ public brand.
 - provides a native Projects/Studio shell, exact live display and camera preview, package discovery, contextual recovery status, and `⌘R` start/stop shortcut;
 - configures horizontal, vertical, 16:10, square, or custom output canvases; fixed-region mode captures only the selected aspect-correct screen area;
 - previews draggable/resizable screen and camera placement, gives camera its own free/landscape/portrait/square frame, freezes the scene into the Capture Request, records cursor/click telemetry for Follow Cursor replay, and records the native system cursor;
+- removes the camera background locally with Apple Vision Person mode, or with adjustable green/blue chroma key while preserving non-key-colored foreground equipment; the raw camera track remains unchanged;
 - edits the output canvas and screen/camera placement, scale, shape, and mirroring after recording; the program layout persists in `edit.json` without touching raw tracks;
 - plays and exports the moving screen+camera composition through one Core Image program renderer; PNG and GIF derivation use the same composed result;
 - opens finalized raw tracks with native playback controls and immediate Reveal, Open, Share, and drag actions;
@@ -25,10 +26,9 @@ public brand.
 ## Deliberately not claimed as complete
 
 A program movie is composed on playback/export rather than encoded during capture. Live and recorded Follow Cursor use the same scene framing while the full display remains recoverable. Custom enlarged-cursor/click-ring rendering, synchronized waveforms, speed/volume edits,
-program-only storage, and local transcripts remain future slices. Camera and screen raw tracks stay independent, and quick edits
+program-only storage, livestream output, and local transcripts remain future slices. Camera and screen raw tracks stay independent, and quick edits
 never rewrite raw tracks.
-Livestreaming, cloud hosting, and an OBS-style scene system are explicit non-goals for
-this product phase.
+YouTube RTMPS streaming from the same frozen scene is the next delivery slice. Cloud hosting and a general OBS-style scene graph remain out of scope.
 
 ## Build and run
 

@@ -32,11 +32,12 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
 | Program compositor | implemented on playback/export | one Core Image render path for screen/camera layout and Quick Edit | capture-time pre-rendered program file only if evidence requires it |
 | Camera isolation | implemented | optional permission-aware camera source, independent raw camera, and editable composed layout | program-only retention policy after durable program finalization |
+| Camera background | implemented | local Vision Person segmentation or adjustable green/blue chroma key in Studio and Project composition | clean-plate matting only after a measured prototype |
 | Canvas and screen region | foundation implemented | horizontal/vertical/16:10/square/custom canvas plus full/fixed/follow modes | fixed region affects ScreenCaptureKit raw capture; follow mode stays non-destructive until telemetry renderer |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
 | Quick edit foundation | implemented | ordered source ranges, trim, split/delete, undo/redo/reset | synchronized tracks, waveform, speed and volume |
-| Streaming | not implemented | absent from MVP UI | reconsider only after recorder/editor adoption |
+| Streaming | not implemented | same frozen scene into Record, YouTube Stream, or both | OAuth-managed broadcast creation after manual RTMPS proves reliable |
 
 ## 3. Canonical data flow
 
@@ -582,6 +583,8 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 - keep the independent raw camera unchanged when editable-source retention is selected.
 
 **Done:** live preview and exported program agree frame-for-frame, Person mode degrades safely when Vision cannot produce a mask, Green Screen retains a foreground microphone in the fixture test, and no camera pixels leave the Mac solely for background processing.
+
+**Current foundation (2026-07-15):** `Off`, local Vision `Person`, and adjustable green/blue `Green Screen` are frozen with the scene, shown in Studio, editable in Project, and applied before camera placement/shape/mirroring by the shared Core Image program compositor. Person preview downsamples and throttles the segmentation input so 4K Continuity Camera does not starve capture. Independent raw camera media remains unchanged.
 
 ### Slice 13 — Shared Record and YouTube output pipeline
 

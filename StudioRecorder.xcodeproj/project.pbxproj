@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
 		09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */; };
+		0F3C5FC0DB845064C64E7F85 /* CameraBackgroundProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */; };
 		13B8ECF226E15196B0B70E26 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */; };
 		196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
@@ -65,6 +66,7 @@
 		4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRecorderRootView.swift; sourceTree = "<group>"; };
 		4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStoreTests.swift; sourceTree = "<group>"; };
 		51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesStoreTests.swift; sourceTree = "<group>"; };
+		5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraBackgroundProcessor.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
 		9A418726188BA1186770D369 /* RecordingProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStore.swift; sourceTree = "<group>"; };
@@ -181,6 +183,7 @@
 		CB745AD74D63EDF34EBCA822 /* Domain */ = {
 			isa = PBXGroup;
 			children = (
+				5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */,
 				B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */,
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
@@ -303,6 +306,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0F3C5FC0DB845064C64E7F85 /* CameraBackgroundProcessor.swift in Sources */,
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,

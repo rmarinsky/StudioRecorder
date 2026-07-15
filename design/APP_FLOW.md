@@ -126,11 +126,12 @@ Purpose: show exactly what survived.
 | Camera isolation | Implemented | Selected device freezes into the Capture Request and writes `raw-tracks/camera.mov` |
 | Canvas + fixed capture region | Implemented foundation | Horizontal/vertical/16:10/square/custom canvas; fixed region maps to ScreenCaptureKit `sourceRect` and selected output size |
 | Source presentation intent | Implemented | Live screen/camera shape, scale, and placement freeze into the Capture Request, remain editable in Project layout, and render through the program compositor |
-| Cursor treatment | Partial | Native cursor/click rings record now; cursor scale/follow mode are frozen non-destructive intent awaiting telemetry rendering |
+| Camera background | Implemented | Off, local Person segmentation, and adjustable green/blue chroma key persist with the scene and render without altering the raw camera track |
+| Cursor treatment | Implemented foundation | Native cursor/click telemetry is recorded; Follow Cursor replays through Project playback/export while raw full-display media stays recoverable |
 | Quick edit foundation | Implemented | Versioned `edit.json`; raw tracks stay unchanged while playback/export render ordered source ranges |
 | Program compositor | Implemented on playback/export | Core Image compositor renders canvas, screen, camera shape/placement/mirroring, cuts, PNG, GIF, and MOV while raw tracks stay independent |
 | Transcript editing | Not implemented | Target-state Editor only |
-| RTMPS streaming | Not implemented | Excluded from capture MVP navigation |
+| RTMPS streaming | Not implemented | Next slice reuses the frozen scene for Record, YouTube Stream, or both |
 
 ## Recommended SwiftUI implementation order
 

@@ -64,6 +64,9 @@ struct StudioRecorderRootView: View {
         .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
+        .onChange(of: snapshot.studioDraft?.presentation.cameraBackground) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
+        }
         .onChange(of: snapshot.capturesCamera) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
@@ -350,6 +353,7 @@ struct StudioRecorderRootView: View {
                     LiveProgramPreview(
                         screenImage: liveScene.screenImage,
                         cameraSession: liveScene.cameraSession,
+                        cameraImage: liveScene.cameraImage,
                         selectedDisplayName: selectedDisplayName,
                         selectedDisplayID: primarySelectedDisplayID,
                         screenPreviewError: liveScene.screenPreviewError,
@@ -462,6 +466,9 @@ struct StudioRecorderRootView: View {
         if let primarySelectedDisplayID {
             await liveScene.startScreenPreview(for: primarySelectedDisplayID)
         }
+        liveScene.setCameraBackground(
+            snapshot.studioDraft?.presentation.resolvedCameraBackground ?? .off
+        )
 
         if LiveScenePolicy.shouldRunDraftCamera(route: route, captureState: snapshot.captureState),
            snapshot.capturesCamera,
@@ -846,6 +853,28 @@ private struct StudioInspector: View {
                         Text(preset.label).tag(preset)
                     }
                 }
+                Picker("Background", selection: cameraBackgroundModeBinding) {
+                    ForEach(CameraBackgroundMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                if presentation.resolvedCameraBackground.mode == .person {
+                    Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if presentation.resolvedCameraBackground.mode == .greenScreen {
+                    Picker("Key color", selection: chromaKeyColorBinding) {
+                        ForEach(ChromaKeyColor.allCases) { color in
+                            Text(color.label).tag(color)
+                        }
+                    }
+                    labeledSlider("Tolerance", value: chromaToleranceBinding, range: 0.02...0.8)
+                    labeledSlider("Edge softness", value: chromaSoftnessBinding, range: 0.01...0.5)
+                    labeledSlider("Spill suppression", value: chromaSpillBinding, range: 0...1)
+                    Text("Green Screen preserves foreground objects such as a microphone when they are not the key color.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             Picker("Shape", selection: placement.shape) {
                 ForEach(SourceShape.allCases) { shape in
@@ -942,6 +971,51 @@ private struct StudioInspector: View {
         )
     }
 
+    private var cameraBackgroundModeBinding: Binding<CameraBackgroundMode> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.mode },
+            set: { mode in
+                var background = presentation.resolvedCameraBackground
+                background.mode = mode
+                presentation.cameraBackground = background
+            }
+        )
+    }
+
+    private var chromaKeyColorBinding: Binding<ChromaKeyColor> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.keyColor },
+            set: { value in updateCameraBackground { $0.keyColor = value } }
+        )
+    }
+
+    private var chromaToleranceBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.tolerance },
+            set: { value in updateCameraBackground { $0.tolerance = value } }
+        )
+    }
+
+    private var chromaSoftnessBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.softness },
+            set: { value in updateCameraBackground { $0.softness = value } }
+        )
+    }
+
+    private var chromaSpillBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.spillSuppression },
+            set: { value in updateCameraBackground { $0.spillSuppression = value } }
+        )
+    }
+
+    private func updateCameraBackground(_ update: (inout CameraBackgroundSnapshot) -> Void) {
+        var background = presentation.resolvedCameraBackground
+        update(&background)
+        presentation.cameraBackground = background.validated()
+    }
+
     private var cursorScaleBinding: Binding<CGFloat> {
         Binding(get: { presentation.cursor.scale }, set: { presentation.cursor.scale = $0 })
     }
@@ -991,6 +1065,7 @@ private struct StudioInspector: View {
 private struct LiveProgramPreview: View {
     let screenImage: NSImage?
     let cameraSession: AVCaptureSession?
+    let cameraImage: NSImage?
     let selectedDisplayName: String
     let selectedDisplayID: UInt32?
     let screenPreviewError: String?
@@ -1047,7 +1122,7 @@ private struct LiveProgramPreview: View {
                 }
 
                 if let cameraSession, presentation.camera.isVisible {
-                    CameraLivePreview(session: cameraSession)
+                    cameraPreview(session: cameraSession)
                         .scaleEffect(x: presentation.camera.isMirrored ? -1 : 1, y: 1)
                         .clipShape(sourceShape(for: presentation.camera))
                         .overlay {
@@ -1090,6 +1165,21 @@ private struct LiveProgramPreview: View {
                 .stroke(isRecording ? Color.red : Color.clear, lineWidth: 1)
         }
         .accessibilityLabel("Live selected screen and camera preview")
+    }
+
+    @ViewBuilder
+    private func cameraPreview(session: AVCaptureSession) -> some View {
+        if presentation.resolvedCameraBackground.mode == .off {
+            CameraLivePreview(session: session)
+        } else if let cameraImage {
+            Image(nsImage: cameraImage)
+                .resizable()
+                .scaledToFill()
+        } else {
+            CameraLivePreview(session: session)
+                .opacity(0.35)
+                .overlay { ProgressView().controlSize(.small) }
+        }
     }
 
     @ViewBuilder

@@ -247,6 +247,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
 
 private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     private let context = CIContext(options: [.cacheIntermediates: false])
+    private let cameraBackgroundProcessor = CameraBackgroundProcessor(personQuality: .export)
 
     let sourcePixelBufferAttributes: [String: any Sendable]? = [
         kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
@@ -281,8 +282,12 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         if instruction.presentation.camera.isVisible,
            let cameraTrackID = instruction.cameraTrackID,
            let buffer = request.sourceFrame(byTrackID: cameraTrackID) {
-            result = compose(
+            let cameraImage = cameraBackgroundProcessor.process(
                 CIImage(cvPixelBuffer: buffer),
+                background: instruction.presentation.resolvedCameraBackground
+            )
+            result = compose(
+                cameraImage,
                 transform: instruction.cameraTransform,
                 placement: instruction.presentation.camera,
                 framing: nil,
@@ -353,7 +358,7 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         }
         guard let mask else { return foreground.composited(over: background) }
         let blend = CIFilter.blendWithMask()
-        blend.inputImage = foreground
+        blend.inputImage = foreground.composited(over: background)
         blend.backgroundImage = background
         blend.maskImage = mask
         return blend.outputImage?.cropped(to: canvas) ?? foreground.composited(over: background)

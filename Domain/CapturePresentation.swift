@@ -145,6 +145,71 @@ enum SourceAspectPreset: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum CameraBackgroundMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case off
+    case person
+    case greenScreen
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: "Off"
+        case .person: "Person"
+        case .greenScreen: "Green Screen"
+        }
+    }
+}
+
+enum ChromaKeyColor: String, Codable, CaseIterable, Identifiable, Sendable {
+    case green
+    case blue
+
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+
+    var components: (red: CGFloat, green: CGFloat, blue: CGFloat) {
+        switch self {
+        case .green: (0, 1, 0)
+        case .blue: (0, 0, 1)
+        }
+    }
+}
+
+struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
+    var mode: CameraBackgroundMode
+    var keyColor: ChromaKeyColor
+    var tolerance: CGFloat
+    var softness: CGFloat
+    var spillSuppression: CGFloat
+
+    static let off = CameraBackgroundSnapshot(mode: .off)
+
+    init(
+        mode: CameraBackgroundMode,
+        keyColor: ChromaKeyColor = .green,
+        tolerance: CGFloat = 0.28,
+        softness: CGFloat = 0.12,
+        spillSuppression: CGFloat = 0.55
+    ) {
+        self.mode = mode
+        self.keyColor = keyColor
+        self.tolerance = tolerance
+        self.softness = softness
+        self.spillSuppression = spillSuppression
+    }
+
+    func validated() -> CameraBackgroundSnapshot {
+        CameraBackgroundSnapshot(
+            mode: mode,
+            keyColor: keyColor,
+            tolerance: min(max(tolerance, 0.02), 0.8),
+            softness: min(max(softness, 0.01), 0.5),
+            spillSuppression: min(max(spillSuppression, 0), 1)
+        )
+    }
+}
+
 struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     var centerX: CGFloat
     var centerY: CGFloat
@@ -249,6 +314,11 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
     var screen: SourcePlacementSnapshot
     var camera: SourcePlacementSnapshot
     var cursor: CursorTreatmentSnapshot
+    var cameraBackground: CameraBackgroundSnapshot? = nil
+
+    var resolvedCameraBackground: CameraBackgroundSnapshot {
+        (cameraBackground ?? .off).validated()
+    }
 
     static let `default` = CapturePresentationSnapshot(
         canvas: CaptureCanvasSnapshot(),
@@ -275,7 +345,8 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
             framing: framing.validated(),
             screen: screen.validated(),
             camera: camera.validated(),
-            cursor: cursor.validated()
+            cursor: cursor.validated(),
+            cameraBackground: cameraBackground?.validated()
         )
     }
 }

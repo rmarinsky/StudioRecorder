@@ -4,6 +4,41 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testProgramRendererRemovesGreenCameraBackgroundOverTheScreen() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let cameraURL = directory.appending(path: "green-camera.mov")
+        let outputURL = directory.appending(path: "program.mov")
+        let frameURL = directory.appending(path: "program.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        try await writeReadableMovie(to: cameraURL, colors: Array(repeating: 0xFF00FF00, count: 5))
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 1,
+            height: 1,
+            shape: .rectangle
+        )
+        presentation.cameraBackground = CameraBackgroundSnapshot(mode: .greenScreen)
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(screenURL: screenURL, cameraURL: cameraURL),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: frameURL)
+
+        let center = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(center.red, 180)
+        XCTAssertLessThan(center.green, 80)
+    }
+
     func testFollowCursorSceneReplaysRecordedCursorMovement() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

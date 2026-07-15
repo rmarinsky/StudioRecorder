@@ -35,16 +35,24 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var screenImage: NSImage?
     @Published private(set) var selectedCameraID: String?
     @Published private(set) var cameraSession: AVCaptureSession?
+    @Published private(set) var cameraImage: NSImage?
     @Published private(set) var screenPreviewError: String?
 
     private let screenQueue = DispatchQueue(label: "StudioRecorder.preview.screen", qos: .userInitiated)
     private let cameraQueue = DispatchQueue(label: "StudioRecorder.preview.camera", qos: .userInitiated)
     private let imageContext = CIContext(options: [.cacheIntermediates: false])
+    private let cameraBackgroundProcessor = CameraBackgroundProcessor(personQuality: .live)
     nonisolated(unsafe) private var isFrameDeliveryPending = false
     nonisolated private let frameDeliveryLock = NSLock()
+    nonisolated(unsafe) private var isCameraFrameDeliveryPending = false
+    nonisolated(unsafe) private var lastCameraFrameProcessingTime: TimeInterval = 0
+    nonisolated private let cameraFrameDeliveryLock = NSLock()
+    nonisolated(unsafe) private var cameraBackground = CameraBackgroundSnapshot.off
+    nonisolated private let cameraBackgroundLock = NSLock()
     private var screenStream: SCStream?
     private var previewedDisplayID: UInt32?
     private var cameraInput: AVCaptureDeviceInput?
+    private var cameraVideoOutput: AVCaptureVideoDataOutput?
 
     func startScreenPreview(for displayID: UInt32) async {
         guard previewedDisplayID != displayID || screenStream == nil else { return }
@@ -104,10 +112,22 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         configureCameraPreview()
     }
 
+    func setCameraBackground(_ background: CameraBackgroundSnapshot) {
+        let validated = background.validated()
+        let changed = cameraBackgroundLock.withLock { () -> Bool in
+            guard cameraBackground != validated else { return false }
+            cameraBackground = validated
+            return true
+        }
+        if changed { cameraImage = nil }
+    }
+
     func stopCameraPreview() async {
         let session = cameraSession
         cameraSession = nil
         cameraInput = nil
+        cameraVideoOutput = nil
+        cameraImage = nil
         guard let session else { return }
         await withCheckedContinuation { continuation in
             cameraQueue.async {
@@ -123,6 +143,8 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
               let device = AVCaptureDevice(uniqueID: selectedCameraID) else {
             cameraSession = nil
             cameraInput = nil
+            cameraVideoOutput = nil
+            cameraImage = nil
             if let previousSession {
                 cameraQueue.async {
                     previousSession.stopRunning()
@@ -144,10 +166,29 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 }
                 cameraSession = nil
                 cameraInput = nil
+                cameraVideoOutput = nil
+                cameraImage = nil
                 return
             }
             session.addInput(input)
+            let videoOutput = AVCaptureVideoDataOutput()
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            ]
+            guard session.canAddOutput(videoOutput) else {
+                if let previousSession {
+                    cameraQueue.async { previousSession.stopRunning() }
+                }
+                cameraSession = nil
+                cameraInput = nil
+                cameraVideoOutput = nil
+                return
+            }
+            session.addOutput(videoOutput)
+            videoOutput.setSampleBufferDelegate(self, queue: cameraQueue)
             cameraInput = input
+            cameraVideoOutput = videoOutput
             cameraSession = session
             cameraQueue.async {
                 previousSession?.stopRunning()
@@ -156,9 +197,55 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         } catch {
             cameraSession = nil
             cameraInput = nil
+            cameraVideoOutput = nil
+            cameraImage = nil
             if let previousSession {
                 cameraQueue.async { previousSession.stopRunning() }
             }
+        }
+    }
+}
+
+extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
+    nonisolated func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        let background = cameraBackgroundLock.withLock { cameraBackground }
+        guard background.mode != .off,
+              let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        let shouldDeliver = cameraFrameDeliveryLock.withLock {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard !isCameraFrameDeliveryPending,
+                  now - lastCameraFrameProcessingTime >= 0.1 else { return false }
+            isCameraFrameDeliveryPending = true
+            lastCameraFrameProcessingTime = now
+            return true
+        }
+        guard shouldDeliver else { return }
+        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let maximumPreviewDimension: CGFloat = 720
+        let previewScale = min(
+            1,
+            maximumPreviewDimension / max(sourceImage.extent.width, sourceImage.extent.height)
+        )
+        let previewImage = sourceImage.transformed(by: CGAffineTransform(
+            scaleX: previewScale,
+            y: previewScale
+        ))
+        let processed = cameraBackgroundProcessor.process(
+            previewImage,
+            background: background
+        )
+        guard let cgImage = imageContext.createCGImage(processed, from: processed.extent) else {
+            cameraFrameDeliveryLock.withLock { isCameraFrameDeliveryPending = false }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.cameraImage = NSImage(cgImage: cgImage, size: .zero)
+            self.cameraFrameDeliveryLock.withLock { self.isCameraFrameDeliveryPending = false }
         }
     }
 }
