@@ -19,12 +19,17 @@ enum CameraTrackRecorderError: LocalizedError {
     }
 }
 
+struct CameraSessionReference: @unchecked Sendable {
+    let session: AVCaptureSession
+}
+
 final class CameraTrackRecorder: NSObject, @unchecked Sendable {
     private let queue = DispatchQueue(label: "StudioRecorder.camera.recording", qos: .userInitiated)
     private let lock = NSLock()
     private let unexpectedFailure: @Sendable (String) -> Void
     private var session: AVCaptureSession?
     private var output: AVCaptureMovieFileOutput?
+    private var ownsSession = true
     private var startContinuation: CheckedContinuation<Void, Error>?
     private var stopContinuation: CheckedContinuation<Void, Error>?
     private var terminalError: Error?
@@ -34,14 +39,22 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    func start(deviceID: String, outputURL: URL) async throws {
+    func start(
+        deviceID: String,
+        outputURL: URL,
+        existingSession: CameraSessionReference? = nil
+    ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             lock.withLock {
                 terminalError = nil
                 startContinuation = continuation
             }
             queue.async { [weak self] in
-                self?.prepareAndStart(deviceID: deviceID, outputURL: outputURL)
+                self?.prepareAndStart(
+                    deviceID: deviceID,
+                    outputURL: outputURL,
+                    existingSession: existingSession
+                )
             }
             queue.asyncAfter(deadline: .now() + 8) { [weak self] in
                 self?.timeOutStart()
@@ -55,8 +68,9 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
             queue.async { [weak self] in
                 guard let self else { return }
                 guard let output, output.isRecording else {
-                    session?.stopRunning()
+                    finishSession()
                     finishStop(with: lock.withLock { terminalError })
+                    clearCaptureObjects()
                     return
                 }
                 output.stopRecording()
@@ -67,29 +81,49 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
         }
     }
 
-    private func prepareAndStart(deviceID: String, outputURL: URL) {
+    private func prepareAndStart(
+        deviceID: String,
+        outputURL: URL,
+        existingSession: CameraSessionReference?
+    ) {
         do {
             guard let device = AVCaptureDevice(uniqueID: deviceID) else {
                 throw CameraTrackRecorderError.deviceUnavailable
             }
-            let input = try AVCaptureDeviceInput(device: device)
-            let session = AVCaptureSession()
-            session.beginConfiguration()
-            session.sessionPreset = .high
-            guard session.canAddInput(input) else { throw CameraTrackRecorderError.inputUnavailable }
-            session.addInput(input)
+            let session: AVCaptureSession
+            if let existingSession {
+                let hasSelectedInput = existingSession.session.inputs
+                    .compactMap { $0 as? AVCaptureDeviceInput }
+                    .contains { $0.device.uniqueID == deviceID }
+                guard hasSelectedInput else { throw CameraTrackRecorderError.inputUnavailable }
+                session = existingSession.session
+                ownsSession = false
+            } else {
+                let input = try AVCaptureDeviceInput(device: device)
+                session = AVCaptureSession()
+                session.beginConfiguration()
+                session.sessionPreset = .high
+                guard session.canAddInput(input) else { throw CameraTrackRecorderError.inputUnavailable }
+                session.addInput(input)
+                session.commitConfiguration()
+                ownsSession = true
+            }
 
             let output = AVCaptureMovieFileOutput()
             output.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
             guard session.canAddOutput(output) else { throw CameraTrackRecorderError.outputUnavailable }
+            session.beginConfiguration()
             session.addOutput(output)
             session.commitConfiguration()
 
             self.session = session
             self.output = output
-            session.startRunning()
+            if !session.isRunning {
+                session.startRunning()
+            }
             output.startRecording(to: outputURL, recordingDelegate: self)
         } catch {
+            finishSession()
             finishStart(with: error)
             clearCaptureObjects()
         }
@@ -105,7 +139,7 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
     private func timeOutStop() {
         let isWaiting = lock.withLock { stopContinuation != nil }
         guard isWaiting else { return }
-        session?.stopRunning()
+        finishSession()
         finishStop(with: CameraTrackRecorderError.stopTimedOut)
         clearCaptureObjects()
     }
@@ -133,6 +167,18 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
     private func clearCaptureObjects() {
         session = nil
         output = nil
+        ownsSession = true
+    }
+
+    private func finishSession() {
+        guard let session else { return }
+        if ownsSession {
+            session.stopRunning()
+        } else if let output, session.outputs.contains(where: { $0 === output }) {
+            session.beginConfiguration()
+            session.removeOutput(output)
+            session.commitConfiguration()
+        }
     }
 }
 
@@ -153,7 +199,7 @@ extension CameraTrackRecorder: AVCaptureFileOutputRecordingDelegate {
     ) {
         queue.async { [weak self] in
             guard let self else { return }
-            session?.stopRunning()
+            finishSession()
             let recordingSucceeded = error == nil || (error as NSError?)?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
             if !recordingSucceeded {
                 lock.withLock { terminalError = error }

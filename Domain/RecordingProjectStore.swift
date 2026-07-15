@@ -430,6 +430,12 @@ final class RecordingProjectStore {
         project.rootURL.appending(path: "journal.ndjson")
     }
 
+    func writeCursorTimeline(_ timeline: CursorSceneTimeline, in project: RecordingProject) throws {
+        let sceneURL = project.rootURL.appending(path: "scene", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: sceneURL, withIntermediateDirectories: true)
+        try write(timeline, to: sceneURL.appending(path: "cursor.json"))
+    }
+
     func discoverProjects(in additionalDirectories: [URL] = []) async -> [RecordingProjectSnapshot] {
         guard let defaultDirectory = try? resolvedProjectsDirectory() else { return [] }
         var seenPaths: Set<String> = []

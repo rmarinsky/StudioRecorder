@@ -397,6 +397,7 @@ final class StudioRecorderModel: ObservableObject {
     private let permissionCenter: PermissionCenter?
     private let preferencesStore: PreferencesStore
     private var coordinatorObservation: AnyCancellable?
+    private var cameraPreviewSession: CameraSessionReference?
 
     convenience init() {
         self.init(
@@ -469,6 +470,10 @@ final class StudioRecorderModel: ObservableObject {
 
     func openSystemSettings(for permission: CapturePermission) {
         permissionCenter?.openSystemSettings(for: permission)
+    }
+
+    func useCameraPreviewSessionForRecording(_ session: AVCaptureSession?) {
+        cameraPreviewSession = session.map(CameraSessionReference.init(session:))
     }
 
     @discardableResult
@@ -697,8 +702,10 @@ final class StudioRecorderModel: ObservableObject {
 
         switch result {
         case .recordingStartRequested(let request):
+            let cameraPreviewSession = cameraPreviewSession
             Task { @MainActor [weak self] in
-                await coordinator.startRecording(request)
+                await coordinator.startRecording(request, cameraPreviewSession: cameraPreviewSession)
+                self?.cameraPreviewSession = nil
                 self?.synchronizeFromCoordinator()
             }
 

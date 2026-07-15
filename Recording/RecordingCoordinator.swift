@@ -1,4 +1,5 @@
 @preconcurrency import ScreenCaptureKit
+import AppKit
 import AVFoundation
 import CoreGraphics
 import Foundation
@@ -50,6 +51,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
+    private var cursorTelemetryTask: Task<Void, Never>?
+    private var cursorTelemetryStartedAt: TimeInterval?
+    private var cursorSamples: [CursorSceneSample] = []
     private var startedOutputIDs: Set<ObjectIdentifier> = []
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
     private var outputCompletion: CheckedContinuation<Bool, Never>?
@@ -114,7 +118,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         interruptedProjects = snapshots.filter(\.isInterrupted)
     }
 
-    func startRecording(_ request: CaptureRequest) async {
+    func startRecording(_ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil) async {
         guard state == .ready else { return }
         state = .preparing
         terminalFailure = nil
@@ -164,6 +168,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 try await capture.stream.startCapture()
                 startedOutputIDs.insert(ObjectIdentifier(capture.output))
             }
+            startCursorTelemetry(for: selected, request: request)
 
             if let camera = request.camera {
                 guard let outputURL = projectStore.rawTrackURL(for: "camera", in: project) else {
@@ -177,7 +182,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     }
                 }
                 do {
-                    try await recorder.start(deviceID: camera.id, outputURL: outputURL)
+                    try await recorder.start(
+                        deviceID: camera.id,
+                        outputURL: outputURL,
+                        existingSession: cameraPreviewSession
+                    )
                 } catch {
                     try? projectStore.markFailure(
                         trackID: project.trackID(for: .camera),
@@ -204,6 +213,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
+        stopCursorTelemetry()
         let stopErrors = await stopCaptures()
 
         if let reason = terminalFailure ?? stopErrors.first {
@@ -213,6 +223,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
         if let activeProject {
             do {
+                try persistCursorTelemetry(in: activeProject)
                 try projectStore.close(activeProject)
             } catch {
                 await completeInterruptedTeardown(reason: error.localizedDescription)
@@ -279,6 +290,50 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 self?.recordedDuration += 1
             }
         }
+    }
+
+    private func startCursorTelemetry(for displays: [SCDisplay], request: CaptureRequest) {
+        cursorTelemetryTask?.cancel()
+        cursorSamples.removeAll(keepingCapacity: true)
+        cursorTelemetryStartedAt = nil
+        guard request.presentation.framing.mode == .followCursor,
+              !displays.isEmpty else { return }
+
+        cursorTelemetryStartedAt = ProcessInfo.processInfo.systemUptime
+        cursorTelemetryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                recordCursorSample(displays: displays)
+                try? await Task.sleep(for: .milliseconds(33))
+            }
+        }
+    }
+
+    private func recordCursorSample(displays: [SCDisplay]) {
+        guard let cursorTelemetryStartedAt else { return }
+        let location = CGEvent(source: nil)?.location ?? .zero
+        let display = displays.first(where: { $0.frame.contains(location) }) ?? displays[0]
+        let frame = display.frame
+        guard frame.width > 0, frame.height > 0 else { return }
+        cursorSamples.append(
+            CursorSceneSample(
+                time: ProcessInfo.processInfo.systemUptime - cursorTelemetryStartedAt,
+                displayID: display.displayID,
+                normalizedX: (location.x - frame.minX) / frame.width,
+                normalizedY: (location.y - frame.minY) / frame.height,
+                isPrimaryButtonDown: CGEventSource.buttonState(.combinedSessionState, button: .left)
+            ).validated()
+        )
+    }
+
+    private func stopCursorTelemetry() {
+        cursorTelemetryTask?.cancel()
+        cursorTelemetryTask = nil
+    }
+
+    private func persistCursorTelemetry(in project: RecordingProject) throws {
+        guard !cursorSamples.isEmpty else { return }
+        try projectStore.writeCursorTimeline(CursorSceneTimeline(samples: cursorSamples), in: project)
     }
 
     private func stopCaptures() async -> [String] {
@@ -357,12 +412,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
+        stopCursorTelemetry()
         _ = await stopCaptures()
         await completeInterruptedTeardown(reason: terminalFailure ?? reason)
     }
 
     private func completeInterruptedTeardown(reason: String) async {
         if let activeProject {
+            try? persistCursorTelemetry(in: activeProject)
             try? projectStore.markInterrupted(activeProject, detail: reason)
         }
         clearCaptureState()
@@ -372,6 +429,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func clearCaptureState() {
+        stopCursorTelemetry()
+        cursorTelemetryStartedAt = nil
+        cursorSamples.removeAll(keepingCapacity: false)
         captures.removeAll()
         cameraRecorder = nil
         startedOutputIDs.removeAll()

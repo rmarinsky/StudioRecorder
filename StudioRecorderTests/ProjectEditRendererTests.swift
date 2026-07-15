@@ -4,6 +4,47 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testFollowCursorSceneReplaysRecordedCursorMovement() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "split-screen.mov")
+        let outputURL = directory.appending(path: "follow-program.mov")
+        let leftFrameURL = directory.appending(path: "left.png")
+        let rightFrameURL = directory.appending(path: "right.png")
+        try await writeSplitMovie(to: screenURL)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        presentation.framing = ScreenFramingSnapshot(mode: .followCursor, scale: 0.5)
+        presentation.camera.isVisible = false
+        let cursor = CursorSceneTimeline(samples: [
+            CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.1, normalizedY: 0.5, isPrimaryButtonDown: false),
+            CursorSceneSample(time: 1, displayID: 7, normalizedX: 0.9, normalizedY: 0.5, isPrimaryButtonDown: false),
+        ])
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                screenDisplayID: 7,
+                cursorTimeline: cursor
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 2),
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.25, to: leftFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: rightFrameURL)
+
+        let left = try color(in: leftFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let right = try color(in: rightFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(left.red, 180)
+        XCTAssertLessThan(left.blue, 80)
+        XCTAssertGreaterThan(right.blue, 180)
+        XCTAssertLessThan(right.red, 80)
+    }
+
     func testProgramRendererComposesIndependentlyPlacedScreenAndCameraSources() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -167,6 +208,39 @@ final class ProjectEditRendererTests: XCTestCase {
         }
     }
 
+    private func writeSplitMovie(to url: URL) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: 64,
+                AVVideoHeightKey: 64,
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+        writer.add(input)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        XCTAssertTrue(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+        for index in 0..<5 {
+            while !input.isReadyForMoreMediaData {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertTrue(
+                adaptor.append(
+                    try splitPixelBuffer(),
+                    withPresentationTime: CMTime(seconds: Double(index) * 0.5, preferredTimescale: 600)
+                )
+            )
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            throw writer.error ?? NSError(domain: "ProjectEditRendererTests", code: 2)
+        }
+    }
+
     private func averageColor(in url: URL) throws -> (red: UInt8, green: UInt8, blue: UInt8) {
         let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
@@ -226,6 +300,25 @@ final class ProjectEditRendererTests: XCTestCase {
         for y in 0..<64 {
             for x in 0..<64 {
                 pixels[(y * rowPixels) + x] = color
+            }
+        }
+        return pixelBuffer
+    }
+
+    private func splitPixelBuffer() throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer),
+            kCVReturnSuccess
+        )
+        let pixelBuffer = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        let rowPixels = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt32>.size
+        let pixels = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixelBuffer)).assumingMemoryBound(to: UInt32.self)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                pixels[(y * rowPixels) + x] = x < 32 ? 0xFFFF0000 : 0xFF0000FF
             }
         }
         return pixelBuffer

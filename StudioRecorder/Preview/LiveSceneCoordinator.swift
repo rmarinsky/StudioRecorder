@@ -5,6 +5,31 @@ import CoreImage
 import Foundation
 import SwiftUI
 
+enum LiveScenePolicy {
+    static func shouldRun(route: MainRoute, captureState: RecordingState) -> Bool {
+        guard route == .studio else { return false }
+        return switch captureState {
+        case .ready, .preparing, .recording, .stopping:
+            true
+        case .failed:
+            false
+        }
+    }
+
+    static func shouldRunDraftCamera(route: MainRoute, captureState: RecordingState) -> Bool {
+        shouldRun(route: route, captureState: captureState)
+    }
+
+    static func shouldPreserveCameraSession(captureState: RecordingState) -> Bool {
+        switch captureState {
+        case .preparing, .recording, .stopping:
+            true
+        case .ready, .failed:
+            false
+        }
+    }
+}
+
 @MainActor
 final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var screenImage: NSImage?
@@ -103,6 +128,10 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                     previousSession.stopRunning()
                 }
             }
+            return
+        }
+        if cameraInput?.device.uniqueID == selectedCameraID,
+           cameraSession != nil {
             return
         }
 

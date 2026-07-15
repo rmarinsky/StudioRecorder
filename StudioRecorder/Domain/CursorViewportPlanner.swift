@@ -1,6 +1,53 @@
 import CoreGraphics
 import Foundation
 
+struct CursorSceneSample: Codable, Equatable, Sendable {
+    let time: TimeInterval
+    let displayID: UInt32
+    let normalizedX: CGFloat
+    let normalizedY: CGFloat
+    let isPrimaryButtonDown: Bool
+
+    func validated() -> CursorSceneSample {
+        CursorSceneSample(
+            time: max(time.isFinite ? time : 0, 0),
+            displayID: displayID,
+            normalizedX: min(max(normalizedX.isFinite ? normalizedX : 0.5, 0), 1),
+            normalizedY: min(max(normalizedY.isFinite ? normalizedY : 0.5, 0), 1),
+            isPrimaryButtonDown: isPrimaryButtonDown
+        )
+    }
+}
+
+struct CursorSceneTimeline: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let samples: [CursorSceneSample]
+
+    init(samples: [CursorSceneSample]) {
+        schemaVersion = Self.currentSchemaVersion
+        self.samples = samples.map { $0.validated() }.sorted { $0.time < $1.time }
+    }
+
+    func sample(at time: TimeInterval, for displayID: UInt32?) -> CursorSceneSample? {
+        let candidates = displayID.map { id in samples.filter { $0.displayID == id } } ?? samples
+        guard !candidates.isEmpty else { return nil }
+        let target = max(time.isFinite ? time : 0, 0)
+        var lower = 0
+        var upper = candidates.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if candidates[middle].time <= target {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return candidates[max(0, lower - 1)]
+    }
+}
+
 struct CapturedDisplay: Identifiable, Equatable {
     let id: UInt32
     let frame: CGRect

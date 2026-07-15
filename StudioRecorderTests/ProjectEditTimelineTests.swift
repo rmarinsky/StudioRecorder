@@ -2,6 +2,14 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testEditedPlaybackTimeMapsBackToRecordedCursorTime() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 10)
+        try timeline.trimStart(to: 3)
+
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 0)), 3, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 2)), 5, accuracy: 0.001)
+    }
+
     func testTimelineSupportsTrimSplitAndDeleteWithoutChangingSourceRanges() throws {
         let originalSegmentID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let splitSegmentID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!

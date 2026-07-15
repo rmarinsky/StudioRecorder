@@ -26,7 +26,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Multi-display raw recording | implemented | preserve and expose exact selected sources | — |
 | System audio + microphone | embedded in primary display recording | selectable defaults, device/status visibility | isolated audio tracks if required |
 | HEVC with H.264 fallback | implemented | expose as an honest automatic policy | additional codecs only with evidence |
-| Native cursor capture | configurable per new session; click rings implemented | frozen cursor scale/click treatment | cursor-position telemetry and follow-mode program composition |
+| Native cursor capture | configurable per new session; click rings implemented | cursor/click telemetry plus frozen cursor treatment | custom enlarged-cursor and click-ring rendering |
 | Project package + journal | implemented, schema v1 | schema v2 snapshot, typed events, v1 reader | edit/export metadata |
 | Interrupted-project detection | implemented from `stoppedAt == nil` | per-track recovery report | segment repair tooling |
 | Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
@@ -256,7 +256,7 @@ Use UserDefaults for scalar preferences. Persist a selected destination as a boo
 
 ### Editing seams
 
-`ProjectEditTimeline`, `ProjectEditStore`, `ProjectEditRenderer`, and `ProjectProgramRenderer` form the bounded edit seam. They persist one program timeline plus layout in `edit.json`, render moving screen/camera playback, and export MOV/PNG/GIF derivatives without mutating raw tracks. `TranscriptionClient`, cursor-telemetry rendering, waveforms, speed, and volume remain later seams.
+`ProjectEditTimeline`, `ProjectEditStore`, `ProjectEditRenderer`, and `ProjectProgramRenderer` form the bounded edit seam. They persist one program timeline plus layout in `edit.json`, replay recorded Follow Cursor telemetry, render moving screen/camera playback, and export MOV/PNG/GIF derivatives without mutating raw tracks. `TranscriptionClient`, custom cursor/click rendering, waveforms, speed, and volume remain later seams.
 
 ## 7. Screen contracts
 
@@ -312,7 +312,7 @@ Camera is optional and permission-aware. When enabled, its selected device is fr
 
 **Actions:** play the moving composed program, select the program screen source, independently resize/place/shape/mirror screen and camera, persist non-destructive trim/split/delete decisions, undo/redo/reset, export an edited MOV, reveal the package, open/share/drag a selected raw movie, save the composed playhead frame as PNG, create a bounded five-second GIF, and return to Projects. Every edit/share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
 
-**Not shown yet:** synchronized waveforms, arbitrary selected export range, speed/volume, cursor-telemetry keyframes, transcript editing, or a program-only retention policy.
+**Not shown yet:** synchronized waveforms, arbitrary selected export range, speed/volume, editable cursor keyframes, transcript editing, or a program-only retention policy.
 
 The route remains `.projects(selection: id)`, so Project Summary can later be replaced by the Editor without changing library or recovery navigation.
 
@@ -457,7 +457,7 @@ Do not build a shortcut recorder in this wave.
 
 ### 7.10 Editor — Quick Edit and program composition foundation
 
-Entry requires a finalized or explicitly recovered project. The implemented foundation reads one selected screen as the program timing source, composes optional camera layout, and renders persisted ordered ranges for playback/export. Future cursor/camera keyframes, transcript cuts, waveforms, speed, volume, and richer Export continue to operate on derived instructions/output only.
+Entry requires a finalized or explicitly recovered project. The implemented foundation reads one selected screen as the program timing source, composes optional camera layout, replays recorded cursor framing, and renders persisted ordered ranges for playback/export. Future editable cursor/camera keyframes, transcript cuts, waveforms, speed, volume, and richer Export continue to operate on derived instructions/output only.
 
 ## 8. Intent and transition matrix
 
@@ -560,7 +560,7 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 
 **Done:** live pre-record layout changes are reflected in the composed output, the immutable request records requested/effective profile and layout, optional-source loss remains inspectable, and required-screen loss ends in Recovery without corrupting raw media.
 
-**Current foundation (2026-07-15):** canvas size/aspect, fixed region, screen/camera shape and placement, cursor treatment, and click emphasis are modeled, tested, editable in the native preflight UI, and frozen into the Capture Request. Fixed region is connected to ScreenCaptureKit. Project detail seeds a draggable layout from the request and persists later canvas/source edits in schema-v2 `edit.json` without modifying raw tracks. A Core Image compositor now drives moving Project playback plus MOV/PNG/GIF export. Cursor telemetry and follow-mode post-capture rendering are still required before this slice meets its Done condition.
+**Current foundation (2026-07-15):** canvas size/aspect, fixed region, screen/camera shape and placement, cursor treatment, and click emphasis are modeled, tested, editable in the native preflight UI, and frozen into the Capture Request. Fixed region is connected to ScreenCaptureKit. Follow Cursor records a cursor/click timeline beside the raw tracks and replays it through the Core Image compositor in Project playback plus MOV/PNG/GIF export. Project detail seeds a draggable layout from the request and persists later canvas/source edits in schema-v2 `edit.json` without modifying raw tracks. Custom cursor sizing/click-ring rendering remains before this slice meets its full Done condition.
 
 ### Slice 11 — Non-destructive Quick Edit foundation
 

@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class StudioRecorderModelTests: XCTestCase {
+    func testLiveSceneStaysVisibleWhileRecording() {
+        XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .ready))
+        XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .preparing))
+        XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .recording))
+        XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .stopping))
+        XCTAssertFalse(LiveScenePolicy.shouldRun(route: .projects, captureState: .recording))
+        XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording))
+        XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .recording))
+        XCTAssertFalse(LiveScenePolicy.shouldPreserveCameraSession(captureState: .ready))
+    }
+
     func testPermissionRepairPresentationCoversEveryRenderedStateAndAction() throws {
         var snapshot = StudioRecorderSnapshot()
         snapshot.route = .studio

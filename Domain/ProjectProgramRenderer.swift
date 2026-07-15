@@ -8,11 +8,21 @@ struct ProjectProgramSources: Sendable {
     let screenURL: URL
     let cameraURL: URL?
     let audioURL: URL?
+    let screenDisplayID: UInt32?
+    let cursorTimeline: CursorSceneTimeline?
 
-    init(screenURL: URL, cameraURL: URL?, audioURL: URL? = nil) {
+    init(
+        screenURL: URL,
+        cameraURL: URL?,
+        audioURL: URL? = nil,
+        screenDisplayID: UInt32? = nil,
+        cursorTimeline: CursorSceneTimeline? = nil
+    ) {
         self.screenURL = screenURL
         self.cameraURL = cameraURL
         self.audioURL = audioURL
+        self.screenDisplayID = screenDisplayID
+        self.cursorTimeline = cursorTimeline
     }
 }
 
@@ -142,6 +152,10 @@ final class ProjectProgramRenderer {
             screenTrackID: screenTrack.trackID,
             cameraTrackID: cameraTrackID,
             presentation: validated,
+            timeline: timeline,
+            cursorSamples: sources.cursorTimeline?.samples.filter {
+                sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
+            } ?? [],
             screenTransform: try await sourceScreenTrack.load(.preferredTransform),
             cameraTransform: cameraTransform
         )
@@ -188,6 +202,8 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let screenTrackID: CMPersistentTrackID
     let cameraTrackID: CMPersistentTrackID?
     let presentation: CapturePresentationSnapshot
+    let timeline: ProjectEditTimeline
+    let cursorTimeline: CursorSceneTimeline?
     let screenTransform: CGAffineTransform
     let cameraTransform: CGAffineTransform
 
@@ -196,6 +212,8 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         screenTrackID: CMPersistentTrackID,
         cameraTrackID: CMPersistentTrackID?,
         presentation: CapturePresentationSnapshot,
+        timeline: ProjectEditTimeline,
+        cursorSamples: [CursorSceneSample],
         screenTransform: CGAffineTransform,
         cameraTransform: CGAffineTransform
     ) {
@@ -203,11 +221,27 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         self.screenTrackID = screenTrackID
         self.cameraTrackID = cameraTrackID
         self.presentation = presentation
+        self.timeline = timeline
+        cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
         self.screenTransform = screenTransform
         self.cameraTransform = cameraTransform
         requiredSourceTrackIDs = ([screenTrackID] + (cameraTrackID.map { [$0] } ?? [])).map {
             NSNumber(value: $0)
         }
+    }
+
+    func screenFraming(at compositionTime: CMTime) -> ScreenFramingSnapshot? {
+        guard presentation.framing.mode == .followCursor,
+              let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
+              let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
+            return nil
+        }
+        return ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: sample.normalizedX,
+            centerY: sample.normalizedY,
+            scale: presentation.framing.scale
+        ).validated()
     }
 }
 
@@ -238,6 +272,8 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
                 CIImage(cvPixelBuffer: buffer),
                 transform: instruction.screenTransform,
                 placement: instruction.presentation.screen,
+                framing: instruction.screenFraming(at: request.compositionTime),
+                canvasSize: instruction.presentation.canvas.pixelSize,
                 canvas: canvas,
                 over: result
             )
@@ -249,6 +285,8 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
                 CIImage(cvPixelBuffer: buffer),
                 transform: instruction.cameraTransform,
                 placement: instruction.presentation.camera,
+                framing: nil,
+                canvasSize: instruction.presentation.canvas.pixelSize,
                 canvas: canvas,
                 over: result
             )
@@ -261,6 +299,8 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         _ source: CIImage,
         transform: CGAffineTransform,
         placement: SourcePlacementSnapshot,
+        framing: ScreenFramingSnapshot?,
+        canvasSize: CGSize,
         canvas: CGRect,
         over background: CIImage
     ) -> CIImage {
@@ -269,6 +309,9 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
             translationX: -oriented.extent.minX,
             y: -oriented.extent.minY
         ))
+        if let framing {
+            oriented = crop(oriented, canvasSize: canvasSize, framing: framing)
+        }
         let target = CGRect(
             x: canvas.width * placement.centerX - canvas.width * placement.width / 2,
             y: canvas.height * (1 - placement.centerY) - canvas.height * placement.height / 2,
@@ -314,5 +357,43 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         blend.backgroundImage = background
         blend.maskImage = mask
         return blend.outputImage?.cropped(to: canvas) ?? foreground.composited(over: background)
+    }
+
+    private func crop(
+        _ image: CIImage,
+        canvasSize: CGSize,
+        framing: ScreenFramingSnapshot
+    ) -> CIImage {
+        let extent = image.extent
+        guard extent.width > 0,
+              extent.height > 0,
+              canvasSize.width > 0,
+              canvasSize.height > 0 else { return image }
+        let canvasAspect = canvasSize.width / canvasSize.height
+        let imageAspect = extent.width / extent.height
+        let maximumSize: CGSize
+        if imageAspect >= canvasAspect {
+            maximumSize = CGSize(width: extent.height * canvasAspect, height: extent.height)
+        } else {
+            maximumSize = CGSize(width: extent.width, height: extent.width / canvasAspect)
+        }
+        let cropSize = CGSize(
+            width: maximumSize.width * framing.scale,
+            height: maximumSize.height * framing.scale
+        )
+        let desiredOrigin = CGPoint(
+            x: extent.width * framing.centerX - cropSize.width / 2,
+            y: extent.height * (1 - framing.centerY) - cropSize.height / 2
+        )
+        let cropRect = CGRect(
+            x: min(max(desiredOrigin.x, 0), extent.width - cropSize.width),
+            y: min(max(desiredOrigin.y, 0), extent.height - cropSize.height),
+            width: cropSize.width,
+            height: cropSize.height
+        )
+        return image.cropped(to: cropRect).transformed(by: CGAffineTransform(
+            translationX: -cropRect.minX,
+            y: -cropRect.minY
+        ))
     }
 }

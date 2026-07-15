@@ -47,6 +47,19 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
             && abs(segment.duration - sourceDuration) < 0.001
     }
 
+    func sourceTime(at timelineTime: TimeInterval) -> TimeInterval? {
+        guard timelineTime.isFinite,
+              timelineTime >= 0,
+              timelineTime <= duration,
+              let location = segmentLocation(at: min(timelineTime, max(duration - 0.000_001, 0))) else {
+            return nil
+        }
+        return location.segment.sourceStart + min(
+            max(timelineTime - location.timelineStart, 0),
+            location.segment.duration
+        )
+    }
+
     init(
         trackID: String,
         sourceDuration: TimeInterval,

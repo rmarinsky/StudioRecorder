@@ -337,12 +337,12 @@ struct StudioRecorderRootView: View {
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("Program preview").font(.headline)
+                        Text("Scene preview").font(.headline)
                         Spacer()
                         Text("\(canvasWidth) × \(canvasHeight)  ·  30 fps")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
-                        Text("Preview contract")
+                        Text("Live scene")
                             .font(.caption2.weight(.medium))
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(.quaternary, in: Capsule())
@@ -446,7 +446,14 @@ struct StudioRecorderRootView: View {
     }
 
     private func updateLiveScene(for route: MainRoute) async {
-        guard route == .studio, snapshot.captureState == .ready else {
+        guard route == .studio else {
+            await liveScene.stopScreenPreview()
+            if !LiveScenePolicy.shouldPreserveCameraSession(captureState: snapshot.captureState) {
+                await liveScene.stopCameraPreview()
+            }
+            return
+        }
+        guard LiveScenePolicy.shouldRun(route: route, captureState: snapshot.captureState) else {
             await liveScene.stopCameraPreview()
             await liveScene.stopScreenPreview()
             return
@@ -456,7 +463,9 @@ struct StudioRecorderRootView: View {
             await liveScene.startScreenPreview(for: primarySelectedDisplayID)
         }
 
-        if snapshot.capturesCamera, snapshot.permissionSnapshot.camera.isGranted {
+        if LiveScenePolicy.shouldRunDraftCamera(route: route, captureState: snapshot.captureState),
+           snapshot.capturesCamera,
+           snapshot.permissionSnapshot.camera.isGranted {
             liveScene.selectCamera(snapshot.studioDraft?.cameraDeviceID)
             liveScene.startCameraPreview()
         } else {
@@ -545,8 +554,7 @@ struct StudioRecorderRootView: View {
             return
         }
         Task {
-            await liveScene.stopCameraPreview()
-            await liveScene.stopScreenPreview()
+            model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
             model.send(.toggleRecording)
         }
     }
@@ -626,7 +634,7 @@ private struct StudioInspector: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                inspectorHeader("Canvas & Framing")
+                inspectorHeader("Scene")
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Output", selection: canvasPresetBinding) {
                         ForEach(CaptureCanvasPreset.allCases) { preset in
@@ -661,7 +669,7 @@ private struct StudioInspector: View {
                         labeledSlider("Horizontal", value: framingCenterXBinding, range: 0...1)
                         labeledSlider("Vertical", value: framingCenterYBinding, range: 0...1)
                         if presentation.framing.mode == .followCursor {
-                            Text("Follow Cursor is stored as editable framing intent; raw display pixels stay recoverable until interaction metadata rendering is connected.")
+                            Text("Follow Cursor records scene motion while the full raw display remains recoverable.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

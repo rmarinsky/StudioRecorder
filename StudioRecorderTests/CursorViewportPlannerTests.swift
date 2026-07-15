@@ -3,6 +3,19 @@ import XCTest
 @testable import StudioRecorder
 
 final class CursorViewportPlannerTests: XCTestCase {
+    func testRecordedCursorTimelineReturnsTheScenePositionAtPlaybackTime() throws {
+        let timeline = CursorSceneTimeline(samples: [
+            CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.15, normalizedY: 0.4, isPrimaryButtonDown: false),
+            CursorSceneSample(time: 1, displayID: 7, normalizedX: 0.85, normalizedY: 0.6, isPrimaryButtonDown: true),
+            CursorSceneSample(time: 1.2, displayID: 8, normalizedX: 0.3, normalizedY: 0.2, isPrimaryButtonDown: false),
+        ])
+
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedX, 0.15)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).normalizedX, 0.85)
+        XCTAssertTrue(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).isPrimaryButtonDown)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.3, for: 8)).normalizedY, 0.2)
+    }
+
     func testCrossingDisplaysWaitsForDwellBeforeSwitchingProgramSource() {
         let displays = [
             CapturedDisplay(id: 1, frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)),

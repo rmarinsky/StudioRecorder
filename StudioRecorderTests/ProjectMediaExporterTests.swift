@@ -74,9 +74,16 @@ final class ProjectMediaExporterTests: XCTestCase {
         XCTAssertTrue(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
 
-        XCTAssertTrue(adaptor.append(try pixelBuffer(color: 0xFFFF0000), withPresentationTime: .zero))
-        XCTAssertTrue(adaptor.append(try pixelBuffer(color: 0xFF00FF00), withPresentationTime: CMTime(seconds: 0.5, preferredTimescale: 600)))
-        XCTAssertTrue(adaptor.append(try pixelBuffer(color: 0xFF0000FF), withPresentationTime: CMTime(seconds: 1, preferredTimescale: 600)))
+        for (color, time) in [
+            (UInt32(0xFFFF0000), CMTime.zero),
+            (UInt32(0xFF00FF00), CMTime(seconds: 0.5, preferredTimescale: 600)),
+            (UInt32(0xFF0000FF), CMTime(seconds: 1, preferredTimescale: 600)),
+        ] {
+            while !input.isReadyForMoreMediaData {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertTrue(adaptor.append(try pixelBuffer(color: color), withPresentationTime: time))
+        }
         input.markAsFinished()
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

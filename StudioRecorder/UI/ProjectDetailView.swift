@@ -126,7 +126,7 @@ struct ProjectDetailView: View {
     private var inspector: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("PROGRAM LAYOUT")
+                Text("SCENE")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
@@ -313,8 +313,16 @@ struct ProjectDetailView: View {
         return ProjectProgramSources(
             screenURL: project.rootURL.appending(path: screen.relativePath),
             cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
-            audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) }
+            audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) },
+            screenDisplayID: screen.displayID,
+            cursorTimeline: cursorTimeline
         )
+    }
+
+    private var cursorTimeline: CursorSceneTimeline? {
+        let url = project.rootURL.appending(path: "scene/cursor.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(CursorSceneTimeline.self, from: data)
     }
 
     private func exportScreenshot() {
