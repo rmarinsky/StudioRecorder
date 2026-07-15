@@ -108,6 +108,65 @@ struct ScreenFramingSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+enum ManualZoomPlanner {
+    static func targetPoint(
+        currentPointer: CGPoint,
+        isOverStudio: Bool,
+        lastExternalPointer: CGPoint?,
+        displayFrame: CGRect
+    ) -> CGPoint {
+        if !isOverStudio, displayFrame.contains(currentPointer) {
+            return currentPointer
+        }
+        if let lastExternalPointer, displayFrame.contains(lastExternalPointer) {
+            return lastExternalPointer
+        }
+        return CGPoint(x: displayFrame.midX, y: displayFrame.midY)
+    }
+
+    static func zoomedFraming(
+        cursor: CGPoint,
+        displayFrame: CGRect,
+        scale: CGFloat = 0.5
+    ) -> ScreenFramingSnapshot {
+        guard displayFrame.width > 0, displayFrame.height > 0 else {
+            return ScreenFramingSnapshot(mode: .fixedRegion, scale: scale).validated()
+        }
+        return ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: (cursor.x - displayFrame.minX) / displayFrame.width,
+            centerY: 1 - (cursor.y - displayFrame.minY) / displayFrame.height,
+            scale: scale
+        ).validated()
+    }
+
+    static func resetFraming(from framing: ScreenFramingSnapshot) -> ScreenFramingSnapshot {
+        ScreenFramingSnapshot(
+            mode: .fullDisplay,
+            centerX: framing.centerX,
+            centerY: framing.centerY,
+            scale: 1
+        ).validated()
+    }
+}
+
+final class ManualZoomPointerTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pointsByDisplayID: [UInt32: CGPoint] = [:]
+
+    func update(_ point: CGPoint, for displayID: UInt32) {
+        lock.lock()
+        pointsByDisplayID[displayID] = point
+        lock.unlock()
+    }
+
+    func point(for displayID: UInt32) -> CGPoint? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pointsByDisplayID[displayID]
+    }
+}
+
 enum SourceShape: String, Codable, CaseIterable, Identifiable, Sendable {
     case rectangle
     case roundedRectangle

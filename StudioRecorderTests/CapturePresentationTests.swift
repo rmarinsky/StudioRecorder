@@ -151,6 +151,53 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(region.minY, 0, accuracy: 0.001)
     }
 
+    func testManualZoomTargetsTheCursorInsideTheSelectedDisplay() {
+        let framing = ManualZoomPlanner.zoomedFraming(
+            cursor: CGPoint(x: 750, y: 500),
+            displayFrame: CGRect(x: 500, y: 100, width: 1_000, height: 800),
+            scale: 0.5
+        )
+
+        XCTAssertEqual(framing.mode, .fixedRegion)
+        XCTAssertEqual(framing.centerX, 0.25, accuracy: 0.001)
+        XCTAssertEqual(framing.centerY, 0.5, accuracy: 0.001)
+        XCTAssertEqual(framing.scale, 0.5, accuracy: 0.001)
+    }
+
+    func testManualZoomUsesTheLastExternalPointerWhenTriggeredFromStudio() {
+        let target = ManualZoomPlanner.targetPoint(
+            currentPointer: CGPoint(x: 1_400, y: 700),
+            isOverStudio: true,
+            lastExternalPointer: CGPoint(x: 720, y: 440),
+            displayFrame: CGRect(x: 500, y: 100, width: 1_000, height: 800)
+        )
+
+        XCTAssertEqual(target, CGPoint(x: 720, y: 440))
+    }
+
+    func testManualZoomFallsBackToTheSelectedDisplayCenter() {
+        let target = ManualZoomPlanner.targetPoint(
+            currentPointer: CGPoint(x: 1_400, y: 700),
+            isOverStudio: true,
+            lastExternalPointer: CGPoint(x: 200, y: 200),
+            displayFrame: CGRect(x: 500, y: 100, width: 1_000, height: 800)
+        )
+
+        XCTAssertEqual(target, CGPoint(x: 1_000, y: 500))
+    }
+
+    func testManualZoomResetReturnsToTheFullDisplay() {
+        let reset = ManualZoomPlanner.resetFraming(from: ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: 0.2,
+            centerY: 0.8,
+            scale: 0.4
+        ))
+
+        XCTAssertEqual(reset.mode, .fullDisplay)
+        XCTAssertEqual(reset.scale, 1)
+    }
+
     func testSourcePlacementClampsScaleAndPositionInsideTheCanvas() {
         let placement = SourcePlacementSnapshot(
             centerX: 1.4,

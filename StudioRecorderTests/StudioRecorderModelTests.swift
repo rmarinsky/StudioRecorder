@@ -61,6 +61,23 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot.route, .settings)
     }
 
+    func testPresentationCleanupCanRestoreAnIdleDraftAfterLeavingStudio() throws {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .settings
+        snapshot.captureState = .ready
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(
+            displays: [],
+            microphones: [],
+            cameras: []
+        )
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+        var presentation = try XCTUnwrap(snapshot.studioDraft?.presentation)
+        presentation.framing = ScreenFramingSnapshot(mode: .fullDisplay)
+
+        XCTAssertEqual(model.send(.setDraftPresentation(presentation)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.presentation.framing.mode, .fullDisplay)
+    }
+
     func testPermissionRepairPresentationCoversEveryRenderedStateAndAction() throws {
         var snapshot = StudioRecorderSnapshot()
         snapshot.route = .studio

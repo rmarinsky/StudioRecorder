@@ -44,6 +44,10 @@ struct StudioRecorderRootView: View {
     @State private var isRenamingScene = false
     @State private var streamingSceneContract: StudioSceneLiveContract?
     @State private var selectedCanvasSource: StudioCanvasSource?
+    @State private var isManualZoomActive = false
+    @State private var manualZoomRestoreFraming: ScreenFramingSnapshot?
+    @State private var manualZoomPointerTracker = ManualZoomPointerTracker()
+    @State private var externalPointerMonitor: Any?
 
     private let streamPreflightRunner = StreamPreflightRunner()
 
@@ -158,14 +162,28 @@ struct StudioRecorderRootView: View {
             await model.launch()
             await updateLiveScene(for: snapshot.route)
         }
+        .onDisappear { removeExternalPointerMonitor() }
         .onChange(of: snapshot.route) { _, route in
-            if route != .studio, streaming.state.isActive {
-                streaming.stop()
-                Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+            if route != .studio {
+                resetManualZoomIfNeeded()
+                if streaming.state.isActive {
+                    streaming.stop()
+                    Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+                }
             }
+            updateExternalPointerMonitor()
             Task { await updateLiveScene(for: route) }
         }
-        .onChange(of: snapshot.captureState) { _, _ in
+        .onChange(of: snapshot.captureState) { _, state in
+            if !isDeliveryActive {
+                switch state {
+                case .ready, .failed:
+                    resetManualZoomIfNeeded()
+                case .preparing, .recording, .paused, .stopping:
+                    break
+                }
+            }
+            updateExternalPointerMonitor()
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, _ in
@@ -189,7 +207,9 @@ struct StudioRecorderRootView: View {
         .onChange(of: streamingSettings.streamKey) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.videoBitRate) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streaming.state) { _, state in
+            updateExternalPointerMonitor()
             guard !state.isActive else { return }
+            if !isLocalRecordingActive { resetManualZoomIfNeeded() }
             streamingSceneContract = nil
             Task { await liveScene.setStreamPipeline(nil, audio: nil) }
         }
@@ -234,6 +254,7 @@ struct StudioRecorderRootView: View {
             get: { snapshot.route },
             set: { route in
                 if let route {
+                    if route != .studio { resetManualZoomIfNeeded() }
                     model.send(.selectRoute(route))
                 }
             }
@@ -733,6 +754,18 @@ struct StudioRecorderRootView: View {
                         || liveScene.screenImage == nil
                         || snapshotNeedsCameraFrame
                 )
+                if isDeliveryActive, canUseManualZoom {
+                    Button(action: toggleManualZoom) {
+                        Label(
+                            isManualZoomActive ? "Reset Zoom" : "Zoom Here",
+                            systemImage: isManualZoomActive ? "arrow.up.left.and.arrow.down.right" : "scope"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .keyboardShortcut("z", modifiers: [.command, .option])
+                    .help("Toggle a 2× zoom centered on the pointer (⌥⌘Z)")
+                }
                 if isLocalRecordingActive {
                     Button {
                         model.send(.toggleRecordingPause)
@@ -1076,6 +1109,85 @@ struct StudioRecorderRootView: View {
         )
     }
 
+    private var manualZoomBaseFraming: ScreenFramingSnapshot? {
+        liveSceneContract?.initialPresentation.framing
+    }
+
+    private var canUseManualZoom: Bool {
+        manualZoomBaseFraming?.mode != .fixedRegion && primarySelectedDisplayID != nil
+    }
+
+    private func toggleManualZoom() {
+        guard var presentation = snapshot.studioDraft?.presentation,
+              let base = manualZoomBaseFraming else { return }
+        if isManualZoomActive {
+            presentation.framing = manualZoomRestoreFraming ?? base
+        } else {
+            guard let displayID = primarySelectedDisplayID,
+                  let screen = NSScreen.screens.first(where: {
+                      ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+                          == displayID
+                  }) else { return }
+            let currentPointer = NSEvent.mouseLocation
+            let currentPointerIsOverStudio = NSApp.windows.contains {
+                $0.isVisible && $0.frame.contains(currentPointer)
+            }
+            let target = ManualZoomPlanner.targetPoint(
+                currentPointer: currentPointer,
+                isOverStudio: currentPointerIsOverStudio,
+                lastExternalPointer: manualZoomPointerTracker.point(for: displayID),
+                displayFrame: screen.frame
+            )
+            manualZoomRestoreFraming = presentation.framing
+            presentation.framing = ManualZoomPlanner.zoomedFraming(
+                cursor: target,
+                displayFrame: screen.frame,
+                scale: 0.5
+            )
+        }
+        guard model.send(.setDraftPresentation(presentation)) != .ignored else {
+            sceneSwitchError = "This session cannot change its capture region while live."
+            return
+        }
+        isManualZoomActive.toggle()
+        if !isManualZoomActive { manualZoomRestoreFraming = nil }
+    }
+
+    private func resetManualZoomIfNeeded() {
+        guard isManualZoomActive,
+              var presentation = snapshot.studioDraft?.presentation else { return }
+        presentation.framing = manualZoomRestoreFraming ?? manualZoomBaseFraming ?? presentation.framing
+        if model.send(.setDraftPresentation(presentation)) != .ignored {
+            isManualZoomActive = false
+            manualZoomRestoreFraming = nil
+        }
+    }
+
+    private func updateExternalPointerMonitor() {
+        guard snapshot.route == .studio, isDeliveryActive, canUseManualZoom else {
+            removeExternalPointerMonitor()
+            return
+        }
+        guard externalPointerMonitor == nil else { return }
+        let pointerTracker = manualZoomPointerTracker
+        externalPointerMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged]
+        ) { _ in
+            let point = NSEvent.mouseLocation
+            guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+                  let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else {
+                return
+            }
+            pointerTracker.update(point, for: displayID)
+        }
+    }
+
+    private func removeExternalPointerMonitor() {
+        guard let externalPointerMonitor else { return }
+        NSEvent.removeMonitor(externalPointerMonitor)
+        self.externalPointerMonitor = nil
+    }
+
     private var studioDestinationPath: String {
         snapshot.studioDraft?.destination.url.path(percentEncoded: false) ?? "Movies/Studio Recorder"
     }
@@ -1143,6 +1255,7 @@ struct StudioRecorderRootView: View {
 
     private func toggleDelivery() {
         if isDeliveryActive {
+            resetManualZoomIfNeeded()
             if isLocalRecordingActive {
                 model.send(.toggleRecording)
             }
@@ -1245,6 +1358,8 @@ struct StudioRecorderRootView: View {
             sceneSwitchError = "Studio Recorder could not apply this scene to the current session."
             return
         }
+        isManualZoomActive = false
+        manualZoomRestoreFraming = nil
         selectedSceneID = scene.id
     }
 

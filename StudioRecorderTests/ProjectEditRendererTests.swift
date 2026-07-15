@@ -209,6 +209,46 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertLessThan(right.red, 80)
     }
 
+    func testProgramRendererReplaysManualZoomMarkersFromTheSceneTimeline() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "split-screen.mov")
+        let outputURL = directory.appending(path: "manual-zoom.mov")
+        let leftFrameURL = directory.appending(path: "left-zoom.png")
+        let rightFrameURL = directory.appending(path: "right-zoom.png")
+        try await writeSplitMovie(to: screenURL)
+
+        var leftZoom = CapturePresentationSnapshot.default
+        leftZoom.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        leftZoom.camera.isVisible = false
+        leftZoom.framing = ScreenFramingSnapshot(mode: .fixedRegion, centerX: 0.1, centerY: 0.5, scale: 0.5)
+        var rightZoom = leftZoom
+        rightZoom.framing.centerX = 0.9
+        var sceneTimeline = StudioSceneTimeline(initialPresentation: leftZoom)
+        sceneTimeline.append(rightZoom, at: 1)
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                sceneTimeline: sceneTimeline
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-zoom", sourceDuration: 2),
+            presentation: leftZoom,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.25, to: leftFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: rightFrameURL)
+
+        let left = try color(in: leftFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let right = try color(in: rightFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(left.red, 180)
+        XCTAssertLessThan(left.blue, 80)
+        XCTAssertGreaterThan(right.blue, 180)
+        XCTAssertLessThan(right.red, 80)
+    }
+
     func testProgramRendererComposesIndependentlyPlacedScreenAndCameraSources() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

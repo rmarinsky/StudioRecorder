@@ -623,11 +623,13 @@ final class StudioRecorderModel: ObservableObject {
 
         case .setDraftPresentation(let presentation):
             let validated = presentation.validated()
-            if canEditDraft {
+            let canRestoreIdlePresentation = snapshot.captureState == .ready &&
+                !snapshot.isCaptureCommandInFlight &&
+                snapshot.studioDraft != nil
+            if canEditDraft || canRestoreIdlePresentation {
                 snapshot.studioDraft?.presentation = validated
             } else {
-                guard snapshot.route == .studio,
-                      (snapshot.captureState == .recording || snapshot.captureState == .paused),
+                guard (snapshot.captureState == .recording || snapshot.captureState == .paused),
                       !snapshot.isCaptureCommandInFlight,
                       coordinator?.updateLivePresentation(validated) == true else {
                     return .ignored
