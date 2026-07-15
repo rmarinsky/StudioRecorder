@@ -4,6 +4,74 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testProgramRendererComposesIndependentlyPlacedScreenAndCameraSources() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let cameraURL = directory.appending(path: "camera.mov")
+        let outputURL = directory.appending(path: "program.mov")
+        let frameURL = directory.appending(path: "program.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        try await writeReadableMovie(to: cameraURL, colors: Array(repeating: 0xFF00FF00, count: 5))
+
+        let timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.5,
+            height: 0.5,
+            shape: .circle
+        )
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(screenURL: screenURL, cameraURL: cameraURL),
+            timeline: timeline,
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: frameURL)
+
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(frameURL as CFURL, nil))
+        let renderedFrame = try XCTUnwrap(CGImageSourceCreateImageAtIndex(imageSource, 0, nil))
+        XCTAssertEqual(renderedFrame.width, 640)
+        XCTAssertEqual(renderedFrame.height, 360)
+        let center = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let corner = try color(in: frameURL, normalizedX: 0.05, normalizedY: 0.05)
+        XCTAssertGreaterThan(center.green, 180)
+        XCTAssertLessThan(center.red, 80)
+        XCTAssertGreaterThan(corner.red, 180)
+        XCTAssertLessThan(corner.green, 80)
+    }
+
+    func testProgramRendererFallsBackToScreenWhenOptionalCameraIsUnreadable() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let outputURL = directory.appending(path: "program.mov")
+        let frameURL = directory.appending(path: "program.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: directory.appending(path: "missing-camera.mov")
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: .default,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: frameURL)
+
+        let center = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(center.red, 180)
+        XCTAssertLessThan(center.green, 80)
+        XCTAssertLessThan(center.blue, 80)
+    }
+
     func testRendererRejectsTheRawSourceAsAnExportDestinationWithoutDeletingIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -61,7 +129,10 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertGreaterThan(secondColor.blue, 180)
     }
 
-    private func writeReadableMovie(to url: URL) async throws {
+    private func writeReadableMovie(
+        to url: URL,
+        colors: [UInt32] = [0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFFFF, 0xFF000000]
+    ) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(
             mediaType: .video,
@@ -77,7 +148,7 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertTrue(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
 
-        for (index, color) in [UInt32(0xFFFF0000), 0xFF00FF00, 0xFF0000FF, 0xFFFFFFFF, 0xFF000000].enumerated() {
+        for (index, color) in colors.enumerated() {
             while !input.isReadyForMoreMediaData {
                 try await Task.sleep(for: .milliseconds(5))
             }
@@ -112,6 +183,32 @@ final class ProjectEditRendererTests: XCTestCase {
             )
         )
         context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return (pixel[0], pixel[1], pixel[2])
+    }
+
+    private func color(
+        in url: URL,
+        normalizedX: CGFloat,
+        normalizedY: CGFloat
+    ) throws -> (red: UInt8, green: UInt8, blue: UInt8) {
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = try XCTUnwrap(
+            CGContext(
+                data: &pixel,
+                width: 1,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        let sampleX = CGFloat(image.width) * min(max(normalizedX, 0), 1)
+        let sampleY = CGFloat(image.height) * min(max(normalizedY, 0), 1)
+        context.translateBy(x: -sampleX, y: -sampleY)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         return (pixel[0], pixel[1], pixel[2])
     }
 

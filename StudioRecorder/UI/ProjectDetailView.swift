@@ -9,6 +9,7 @@ struct ProjectDetailView: View {
     let onClose: () -> Void
 
     @State private var selectedTrackID: String?
+    @State private var programScreenTrackID: String?
     @StateObject private var editSession: ProjectEditSession
     @State private var isExporting = false
     @State private var exportMessage: String?
@@ -20,7 +21,9 @@ struct ProjectDetailView: View {
         self.project = project
         self.onClose = onClose
         let firstTrack = project.tracks.first
+        let firstScreenTrack = project.tracks.first(where: { $0.kind == .screen })
         _selectedTrackID = State(initialValue: firstTrack?.id)
+        _programScreenTrackID = State(initialValue: firstScreenTrack?.id)
         _editSession = StateObject(wrappedValue: ProjectEditSession())
     }
 
@@ -29,23 +32,25 @@ struct ProjectDetailView: View {
             header
             Divider()
 
-            if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+            if let programScreenTrackURL, FileManager.default.fileExists(atPath: programScreenTrackURL.path) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(spacing: 14) {
                         NativeVideoPlayer(player: editSession.player)
                             .background(Color.black)
-                            .aspectRatio(16 / 9, contentMode: .fit)
+                            .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
                             .frame(maxHeight: 420)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 12)
                                     .stroke(.primary.opacity(0.10), lineWidth: 0.5)
                             }
-                            .accessibilityLabel(selectedTrack?.kind == .camera ? "Recorded camera track preview" : "Recorded screen track preview")
+                            .accessibilityLabel("Composed program preview")
 
                         ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
 
-                        shareActions(for: selectedTrackURL)
+                        if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                            shareActions(for: selectedTrackURL)
+                        }
                     }
                     .padding(22)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -66,7 +71,7 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
-        .task(id: selectedTrackID) { await loadSelectedTrack() }
+        .task(id: programScreenTrackID) { await loadProgram() }
         .onDisappear { editSession.stop() }
         .overlay(alignment: .bottom) {
             if let exportMessage {
@@ -121,7 +126,33 @@ struct ProjectDetailView: View {
     private var inspector: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("RAW TRACKS")
+                Text("PROGRAM LAYOUT")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 16)
+                    .padding(.bottom, 8)
+
+                ProjectPresentationEditorView(
+                    project: project,
+                    screenTrack: programScreenTrack,
+                    presentation: presentationBinding
+                )
+                .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
+
+                if !editSession.isLoading, !editSession.canPersistEdits {
+                    Text("Program layout is read-only because this project cannot persist versioned edits.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 12)
+                }
+
+                Divider()
+
+                Text("RAW TRACKS · SHARING")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
@@ -131,13 +162,22 @@ struct ProjectDetailView: View {
                 ForEach(project.tracks) { track in
                     Button {
                         selectedTrackID = track.id
+                        if track.kind == .screen {
+                            programScreenTrackID = track.id
+                        }
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: selectedTrackID == track.id ? "play.rectangle.fill" : "play.rectangle")
+                            Image(systemName: selectedTrackID == track.id ? "square.and.arrow.up.fill" : "square.and.arrow.up")
                                 .foregroundStyle(selectedTrackID == track.id ? Color.accentColor : .secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(trackTitle(track)).font(.subheadline.weight(.medium))
                                 Text(trackDetail(track)).font(.caption2).foregroundStyle(.secondary)
+                                if track.id == programScreenTrackID {
+                                    Text("Program screen source").font(.caption2).foregroundStyle(Color.accentColor)
+                                }
+                                if track.id == selectedTrackID {
+                                    Text("Selected for raw sharing").font(.caption2).foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
                             if selectedTrackID == track.id {
@@ -165,7 +205,7 @@ struct ProjectDetailView: View {
                 metadataRow("Status", value: lifecycleLabel)
                 metadataRow("Format", value: "Recoverable package")
 
-                Text("Raw tracks stay unchanged. edit.json stores cuts; screenshots, GIFs, and edited movies are derived files.")
+                Text("Raw tracks stay unchanged. edit.json stores cuts and program layout; screenshots, GIFs, and edited movies are derived files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(14)
@@ -220,16 +260,60 @@ struct ProjectDetailView: View {
         )
     }
 
-    private func loadSelectedTrack() async {
-        guard let selectedTrack, let selectedTrackURL else {
+    private var presentationBinding: Binding<CapturePresentationSnapshot> {
+        Binding(
+            get: { editSession.presentation },
+            set: { editSession.updatePresentation($0) }
+        )
+    }
+
+    private func loadProgram() async {
+        guard let programScreenTrack,
+              let programScreenURL = programScreenTrackURL else {
             editSession.stop()
             return
         }
         await editSession.load(
             projectID: project.identity.manifestID,
             projectRootURL: project.rootURL,
-            track: selectedTrack,
-            sourceURL: selectedTrackURL
+            track: programScreenTrack,
+            sourceURL: programScreenURL,
+            programSources: programSources,
+            initialPresentation: project.presentation ?? .default
+        )
+    }
+
+    private var programScreenTrack: RecordingTrackDescriptor? {
+        project.tracks.first { $0.id == programScreenTrackID && $0.kind == .screen }
+            ?? project.tracks.first { $0.kind == .screen }
+    }
+
+    private var programScreenTrackURL: URL? {
+        programScreenTrack.map { project.rootURL.appending(path: $0.relativePath) }
+    }
+
+    private var programSources: ProjectProgramSources? {
+        guard let screen = programScreenTrack else { return nil }
+        let camera = project.tracks.first(where: { track in
+            guard track.kind == .camera else { return false }
+            let url = project.rootURL.appending(path: track.relativePath)
+            let recoveryState = project.recoveryReport.tracks.first(where: { $0.id == track.id })?.state
+            return FileManager.default.fileExists(atPath: url.path)
+                && (recoveryState == .finalized || recoveryState == .partialReadable)
+        })
+        let audioTrack = project.primaryAudioDisplayID.flatMap { displayID in
+            project.tracks.first { track in
+                guard track.kind == .screen, track.displayID == displayID else { return false }
+                let url = project.rootURL.appending(path: track.relativePath)
+                let recoveryState = project.recoveryReport.tracks.first(where: { $0.id == track.id })?.state
+                return FileManager.default.fileExists(atPath: url.path)
+                    && (recoveryState == .finalized || recoveryState == .partialReadable)
+            }
+        }
+        return ProjectProgramSources(
+            screenURL: project.rootURL.appending(path: screen.relativePath),
+            cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
+            audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) }
         )
     }
 

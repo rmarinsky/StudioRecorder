@@ -351,6 +351,7 @@ struct StudioRecorderRootView: View {
                         screenImage: liveScene.screenImage,
                         cameraSession: liveScene.cameraSession,
                         selectedDisplayName: selectedDisplayName,
+                        selectedDisplayID: primarySelectedDisplayID,
                         screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording,
                         presentation: presentationBinding,
@@ -771,7 +772,7 @@ private struct StudioInspector: View {
                             valueText: String(format: "%.1f×", presentation.cursor.scale)
                         )
                         Toggle("Highlight clicks", isOn: cursorClickBinding)
-                        Text("Click rings are recorded now. Cursor scaling stays editable presentation metadata for the program renderer.")
+                        Text("The system cursor is recorded now. Custom cursor size and click rings stay editable intent until interaction rendering is connected.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -831,6 +832,13 @@ private struct StudioInspector: View {
         includesMirror: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 9) {
+            if includesMirror {
+                Picker("Camera frame", selection: cameraAspectPresetBinding) {
+                    ForEach(SourceAspectPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+            }
             Picker("Shape", selection: placement.shape) {
                 ForEach(SourceShape.allCases) { shape in
                     Text(shape.label).tag(shape)
@@ -919,6 +927,13 @@ private struct StudioInspector: View {
         Binding(get: { presentation.camera }, set: { presentation.camera = $0 })
     }
 
+    private var cameraAspectPresetBinding: Binding<SourceAspectPreset> {
+        Binding(
+            get: { presentation.camera.matchingAspectPreset(on: presentation.canvas) },
+            set: { presentation.camera = presentation.camera.applying(aspectPreset: $0, on: presentation.canvas) }
+        )
+    }
+
     private var cursorScaleBinding: Binding<CGFloat> {
         Binding(get: { presentation.cursor.scale }, set: { presentation.cursor.scale = $0 })
     }
@@ -969,6 +984,7 @@ private struct LiveProgramPreview: View {
     let screenImage: NSImage?
     let cameraSession: AVCaptureSession?
     let selectedDisplayName: String
+    let selectedDisplayID: UInt32?
     let screenPreviewError: String?
     let isRecording: Bool
     @Binding var presentation: CapturePresentationSnapshot
@@ -982,11 +998,7 @@ private struct LiveProgramPreview: View {
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.78))
                 if let screenImage {
-                    CroppedScreenPreview(
-                        image: screenImage,
-                        canvas: presentation.canvas,
-                        framing: presentation.framing
-                    )
+                    trackedScreenPreview(image: screenImage)
                         .frame(
                             width: proxy.size.width * presentation.screen.width,
                             height: proxy.size.height * presentation.screen.height
@@ -1072,6 +1084,45 @@ private struct LiveProgramPreview: View {
         .accessibilityLabel("Live selected screen and camera preview")
     }
 
+    @ViewBuilder
+    private func trackedScreenPreview(image: NSImage) -> some View {
+        if presentation.framing.mode == .followCursor {
+            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+                CroppedScreenPreview(
+                    image: image,
+                    canvas: presentation.canvas,
+                    framing: followCursorFraming()
+                )
+            }
+        } else {
+            CroppedScreenPreview(
+                image: image,
+                canvas: presentation.canvas,
+                framing: presentation.framing
+            )
+        }
+    }
+
+    private func followCursorFraming() -> ScreenFramingSnapshot {
+        guard let selectedDisplayID,
+              let screen = NSScreen.screens.first(where: {
+                  ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+                      == selectedDisplayID
+              }) else {
+            var fallback = presentation.framing
+            fallback.mode = .fixedRegion
+            return fallback
+        }
+        let cursor = NSEvent.mouseLocation
+        let frame = screen.frame
+        return ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: (cursor.x - frame.minX) / frame.width,
+            centerY: 1 - (cursor.y - frame.minY) / frame.height,
+            scale: presentation.framing.scale
+        ).validated()
+    }
+
     private func sourceShape(for placement: SourcePlacementSnapshot) -> AnyShape {
         switch placement.shape {
         case .rectangle:
@@ -1079,7 +1130,7 @@ private struct LiveProgramPreview: View {
         case .roundedRectangle:
             AnyShape(RoundedRectangle(cornerRadius: max(6, placement.cornerRadius * 100)))
         case .circle:
-            AnyShape(Circle())
+            AnyShape(Ellipse())
         }
     }
 

@@ -64,6 +64,29 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(placement.height, 1)
     }
 
+    func testCameraAspectPresetsUsePixelAspectInsideHorizontalAndVerticalCanvases() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 0.8,
+            centerY: 0.7,
+            width: 0.25,
+            shape: .roundedRectangle
+        )
+
+        let portrait = placement.applying(
+            aspectPreset: .portrait9x16,
+            on: CaptureCanvasSnapshot(preset: .fullHD)
+        )
+        let landscape = placement.applying(
+            aspectPreset: .landscape16x9,
+            on: CaptureCanvasSnapshot(preset: .verticalHD)
+        )
+
+        XCTAssertEqual(portrait.width * (16.0 / 9.0) / portrait.height, 9.0 / 16.0, accuracy: 0.001)
+        XCTAssertEqual(landscape.width * (9.0 / 16.0) / landscape.height, 16.0 / 9.0, accuracy: 0.001)
+        XCTAssertEqual(portrait.matchingAspectPreset(on: CaptureCanvasSnapshot(preset: .fullHD)), .portrait9x16)
+        XCTAssertEqual(landscape.matchingAspectPreset(on: CaptureCanvasSnapshot(preset: .verticalHD)), .landscape16x9)
+    }
+
     func testFixedRegionStreamUsesTheCanvasOutputWhileFullDisplayPreservesNativePixels() {
         var presentation = CapturePresentationSnapshot.default
         presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)

@@ -47,6 +47,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureRequest?.sources.single?.metadataState, .known)
         XCTAssertEqual(snapshots.single?.lifecycle, .finalized)
         XCTAssertEqual(snapshots.single?.recoveryReport.tracks.single?.state, .finalized)
+        XCTAssertEqual(snapshots.single?.presentation, manifest.captureRequest?.presentation)
     }
 
     func testLegacyV2CaptureRequestDecodesWithExplicitUnknownNewFieldsWithoutRewrite() async throws {
@@ -68,6 +69,7 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(snapshots.single?.captureProfile, "legacy-1080p-30fps")
         XCTAssertEqual(snapshots.single?.sources.single?.name, "Legacy Display")
+        XCTAssertEqual(snapshots.single?.presentation, .default)
         XCTAssertNil(manifest.captureRequest?.storage.destinationURL)
         XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "unknown")
         XCTAssertEqual(manifest.captureRequest?.profile.programResolutionTarget, "unknown")

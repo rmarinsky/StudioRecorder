@@ -89,6 +89,8 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let sources: [RecordingSourceSnapshot]
     let tracks: [RecordingTrackDescriptor]
     let recoveryReport: RecordingProjectRecoveryReport
+    let presentation: CapturePresentationSnapshot?
+    let primaryAudioDisplayID: UInt32?
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -538,7 +540,10 @@ final class RecordingProjectStore {
                 captureProfile: manifest.captureRequest?.captureProfile ?? manifest.captureProfile,
                 sources: sources,
                 tracks: tracks,
-                recoveryReport: report
+                recoveryReport: report,
+                presentation: manifest.captureRequest?.presentation,
+                primaryAudioDisplayID: manifest.captureRequest?.audio.primaryAudioDisplayID
+                    ?? manifest.primaryAudioDisplayID
             )
         }
     }
@@ -628,7 +633,9 @@ final class RecordingProjectStore {
             captureProfile: "Unknown",
             sources: [],
             tracks: [],
-            recoveryReport: .init(tracks: [], diagnostics: [diagnostic])
+            recoveryReport: .init(tracks: [], diagnostics: [diagnostic]),
+            presentation: nil,
+            primaryAudioDisplayID: nil
         )
     }
 

@@ -454,7 +454,9 @@ final class StudioRecorderModelTests: XCTestCase {
             captureProfile: "1080p-adaptive-30fps",
             sources: [],
             tracks: [],
-            recoveryReport: RecordingProjectRecoveryReport(tracks: [], diagnostics: ["Interrupted"])
+            recoveryReport: RecordingProjectRecoveryReport(tracks: [], diagnostics: ["Interrupted"]),
+            presentation: nil,
+            primaryAudioDisplayID: nil
         )
     }
 

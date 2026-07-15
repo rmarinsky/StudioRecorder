@@ -94,12 +94,12 @@ Purpose: acknowledge that media files need to close cleanly.
 - Disable closing only when absolutely necessary; explain why.
 - On timeout or failure, route to Recovery with project context preserved.
 
-### 6. Project Editor — foundation implemented, composition target state
+### 6. Project Editor — composition foundation implemented
 
 Purpose: compose and trim without modifying raw files.
 
 - Preview above, timeline below, inspector right.
-- Current foundation: per-track ordered source ranges, trim-before/after, split/delete, undo/redo/reset, persisted `edit.json`, edited playback, and compatible MOV export.
+- Current foundation: one program timeline, trim-before/after, split/delete, undo/redo/reset, persisted `edit.json`, moving screen/camera composition, and MOV/PNG/GIF export.
 - Layout and camera keyframes change the program output only.
 - Transcript sentences map to token timestamps; cuts become non-destructive timeline ranges.
 - Export is explicit. Streaming remains a later output target, not part of the capture MVP.
@@ -125,10 +125,10 @@ Purpose: show exactly what survived.
 | Interrupted-project discovery | Implemented | Contextual Recovery flow |
 | Camera isolation | Implemented | Selected device freezes into the Capture Request and writes `raw-tracks/camera.mov` |
 | Canvas + fixed capture region | Implemented foundation | Horizontal/vertical/16:10/square/custom canvas; fixed region maps to ScreenCaptureKit `sourceRect` and selected output size |
-| Source presentation intent | Implemented foundation | Live screen/camera shape, scale, and placement freeze into the Capture Request; post-capture renderer remains next |
+| Source presentation intent | Implemented | Live screen/camera shape, scale, and placement freeze into the Capture Request, remain editable in Project layout, and render through the program compositor |
 | Cursor treatment | Partial | Native cursor/click rings record now; cursor scale/follow mode are frozen non-destructive intent awaiting telemetry rendering |
 | Quick edit foundation | Implemented | Versioned `edit.json`; raw tracks stay unchanged while playback/export render ordered source ranges |
-| Program compositor | Not implemented | Target-state preview/editor only |
+| Program compositor | Implemented on playback/export | Core Image compositor renders canvas, screen, camera shape/placement/mirroring, cuts, PNG, GIF, and MOV while raw tracks stay independent |
 | Transcript editing | Not implemented | Target-state Editor only |
 | RTMPS streaming | Not implemented | Excluded from capture MVP navigation |
 
@@ -138,5 +138,5 @@ Purpose: show exactly what survived.
 2. Rebuild Studio as stage + inspector + control deck while keeping the existing `RecordingCoordinator` contract.
 3. Add finalizing progress and clear failure-to-Recovery routing.
 4. Add a minimal Projects view backed by `.recordingproject` package discovery.
-5. Seed Project layout state from the frozen Canvas & Framing contract and make it editable without changing raw tracks.
-6. Implement camera/program composition and cursor telemetry rendering, then transcript editing and richer exports.
+5. ~~Seed Project layout state from the frozen Canvas & Framing contract and make it editable without changing raw tracks.~~ Implemented in versioned `edit.json`.
+6. Add cursor telemetry/follow-mode rendering, then transcript editing and richer exports.

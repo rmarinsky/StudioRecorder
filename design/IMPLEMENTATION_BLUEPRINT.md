@@ -14,7 +14,7 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 6. The Capture Request is written into the project manifest before any stream starts.
 7. Recording exposes health and Stop, not configuration.
 8. Raw tracks are never modified by layout, transcript, or export operations.
-9. The first shippable UI ends in **Project Summary**. Its Quick Edit foundation is now real; synchronized multi-track composition remains a later vertical slice and must not be faked.
+9. The first shippable UI ends in **Project Summary**. Quick Edit and synchronized screen/camera program composition are implemented; waveform editing remains a later slice.
 10. Current capture remains 30 fps by default. A 60 fps option stays unavailable until runtime capability tests and sustained multi-display tests exist.
 
 ## 2. Scope truth
@@ -30,8 +30,8 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Project package + journal | implemented, schema v1 | schema v2 snapshot, typed events, v1 reader | edit/export metadata |
 | Interrupted-project detection | implemented from `stoppedAt == nil` | per-track recovery report | segment repair tooling |
 | Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
-| Program compositor | not implemented | no working control shown | 1080p program output |
-| Camera isolation | implemented | optional permission-aware camera source | fragmented raw camera track; live layout intent freezes into request; post-capture composition remains next |
+| Program compositor | implemented on playback/export | one Core Image render path for screen/camera layout and Quick Edit | capture-time pre-rendered program file only if evidence requires it |
+| Camera isolation | implemented | optional permission-aware camera source, independent raw camera, and editable composed layout | program-only retention policy after durable program finalization |
 | Canvas and screen region | foundation implemented | horizontal/vertical/16:10/square/custom canvas plus full/fixed/follow modes | fixed region affects ScreenCaptureKit raw capture; follow mode stays non-destructive until telemetry renderer |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
@@ -256,7 +256,7 @@ Use UserDefaults for scalar preferences. Persist a selected destination as a boo
 
 ### Editing seams
 
-`ProjectEditTimeline`, `ProjectEditStore`, and `ProjectEditRenderer` form the bounded Quick Edit seam. They persist ordered source ranges in `edit.json`, render edited playback, and export a compatible MOV without mutating raw tracks. `TranscriptionClient`, synchronized multi-track composition, and a general export engine remain later seams.
+`ProjectEditTimeline`, `ProjectEditStore`, `ProjectEditRenderer`, and `ProjectProgramRenderer` form the bounded edit seam. They persist one program timeline plus layout in `edit.json`, render moving screen/camera playback, and export MOV/PNG/GIF derivatives without mutating raw tracks. `TranscriptionClient`, cursor-telemetry rendering, waveforms, speed, and volume remain later seams.
 
 ## 7. Screen contracts
 
@@ -310,9 +310,9 @@ Camera is optional and permission-aware. When enabled, its selected device is fr
 
 **Shows:** project name, creation/duration/profile, each raw track and finalization state, package location, capture contract.
 
-**Actions:** play a selected track, persist non-destructive trim/split/delete decisions, undo/redo/reset, export an edited MOV, reveal the package, open/share/drag the raw movie, save the edited playhead frame as PNG, create a bounded five-second GIF from edited playback, and return to Projects. Every edit/share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
+**Actions:** play the moving composed program, select the program screen source, independently resize/place/shape/mirror screen and camera, persist non-destructive trim/split/delete decisions, undo/redo/reset, export an edited MOV, reveal the package, open/share/drag a selected raw movie, save the composed playhead frame as PNG, create a bounded five-second GIF, and return to Projects. Every edit/share file is derived; raw tracks remain unchanged. Rename is allowed only after package-safe rename logic is implemented.
 
-**Not shown yet:** synchronized multi-track waveform editing, arbitrary selected export range, speed/volume, camera layout, transcript, or an editable program canvas.
+**Not shown yet:** synchronized waveforms, arbitrary selected export range, speed/volume, cursor-telemetry keyframes, transcript editing, or a program-only retention policy.
 
 The route remains `.projects(selection: id)`, so Project Summary can later be replaced by the Editor without changing library or recovery navigation.
 
@@ -455,9 +455,9 @@ Do not build a shortcut recorder in this wave.
 - Settings values are never consulted by an active session; the Capture Request is authoritative.
 - After the session finishes, the next new draft clones the latest saved defaults.
 
-### 7.10 Editor — Quick Edit foundation plus later composition target
+### 7.10 Editor — Quick Edit and program composition foundation
 
-Entry requires a finalized or explicitly recovered project. The implemented foundation reads one selected raw track plus its persisted edit timeline; preview and compatible export render ordered source ranges. Future synchronized tracks, layout, camera keyframes, transcript cuts, speed, volume, and richer Export continue to operate on derived instructions/output only.
+Entry requires a finalized or explicitly recovered project. The implemented foundation reads one selected screen as the program timing source, composes optional camera layout, and renders persisted ordered ranges for playback/export. Future cursor/camera keyframes, transcript cuts, waveforms, speed, volume, and richer Export continue to operate on derived instructions/output only.
 
 ## 8. Intent and transition matrix
 
@@ -560,7 +560,7 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 
 **Done:** live pre-record layout changes are reflected in the composed output, the immutable request records requested/effective profile and layout, optional-source loss remains inspectable, and required-screen loss ends in Recovery without corrupting raw media.
 
-**Current foundation (2026-07-15):** canvas size/aspect, fixed region, screen/camera shape and placement, cursor treatment, and click emphasis are modeled, tested, editable in the native preflight UI, and frozen into the Capture Request. Fixed region is connected to ScreenCaptureKit. The composed program movie, post-capture layout editor, cursor telemetry, and follow-mode renderer are still required before this slice meets its Done condition.
+**Current foundation (2026-07-15):** canvas size/aspect, fixed region, screen/camera shape and placement, cursor treatment, and click emphasis are modeled, tested, editable in the native preflight UI, and frozen into the Capture Request. Fixed region is connected to ScreenCaptureKit. Project detail seeds a draggable layout from the request and persists later canvas/source edits in schema-v2 `edit.json` without modifying raw tracks. A Core Image compositor now drives moving Project playback plus MOV/PNG/GIF export. Cursor telemetry and follow-mode post-capture rendering are still required before this slice meets its Done condition.
 
 ### Slice 11 — Non-destructive Quick Edit foundation
 
@@ -568,9 +568,31 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 - represent the edited movie as ordered source ranges without rewriting raw tracks;
 - implement trim-before/after, split, segment delete, undo/redo, and reset;
 - use the same edit timeline for native playback, PNG/GIF derivation, and compatible MOV export;
-- keep synchronized multi-track composition, waveforms, speed, and volume as explicit next work.
+- keep synchronized waveforms, speed, and volume as explicit next work.
 
 **Done:** edit decisions survive relaunch, raw bytes remain unchanged, edited playback/export use the same ordered ranges, and renderer tests prove deleted source ranges are absent from the compatible movie.
+
+### Slice 12 — Camera background treatment
+
+- use one background mode in the frozen stage: `Off`, `Person`, `Green Screen`, or later `Studio Plate`;
+- implement `Person` locally with a reused Vision person-segmentation request; never promise that it retains microphones or other equipment;
+- implement `Green Screen` with Core Image chroma key, tolerance, edge softness, and spill control so non-key-colored microphones and stands remain;
+- prototype `Studio Plate` only after capturing a clean background reference and benchmarking foreground matting on Apple Silicon;
+- apply the same mask before camera placement/shape/mirroring in live preview, local program output, and stream output;
+- keep the independent raw camera unchanged when editable-source retention is selected.
+
+**Done:** live preview and exported program agree frame-for-frame, Person mode degrades safely when Vision cannot produce a mask, Green Screen retains a foreground microphone in the fixture test, and no camera pixels leave the Mac solely for background processing.
+
+### Slice 13 — Shared Record and YouTube output pipeline
+
+- make one `LiveProgramPipeline` own synchronized timestamps, stage layout, screen framing/follow, camera shape/background, cursor/click rendering, and audio mix;
+- fan the same program samples into `Record`, `Stream`, or `Record + Stream` sinks; streaming failure never stops a healthy local recording;
+- ship manual YouTube RTMPS server URL + stream key first, with the key stored only in Keychain and excluded from project JSON/logs;
+- use H.264/AAC with a two-second keyframe interval; default 1080p30 to 10 Mbps and keep vertical 1080×1920 as a first-class stage;
+- isolate the RTMP dependency behind `YouTubeStreamSink`; pin and verify only the HaishinKit and RTMPHaishinKit products before adding them;
+- add OAuth/API-managed broadcast creation later without changing the media pipeline.
+
+**Done:** an unlisted 60-minute 1920×1080 and 1080×1920 soak test stays synchronized, Record + Stream survives network loss without losing the local recording, reconnect state is visible, and YouTube ingest screenshots match the saved stage.
 
 ### Slice 8 — Recovery resolution
 

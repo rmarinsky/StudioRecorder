@@ -118,6 +118,33 @@ enum SourceShape: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum SourceAspectPreset: String, CaseIterable, Identifiable, Sendable {
+    case free
+    case landscape16x9
+    case portrait9x16
+    case square
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .free: "Free"
+        case .landscape16x9: "Landscape · 16:9"
+        case .portrait9x16: "Portrait · 9:16"
+        case .square: "Square · 1:1"
+        }
+    }
+
+    var pixelAspectRatio: CGFloat? {
+        switch self {
+        case .free: nil
+        case .landscape16x9: 16 / 9
+        case .portrait9x16: 9 / 16
+        case .square: 1
+        }
+    }
+}
+
 struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     var centerX: CGFloat
     var centerY: CGFloat
@@ -162,6 +189,40 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
             isVisible: isVisible,
             isMirrored: isMirrored
         )
+    }
+
+    func applying(
+        aspectPreset: SourceAspectPreset,
+        on canvas: CaptureCanvasSnapshot
+    ) -> SourcePlacementSnapshot {
+        guard let targetAspect = aspectPreset.pixelAspectRatio else { return self }
+        let canvasAspect = canvas.validated().aspectRatio
+        var result = self
+        result.height = result.width * canvasAspect / targetAspect
+        if result.height > 1 {
+            result.height = 1
+            result.width = targetAspect / canvasAspect
+        } else if result.height < 0.08 {
+            result.height = 0.08
+            result.width = 0.08 * targetAspect / canvasAspect
+        }
+        if result.width > 1 {
+            result.width = 1
+            result.height = canvasAspect / targetAspect
+        } else if result.width < 0.08 {
+            result.width = 0.08
+            result.height = 0.08 * canvasAspect / targetAspect
+        }
+        return result.validated()
+    }
+
+    func matchingAspectPreset(on canvas: CaptureCanvasSnapshot) -> SourceAspectPreset {
+        guard height > 0 else { return .free }
+        let actualAspect = width * canvas.validated().aspectRatio / height
+        return SourceAspectPreset.allCases.first { preset in
+            guard let target = preset.pixelAspectRatio else { return false }
+            return abs(actualAspect - target) < 0.02
+        } ?? .free
     }
 }
 

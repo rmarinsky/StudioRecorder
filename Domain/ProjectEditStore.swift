@@ -18,18 +18,25 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
 }
 
 struct ProjectEditDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let projectID: UUID
     var updatedAt: Date
     var timelines: [ProjectEditTimeline]
+    var presentation: CapturePresentationSnapshot?
 
-    init(projectID: UUID, updatedAt: Date = Date(), timelines: [ProjectEditTimeline]) {
+    init(
+        projectID: UUID,
+        updatedAt: Date = Date(),
+        timelines: [ProjectEditTimeline],
+        presentation: CapturePresentationSnapshot? = nil
+    ) {
         schemaVersion = Self.currentSchemaVersion
         self.projectID = projectID
         self.updatedAt = updatedAt
         self.timelines = timelines
+        self.presentation = presentation
     }
 
     func timeline(for trackID: String) -> ProjectEditTimeline? {
@@ -42,6 +49,14 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         } else {
             timelines.append(timeline)
         }
+        self.updatedAt = updatedAt
+    }
+
+    mutating func replacePresentation(
+        _ presentation: CapturePresentationSnapshot,
+        updatedAt: Date = Date()
+    ) {
+        self.presentation = presentation.validated()
         self.updatedAt = updatedAt
     }
 }
@@ -66,12 +81,17 @@ actor ProjectEditStore {
         let url = editURL(in: projectRootURL)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let document = try decoder.decode(ProjectEditDocument.self, from: Data(contentsOf: url))
-        try validate(document, expectedProjectID: expectedProjectID)
-        return document
+        try validate(document, expectedProjectID: expectedProjectID, allowsLegacy: true)
+        guard document.schemaVersion == 1 else { return document }
+        return ProjectEditDocument(
+            projectID: document.projectID,
+            updatedAt: document.updatedAt,
+            timelines: document.timelines
+        )
     }
 
     func save(_ document: ProjectEditDocument, in projectRootURL: URL) throws {
-        try validate(document, expectedProjectID: document.projectID)
+        try validate(document, expectedProjectID: document.projectID, allowsLegacy: false)
         try encoder.encode(document).write(to: editURL(in: projectRootURL), options: .atomic)
     }
 
@@ -79,8 +99,13 @@ actor ProjectEditStore {
         projectRootURL.appending(path: Self.filename)
     }
 
-    private func validate(_ document: ProjectEditDocument, expectedProjectID: UUID) throws {
-        guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion else {
+    private func validate(
+        _ document: ProjectEditDocument,
+        expectedProjectID: UUID,
+        allowsLegacy: Bool
+    ) throws {
+        guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion
+                || (allowsLegacy && document.schemaVersion == 1) else {
             throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
         }
         guard document.projectID == expectedProjectID else {

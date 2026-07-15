@@ -46,10 +46,14 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
         try timeline.split(at: 5)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
+        presentation.camera.centerX = 0.25
         let document = ProjectEditDocument(
             projectID: projectID,
             updatedAt: Date(timeIntervalSinceReferenceDate: 42),
-            timelines: [timeline]
+            timelines: [timeline],
+            presentation: presentation
         )
         let store = ProjectEditStore()
 
@@ -59,6 +63,41 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(reloaded, document)
         XCTAssertEqual(try Data(contentsOf: rawTrackURL), originalRawBytes)
         XCTAssertTrue(FileManager.default.fileExists(atPath: rootURL.appending(path: "edit.json").path))
+    }
+
+    func testLegacyEditWithoutPresentationStillDecodes() throws {
+        let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let data = Data(
+            """
+            {"schemaVersion":1,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-15T12:00:00Z","timelines":[]}
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let document = try decoder.decode(ProjectEditDocument.self, from: data)
+
+        XCTAssertEqual(document.schemaVersion, 1)
+        XCTAssertNil(document.presentation)
+    }
+
+    func testEditStoreMigratesLegacyDocumentToCurrentSchema() async throws {
+        let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(projectID.uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let legacyData = Data(
+            """
+            {"schemaVersion":1,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-15T12:00:00Z","timelines":[]}
+            """.utf8
+        )
+        try legacyData.write(to: rootURL.appending(path: ProjectEditStore.filename))
+
+        let migrated = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+
+        XCTAssertEqual(migrated?.schemaVersion, ProjectEditDocument.currentSchemaVersion)
+        XCTAssertNil(migrated?.presentation)
     }
 
     func testTrimEndAtAnExistingCutKeepsOnlyTheLeadingSegments() throws {
