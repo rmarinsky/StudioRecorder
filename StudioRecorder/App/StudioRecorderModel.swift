@@ -184,6 +184,7 @@ enum AppIntent: Equatable {
     case setDraftIncludeCursor(Bool)
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
+    case setDraftPresentation(CapturePresentationSnapshot)
     case recordWithoutMicrophone
     case recordWithoutCamera
     case changePreference(PreferenceChange)
@@ -568,6 +569,11 @@ final class StudioRecorderModel: ObservableObject {
         case .setDraftExcludeStudioRecorderAudio(let excluded):
             guard canEditDraft else { return .ignored }
             snapshot.studioDraft?.excludeStudioRecorderAudio = excluded
+            result = .draftChanged
+
+        case .setDraftPresentation(let presentation):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.presentation = presentation.validated()
             result = .draftChanged
 
         case .recordWithoutMicrophone:

@@ -339,7 +339,7 @@ struct StudioRecorderRootView: View {
                     HStack {
                         Text("Program preview").font(.headline)
                         Spacer()
-                        Text("1920 × 1080  ·  30 fps")
+                        Text("\(canvasWidth) × \(canvasHeight)  ·  30 fps")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                         Text("Preview contract")
@@ -352,7 +352,9 @@ struct StudioRecorderRootView: View {
                         cameraSession: liveScene.cameraSession,
                         selectedDisplayName: selectedDisplayName,
                         screenPreviewError: liveScene.screenPreviewError,
-                        isRecording: snapshot.captureState == .recording
+                        isRecording: snapshot.captureState == .recording,
+                        presentation: presentationBinding,
+                        isLocked: snapshot.areRecordingSettingsLocked
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .task(id: primarySelectedDisplayID) {
@@ -405,6 +407,7 @@ struct StudioRecorderRootView: View {
                         set: { model.send(.setDraftExcludeStudioRecorderAudio($0)) }
                     ),
                     codecPolicy: snapshot.studioDraft?.codecPolicy ?? .automatic,
+                    presentation: presentationBinding,
                     isLocked: snapshot.areRecordingSettingsLocked
                 )
                 .frame(width: 304)
@@ -510,6 +513,16 @@ struct StudioRecorderRootView: View {
         snapshot.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
     }
 
+    private var canvasWidth: Int { snapshot.studioDraft?.presentation.canvas.width ?? 1_920 }
+    private var canvasHeight: Int { snapshot.studioDraft?.presentation.canvas.height ?? 1_080 }
+
+    private var presentationBinding: Binding<CapturePresentationSnapshot> {
+        Binding(
+            get: { snapshot.studioDraft?.presentation ?? .default },
+            set: { model.send(.setDraftPresentation($0)) }
+        )
+    }
+
     private var studioDestinationPath: String {
         snapshot.studioDraft?.destination.url.path(percentEncoded: false) ?? "Movies/Studio Recorder"
     }
@@ -606,11 +619,78 @@ private struct StudioInspector: View {
     @Binding var excludeStudioRecorder: Bool
     @Binding var excludeStudioRecorderAudio: Bool
     let codecPolicy: RecordingCodecPolicy
+    @Binding var presentation: CapturePresentationSnapshot
     let isLocked: Bool
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                inspectorHeader("Canvas & Framing")
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Output", selection: canvasPresetBinding) {
+                        ForEach(CaptureCanvasPreset.allCases) { preset in
+                            Text(preset.label).tag(Optional(preset))
+                        }
+                        Divider()
+                        Text("Custom").tag(Optional<CaptureCanvasPreset>.none)
+                    }
+
+                    if presentation.canvas.preset == nil {
+                        HStack(spacing: 8) {
+                            TextField("Width", value: canvasWidthBinding, format: .number)
+                            Text("×").foregroundStyle(.secondary)
+                            TextField("Height", value: canvasHeightBinding, format: .number)
+                        }
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    Picker("Screen", selection: framingModeBinding) {
+                        ForEach(ScreenFramingMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+
+                    if presentation.framing.mode != .fullDisplay {
+                        labeledSlider(
+                            "Zoom",
+                            value: framingScaleBinding,
+                            range: 0.15...1,
+                            valueText: String(format: "%.1f×", 1 / presentation.framing.scale)
+                        )
+                        labeledSlider("Horizontal", value: framingCenterXBinding, range: 0...1)
+                        labeledSlider("Vertical", value: framingCenterYBinding, range: 0...1)
+                        if presentation.framing.mode == .followCursor {
+                            Text("Follow Cursor is stored as editable framing intent; raw display pixels stay recoverable until interaction metadata rendering is connected.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Text("Canvas and source placement are saved with the take; screen and camera raw tracks remain independent.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(isLocked)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+
+                DisclosureGroup("Screen layout") {
+                    sourceLayoutControls(placement: screenPlacementBinding)
+                }
+                .disabled(isLocked)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+                if capturesCamera {
+                    DisclosureGroup("Camera layout") {
+                        sourceLayoutControls(placement: cameraPlacementBinding, includesMirror: true)
+                    }
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                }
+
+                Divider()
                 inspectorHeader("Sources")
                 ForEach(displays) { display in
                     Toggle(isOn: binding(for: display.id)) {
@@ -682,6 +762,23 @@ private struct StudioInspector: View {
                 Toggle("Include cursor", isOn: $includeCursor)
                     .disabled(isLocked)
                     .padding(.horizontal, 14).padding(.vertical, 8)
+                if includeCursor {
+                    VStack(alignment: .leading, spacing: 8) {
+                        labeledSlider(
+                            "Export cursor size",
+                            value: cursorScaleBinding,
+                            range: 1...4,
+                            valueText: String(format: "%.1f×", presentation.cursor.scale)
+                        )
+                        Toggle("Highlight clicks", isOn: cursorClickBinding)
+                        Text("Click rings are recorded now. Cursor scaling stays editable presentation metadata for the program renderer.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                }
                 Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
                     .disabled(isLocked)
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -728,6 +825,108 @@ private struct StudioInspector: View {
         Text(title).font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 14)
     }
 
+    @ViewBuilder
+    private func sourceLayoutControls(
+        placement: Binding<SourcePlacementSnapshot>,
+        includesMirror: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Picker("Shape", selection: placement.shape) {
+                ForEach(SourceShape.allCases) { shape in
+                    Text(shape.label).tag(shape)
+                }
+            }
+            labeledSlider("Width", value: placement.width, range: 0.08...1)
+            labeledSlider("Height", value: placement.height, range: 0.08...1)
+            labeledSlider("Horizontal", value: placement.centerX, range: 0...1)
+            labeledSlider("Vertical", value: placement.centerY, range: 0...1)
+            if includesMirror {
+                Toggle("Mirror camera", isOn: placement.isMirrored)
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func labeledSlider(
+        _ label: String,
+        value: Binding<CGFloat>,
+        range: ClosedRange<CGFloat>,
+        valueText: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if let valueText {
+                    Text(valueText).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            Slider(value: value, in: range)
+        }
+    }
+
+    private var canvasPresetBinding: Binding<CaptureCanvasPreset?> {
+        Binding(
+            get: { presentation.canvas.preset },
+            set: { preset in
+                if let preset {
+                    presentation.canvas = CaptureCanvasSnapshot(preset: preset)
+                } else {
+                    presentation.canvas = CaptureCanvasSnapshot(
+                        width: presentation.canvas.width,
+                        height: presentation.canvas.height
+                    )
+                }
+            }
+        )
+    }
+
+    private var canvasWidthBinding: Binding<Int> {
+        Binding(
+            get: { presentation.canvas.width },
+            set: { presentation.canvas = CaptureCanvasSnapshot(width: $0, height: presentation.canvas.height) }
+        )
+    }
+
+    private var canvasHeightBinding: Binding<Int> {
+        Binding(
+            get: { presentation.canvas.height },
+            set: { presentation.canvas = CaptureCanvasSnapshot(width: presentation.canvas.width, height: $0) }
+        )
+    }
+
+    private var framingModeBinding: Binding<ScreenFramingMode> {
+        Binding(get: { presentation.framing.mode }, set: { presentation.framing.mode = $0 })
+    }
+
+    private var framingScaleBinding: Binding<CGFloat> {
+        Binding(get: { presentation.framing.scale }, set: { presentation.framing.scale = $0 })
+    }
+
+    private var framingCenterXBinding: Binding<CGFloat> {
+        Binding(get: { presentation.framing.centerX }, set: { presentation.framing.centerX = $0 })
+    }
+
+    private var framingCenterYBinding: Binding<CGFloat> {
+        Binding(get: { presentation.framing.centerY }, set: { presentation.framing.centerY = $0 })
+    }
+
+    private var screenPlacementBinding: Binding<SourcePlacementSnapshot> {
+        Binding(get: { presentation.screen }, set: { presentation.screen = $0 })
+    }
+
+    private var cameraPlacementBinding: Binding<SourcePlacementSnapshot> {
+        Binding(get: { presentation.camera }, set: { presentation.camera = $0 })
+    }
+
+    private var cursorScaleBinding: Binding<CGFloat> {
+        Binding(get: { presentation.cursor.scale }, set: { presentation.cursor.scale = $0 })
+    }
+
+    private var cursorClickBinding: Binding<Bool> {
+        Binding(get: { presentation.cursor.highlightsClicks }, set: { presentation.cursor.highlightsClicks = $0 })
+    }
+
     private func sourceRow(_ title: String, detail: String, icon: String, trailing: String? = nil) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon).foregroundStyle(.secondary).frame(width: 16)
@@ -772,58 +971,179 @@ private struct LiveProgramPreview: View {
     let selectedDisplayName: String
     let screenPreviewError: String?
     let isRecording: Bool
+    @Binding var presentation: CapturePresentationSnapshot
+    let isLocked: Bool
+
+    @GestureState private var screenDrag: CGSize = .zero
+    @GestureState private var cameraDrag: CGSize = .zero
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.72))
-            if let screenImage {
-                Image(nsImage: screenImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(6)
-            } else if let screenPreviewError {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 38))
-                        .foregroundStyle(.orange)
-                    Text("Preview unavailable").font(.headline)
-                    Text(screenPreviewError)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.78))
+                if let screenImage {
+                    CroppedScreenPreview(
+                        image: screenImage,
+                        canvas: presentation.canvas,
+                        framing: presentation.framing
+                    )
+                        .frame(
+                            width: proxy.size.width * presentation.screen.width,
+                            height: proxy.size.height * presentation.screen.height
+                        )
+                        .clipShape(sourceShape(for: presentation.screen))
+                        .overlay {
+                            sourceShape(for: presentation.screen)
+                                .stroke(.white.opacity(0.28), lineWidth: 1)
+                        }
+                        .position(
+                            x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
+                            y: proxy.size.height * presentation.screen.centerY + screenDrag.height
+                        )
+                        .contentShape(Rectangle())
+                        .gesture(screenDragGesture(in: proxy.size))
+                } else if let screenPreviewError {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 38))
+                            .foregroundStyle(.orange)
+                        Text("Preview unavailable").font(.headline)
+                        Text(screenPreviewError)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    VStack(spacing: 14) {
+                        Image(systemName: "rectangle.on.rectangle.angled")
+                            .font(.system(size: 44))
+                        Text("Loading \(selectedDisplayName)…").font(.headline)
+                        Text("The selected screen will appear before recording starts.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .padding(24)
-            } else {
-                VStack(spacing: 14) {
-                    Image(systemName: "rectangle.on.rectangle.angled")
-                        .font(.system(size: 44))
-                    Text("Loading \(selectedDisplayName)…").font(.headline)
-                    Text("The selected screen will appear before recording starts.")
-                        .font(.caption).foregroundStyle(.secondary)
+
+                if let cameraSession, presentation.camera.isVisible {
+                    CameraLivePreview(session: cameraSession)
+                        .scaleEffect(x: presentation.camera.isMirrored ? -1 : 1, y: 1)
+                        .clipShape(sourceShape(for: presentation.camera))
+                        .overlay {
+                            sourceShape(for: presentation.camera)
+                                .stroke(.white.opacity(0.65), lineWidth: 1)
+                        }
+                        .frame(
+                            width: proxy.size.width * presentation.camera.width,
+                            height: proxy.size.height * presentation.camera.height
+                        )
+                        .position(
+                            x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
+                            y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
+                        )
+                        .contentShape(Rectangle())
+                        .gesture(cameraDragGesture(in: proxy.size))
+                        .accessibilityLabel("Selected camera preview")
                 }
-            }
 
-            if let cameraSession {
-                CameraLivePreview(session: cameraSession)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.5), lineWidth: 1))
-                    .frame(width: 180, height: 102)
-                    .padding(20)
-                    .accessibilityLabel("Selected camera preview")
-            }
+                HStack {
+                    Text(presentation.framing.mode.label)
+                    Spacer()
+                    Text("\(presentation.canvas.width) × \(presentation.canvas.height)")
+                }
+                .font(.caption2.monospacedDigit().weight(.medium))
+                .foregroundStyle(.white.opacity(0.86))
+                .padding(10)
 
-            if isRecording {
-                Label("REC", systemImage: "record.circle.fill")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.red)
-                    .padding(10)
+                if isRecording {
+                    Label("REC", systemImage: "record.circle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.red)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
             }
         }
-        .aspectRatio(16 / 9, contentMode: .fit)
+        .aspectRatio(presentation.canvas.aspectRatio, contentMode: .fit)
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(isRecording ? Color.red : Color.clear, lineWidth: 1)
         }
         .accessibilityLabel("Live selected screen and camera preview")
+    }
+
+    private func sourceShape(for placement: SourcePlacementSnapshot) -> AnyShape {
+        switch placement.shape {
+        case .rectangle:
+            AnyShape(Rectangle())
+        case .roundedRectangle:
+            AnyShape(RoundedRectangle(cornerRadius: max(6, placement.cornerRadius * 100)))
+        case .circle:
+            AnyShape(Circle())
+        }
+    }
+
+    private func screenDragGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($screenDrag) { value, state, _ in
+                guard !isLocked else { return }
+                state = value.translation
+            }
+            .onEnded { value in
+                guard !isLocked, size.width > 0, size.height > 0 else { return }
+                presentation.screen.centerX += value.translation.width / size.width
+                presentation.screen.centerY += value.translation.height / size.height
+                presentation = presentation.validated()
+            }
+    }
+
+    private func cameraDragGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($cameraDrag) { value, state, _ in
+                guard !isLocked else { return }
+                state = value.translation
+            }
+            .onEnded { value in
+                guard !isLocked, size.width > 0, size.height > 0 else { return }
+                presentation.camera.centerX += value.translation.width / size.width
+                presentation.camera.centerY += value.translation.height / size.height
+                presentation = presentation.validated()
+            }
+    }
+}
+
+private struct CroppedScreenPreview: View {
+    let image: NSImage
+    let canvas: CaptureCanvasSnapshot
+    let framing: ScreenFramingSnapshot
+
+    var body: some View {
+        GeometryReader { proxy in
+            let sourceSize = image.size
+            let sourceRect = previewSourceRect(for: sourceSize)
+            let scale = max(
+                proxy.size.width / max(sourceRect.width, 1),
+                proxy.size.height / max(sourceRect.height, 1)
+            )
+            Image(nsImage: image)
+                .resizable()
+                .frame(width: sourceSize.width * scale, height: sourceSize.height * scale)
+                .offset(
+                    x: (proxy.size.width - sourceRect.width * scale) / 2 - sourceRect.minX * scale,
+                    y: (proxy.size.height - sourceRect.height * scale) / 2 - sourceRect.minY * scale
+                )
+        }
+        .clipped()
+    }
+
+    private func previewSourceRect(for sourceSize: CGSize) -> CGRect {
+        guard framing.mode == .fixedRegion else {
+            return CGRect(origin: .zero, size: sourceSize)
+        }
+        return CaptureGeometryPlanner.sourceRect(
+            displaySize: sourceSize,
+            canvasSize: canvas.pixelSize,
+            framing: framing
+        )
     }
 }

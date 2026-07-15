@@ -1,0 +1,89 @@
+import CoreGraphics
+import XCTest
+@testable import StudioRecorder
+
+final class CapturePresentationTests: XCTestCase {
+    func testCanvasPresetsCoverHorizontalVerticalAndSixteenByTenOutputs() {
+        XCTAssertEqual(CaptureCanvasPreset.fullHD.pixelSize, CGSize(width: 1_920, height: 1_080))
+        XCTAssertEqual(CaptureCanvasPreset.verticalHD.pixelSize, CGSize(width: 1_080, height: 1_920))
+        XCTAssertEqual(CaptureCanvasPreset.widescreen16x10.pixelSize, CGSize(width: 1_920, height: 1_200))
+    }
+
+    func testFixedRegionKeepsCanvasAspectAndClampsToTheDisplay() {
+        let framing = ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: 0.95,
+            centerY: 0.1,
+            scale: 0.5
+        )
+
+        let region = CaptureGeometryPlanner.sourceRect(
+            displaySize: CGSize(width: 3_440, height: 1_440),
+            canvasSize: CaptureCanvasPreset.verticalHD.pixelSize,
+            framing: framing
+        )
+
+        XCTAssertEqual(region.width / region.height, 9.0 / 16.0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(region.minX, 0)
+        XCTAssertGreaterThanOrEqual(region.minY, 0)
+        XCTAssertLessThanOrEqual(region.maxX, 3_440)
+        XCTAssertLessThanOrEqual(region.maxY, 1_440)
+        XCTAssertEqual(region.maxX, 3_440, accuracy: 0.001)
+        XCTAssertEqual(region.minY, 0, accuracy: 0.001)
+    }
+
+    func testSourcePlacementClampsScaleAndPositionInsideTheCanvas() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 1.4,
+            centerY: -0.2,
+            width: 0.2,
+            height: 0.3,
+            shape: .roundedRectangle,
+            cornerRadius: 0.08
+        ).validated()
+
+        XCTAssertEqual(placement.centerX, 0.9)
+        XCTAssertEqual(placement.centerY, 0.15)
+        XCTAssertEqual(placement.width, 0.2)
+        XCTAssertEqual(placement.height, 0.3)
+        XCTAssertEqual(placement.cornerRadius, 0.08)
+    }
+
+    func testFullCanvasSourceAlwaysCentersInsideTheCanvas() {
+        let placement = SourcePlacementSnapshot(
+            centerX: 1,
+            centerY: 0,
+            width: 2,
+            height: 2,
+            shape: .rectangle
+        ).validated()
+
+        XCTAssertEqual(placement.centerX, 0.5)
+        XCTAssertEqual(placement.centerY, 0.5)
+        XCTAssertEqual(placement.width, 1)
+        XCTAssertEqual(placement.height, 1)
+    }
+
+    func testFixedRegionStreamUsesTheCanvasOutputWhileFullDisplayPreservesNativePixels() {
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
+        presentation.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.75)
+
+        let fixed = CaptureGeometryPlanner.streamGeometry(
+            displaySize: CGSize(width: 1_920, height: 1_080),
+            pointPixelScale: 2,
+            presentation: presentation
+        )
+        XCTAssertEqual(fixed.outputSize, CGSize(width: 1_080, height: 1_920))
+        XCTAssertFalse(fixed.sourceRect.isEmpty)
+
+        presentation.framing.mode = .fullDisplay
+        let full = CaptureGeometryPlanner.streamGeometry(
+            displaySize: CGSize(width: 1_920, height: 1_080),
+            pointPixelScale: 2,
+            presentation: presentation
+        )
+        XCTAssertEqual(full.outputSize, CGSize(width: 3_840, height: 2_160))
+        XCTAssertTrue(full.sourceRect.isEmpty)
+    }
+}

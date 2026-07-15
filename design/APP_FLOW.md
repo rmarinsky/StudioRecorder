@@ -124,6 +124,9 @@ Purpose: show exactly what survived.
 | Project package + journal | Implemented | Project-centric UX and finalizing status |
 | Interrupted-project discovery | Implemented | Contextual Recovery flow |
 | Camera isolation | Implemented | Selected device freezes into the Capture Request and writes `raw-tracks/camera.mov` |
+| Canvas + fixed capture region | Implemented foundation | Horizontal/vertical/16:10/square/custom canvas; fixed region maps to ScreenCaptureKit `sourceRect` and selected output size |
+| Source presentation intent | Implemented foundation | Live screen/camera shape, scale, and placement freeze into the Capture Request; post-capture renderer remains next |
+| Cursor treatment | Partial | Native cursor/click rings record now; cursor scale/follow mode are frozen non-destructive intent awaiting telemetry rendering |
 | Quick edit foundation | Implemented | Versioned `edit.json`; raw tracks stay unchanged while playback/export render ordered source ranges |
 | Program compositor | Not implemented | Target-state preview/editor only |
 | Transcript editing | Not implemented | Target-state Editor only |
@@ -135,5 +138,5 @@ Purpose: show exactly what survived.
 2. Rebuild Studio as stage + inspector + control deck while keeping the existing `RecordingCoordinator` contract.
 3. Add finalizing progress and clear failure-to-Recovery routing.
 4. Add a minimal Projects view backed by `.recordingproject` package discovery.
-5. Move layout controls into the future Editor boundary; do not present preview-only layout controls as if they affect recording.
-6. Implement camera/program composition, then transcript editing, then export/streaming outputs.
+5. Seed Project layout state from the frozen Canvas & Framing contract and make it editable without changing raw tracks.
+6. Implement camera/program composition and cursor telemetry rendering, then transcript editing and richer exports.

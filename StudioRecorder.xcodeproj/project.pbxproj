@@ -13,6 +13,7 @@
 		196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
 		30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */; };
+		376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
@@ -26,6 +27,7 @@
 		C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2897A189300917E718918A9E /* ProjectEditStore.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
 		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
+		C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */; };
 		D01F6C6336EE40388DBE8C5C /* ProjectMediaExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4610C665DE98769B14A920A6 /* ProjectMediaExporterTests.swift */; };
 		D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF06D65D7BBCD8B359710577 /* ProjectEditSession.swift */; };
 		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
@@ -62,7 +64,9 @@
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
 		9A418726188BA1186770D369 /* RecordingProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStore.swift; sourceTree = "<group>"; };
+		AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePresentationTests.swift; sourceTree = "<group>"; };
 		ADFE8A95E62F46884D456041 /* ProjectMediaExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMediaExporter.swift; sourceTree = "<group>"; };
+		B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePresentation.swift; sourceTree = "<group>"; };
 		B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPreferences.swift; sourceTree = "<group>"; };
 		B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCoordinator.swift; sourceTree = "<group>"; };
 		C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorViewportPlanner.swift; sourceTree = "<group>"; };
@@ -139,6 +143,7 @@
 		AEB60D501EAC087B4F803C04 /* StudioRecorderTests */ = {
 			isa = PBXGroup;
 			children = (
+				AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */,
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
 				51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */,
 				CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */,
@@ -171,6 +176,7 @@
 		CB745AD74D63EDF34EBCA822 /* Domain */ = {
 			isa = PBXGroup;
 			children = (
+				B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */,
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
 				CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */,
@@ -275,6 +281,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */,
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
 				6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */,
 				DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */,
@@ -291,6 +298,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
+				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
 				B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */,
 				5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */,
 				845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */,

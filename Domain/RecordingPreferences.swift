@@ -128,6 +128,7 @@ struct StudioDraft: Equatable {
     var excludeStudioRecorderAudio: Bool
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
+    var presentation: CapturePresentationSnapshot
     var destination: ResolvedProjectDestination
 
     mutating func reconcile(
@@ -249,8 +250,9 @@ struct StudioDraft: Equatable {
                 codecPolicy: codecPolicy,
                 includeCursor: includeCursor,
                 excludeStudioRecorder: excludeStudioRecorder,
-                programResolutionTarget: "1920x1080"
+                programResolutionTarget: "\(presentation.canvas.width)x\(presentation.canvas.height)"
             ),
+            presentation: presentation.validated(),
             storage: StorageCaptureSnapshot(
                 destinationURL: destination.url,
                 destinationBookmarkID: destination.bookmarkID,
@@ -343,6 +345,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     let camera: CameraSourceSnapshot?
     let audio: AudioCaptureSnapshot
     let profile: CaptureProfileSnapshot
+    let presentation: CapturePresentationSnapshot
     let storage: StorageCaptureSnapshot
 
     init(
@@ -352,6 +355,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         camera: CameraSourceSnapshot? = nil,
         audio: AudioCaptureSnapshot,
         profile: CaptureProfileSnapshot,
+        presentation: CapturePresentationSnapshot = .default,
         storage: StorageCaptureSnapshot
     ) {
         self.id = id
@@ -360,6 +364,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         self.camera = camera
         self.audio = audio
         self.profile = profile
+        self.presentation = presentation
         self.storage = storage
     }
 
@@ -381,7 +386,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     var excludesStudioRecorderAudio: Bool { audio.excludesStudioRecorderAudio }
 
     private enum CodingKeys: String, CodingKey {
-        case id, createdAt, displaySources, camera, audio, profile, storage
+        case id, createdAt, displaySources, camera, audio, profile, presentation, storage
         case sources, captureProfile, primaryAudioDisplayID, capturesMicrophone
         case includesCursor, excludesStudioRecorderAudio
     }
@@ -395,6 +400,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
             camera = try container.decodeIfPresent(CameraSourceSnapshot.self, forKey: .camera)
             audio = try container.decode(AudioCaptureSnapshot.self, forKey: .audio)
             profile = try container.decode(CaptureProfileSnapshot.self, forKey: .profile)
+            presentation = try container.decodeIfPresent(CapturePresentationSnapshot.self, forKey: .presentation) ?? .default
             storage = try container.decode(StorageCaptureSnapshot.self, forKey: .storage)
             return
         }
@@ -428,6 +434,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
             programResolutionTarget: "unknown",
             historicalLabel: legacyProfile
         )
+        presentation = .default
         storage = StorageCaptureSnapshot(
             destinationURL: nil,
             destinationBookmarkID: "unknown",
@@ -443,6 +450,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(camera, forKey: .camera)
         try container.encode(audio, forKey: .audio)
         try container.encode(profile, forKey: .profile)
+        try container.encode(presentation, forKey: .presentation)
         try container.encode(storage, forKey: .storage)
     }
 }
@@ -596,6 +604,7 @@ final class PreferencesStore: ObservableObject {
             excludeStudioRecorderAudio: preferences.audio.excludeStudioRecorderAudio,
             frameRate: preferences.capture.frameRate,
             codecPolicy: preferences.capture.codecPolicy,
+            presentation: .default,
             destination: destination
         )
     }

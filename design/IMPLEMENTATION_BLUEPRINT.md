@@ -26,12 +26,13 @@ This document connects the existing ScreenCaptureKit foundation to every planned
 | Multi-display raw recording | implemented | preserve and expose exact selected sources | — |
 | System audio + microphone | embedded in primary display recording | selectable defaults, device/status visibility | isolated audio tracks if required |
 | HEVC with H.264 fallback | implemented | expose as an honest automatic policy | additional codecs only with evidence |
-| Native cursor capture | implemented, always on | configurable per new session | cursor-following program composition |
+| Native cursor capture | configurable per new session; click rings implemented | frozen cursor scale/click treatment | cursor-position telemetry and follow-mode program composition |
 | Project package + journal | implemented, schema v1 | schema v2 snapshot, typed events, v1 reader | edit/export metadata |
 | Interrupted-project detection | implemented from `stoppedAt == nil` | per-track recovery report | segment repair tooling |
 | Project library | implemented | package indexing, summary, raw-track playback | search, thumbnails, and richer metadata |
 | Program compositor | not implemented | no working control shown | 1080p program output |
-| Camera isolation | implemented | optional permission-aware camera source | fragmented raw camera track; layout remains next |
+| Camera isolation | implemented | optional permission-aware camera source | fragmented raw camera track; live layout intent freezes into request; post-capture composition remains next |
+| Canvas and screen region | foundation implemented | horizontal/vertical/16:10/square/custom canvas plus full/fixed/follow modes | fixed region affects ScreenCaptureKit raw capture; follow mode stays non-destructive until telemetry renderer |
 | Transcript editing | not implemented | absent from MVP UI | Diduny job + token timeline |
 | Quick share media | implemented | raw movie share/drag, current-frame PNG, bounded GIF | selected range, size estimate, compatible movie export |
 | Quick edit foundation | implemented | ordered source ranges, trim, split/delete, undo/redo/reset | synchronized tracks, waveform, speed and volume |
@@ -558,6 +559,8 @@ Begin only after the Studio Draft, preparation, and recording-health slices prov
 - continue with a visible degraded program and journal evidence if the optional camera or microphone fails; stop safely into Recovery if a required screen fails.
 
 **Done:** live pre-record layout changes are reflected in the composed output, the immutable request records requested/effective profile and layout, optional-source loss remains inspectable, and required-screen loss ends in Recovery without corrupting raw media.
+
+**Current foundation (2026-07-15):** canvas size/aspect, fixed region, screen/camera shape and placement, cursor treatment, and click emphasis are modeled, tested, editable in the native preflight UI, and frozen into the Capture Request. Fixed region is connected to ScreenCaptureKit. The composed program movie, post-capture layout editor, cursor telemetry, and follow-mode renderer are still required before this slice meets its Done condition.
 
 ### Slice 11 — Non-destructive Quick Edit foundation
 

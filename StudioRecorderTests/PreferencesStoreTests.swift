@@ -208,6 +208,14 @@ final class PreferencesStoreTests: XCTestCase {
         let cameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]
         let permissions = PermissionSnapshot(screenRecording: .granted, microphone: .granted)
         var draft = store.makeStudioDraft(displays: displays, microphones: microphones, cameras: cameras)
+        draft.presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
+        draft.presentation.framing = ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: 0.7,
+            centerY: 0.4,
+            scale: 0.65
+        )
+        draft.presentation.camera.shape = .roundedRectangle
         let requestID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let createdAt = Date(timeIntervalSinceReferenceDate: 12_345)
 
@@ -227,6 +235,9 @@ final class PreferencesStoreTests: XCTestCase {
         XCTAssertEqual(request.audio.microphone?.id, "mic-1")
         XCTAssertEqual(request.camera, CameraSourceSnapshot(id: "camera-1", name: "FaceTime HD Camera"))
         XCTAssertEqual(request.profile.frameRate, 30)
+        XCTAssertEqual(request.presentation.canvas, CaptureCanvasSnapshot(preset: .verticalHD))
+        XCTAssertEqual(request.presentation.framing.mode, .fixedRegion)
+        XCTAssertEqual(request.presentation.camera.shape, .roundedRectangle)
         XCTAssertEqual(request.storage.destinationURL?.path, "/tmp/Movies/Studio Recorder")
 
         draft.selectedDisplayIDs = []

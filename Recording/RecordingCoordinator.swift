@@ -235,11 +235,20 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         request: CaptureRequest
     ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
-        configuration.width = Int(CGFloat(display.width) * CGFloat(filter.pointPixelScale))
-        configuration.height = Int(CGFloat(display.height) * CGFloat(filter.pointPixelScale))
+        let geometry = CaptureGeometryPlanner.streamGeometry(
+            displaySize: CGSize(width: display.width, height: display.height),
+            pointPixelScale: CGFloat(filter.pointPixelScale),
+            presentation: request.presentation
+        )
+        configuration.width = Int(geometry.outputSize.width.rounded())
+        configuration.height = Int(geometry.outputSize.height.rounded())
+        if !geometry.sourceRect.isEmpty {
+            configuration.sourceRect = geometry.sourceRect
+        }
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(request.profile.frameRate))
         configuration.queueDepth = 5
         configuration.showsCursor = request.profile.includeCursor
+        configuration.showMouseClicks = request.profile.includeCursor && request.presentation.cursor.highlightsClicks
         configuration.capturesAudio = capturesSystemAudio
         configuration.captureMicrophone = capturesMicrophone
         configuration.microphoneCaptureDeviceID = capturesMicrophone ? microphoneDeviceID : nil
