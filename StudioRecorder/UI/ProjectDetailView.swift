@@ -47,25 +47,29 @@ struct ProjectDetailView: View {
 
             if let programScreenTrackURL, FileManager.default.fileExists(atPath: programScreenTrackURL.path) {
                 HStack(alignment: .top, spacing: 0) {
-                    VStack(spacing: 14) {
-                        NativeVideoPlayer(player: editSession.player)
-                            .background(Color.black)
-                            .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
-                            .frame(maxHeight: 420)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(.primary.opacity(0.10), lineWidth: 0.5)
+                    ScrollView {
+                        VStack(spacing: 14) {
+                            NativeVideoPlayer(player: editSession.player)
+                                .background(Color.black)
+                                .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
+                                .frame(maxWidth: .infinity)
+                                .frame(maxHeight: 420)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(.primary.opacity(0.10), lineWidth: 0.5)
+                                }
+                                .accessibilityLabel("Composed program preview")
+
+                            ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
+
+                            if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                                shareActions(for: selectedTrackURL)
                             }
-                            .accessibilityLabel("Composed program preview")
-
-                        ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
-
-                        if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
-                            shareActions(for: selectedTrackURL)
                         }
+                        .padding(22)
+                        .frame(maxWidth: .infinity, alignment: .top)
                     }
-                    .padding(22)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                     inspector
@@ -278,21 +282,23 @@ struct ProjectDetailView: View {
                 ProgressView().controlSize(.small).padding(.leading, 2)
             }
 
-            Label("Drag Movie", systemImage: "arrow.up.right.square")
+            Label("Drag Raw Movie", systemImage: "arrow.up.right.square")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .draggable(trackURL)
-                .help("Drag the movie into Finder or another app")
+                .help("Drag the unchanged source movie without Quick Edit changes")
 
             Spacer()
 
-            Button("Open Movie", systemImage: "arrow.up.forward.app") {
+            Button("Open Raw Movie", systemImage: "arrow.up.forward.app") {
                 NSWorkspace.shared.open(trackURL)
             }
+            .help("Open the unchanged source movie without Quick Edit changes")
 
             ShareLink(item: trackURL) {
-                Label("Share Movie", systemImage: "square.and.arrow.up")
+                Label("Share Raw Movie", systemImage: "square.and.arrow.up")
             }
+            .help("Share the unchanged source movie without Quick Edit changes")
         }
         .buttonStyle(.bordered)
         .disabled(isExporting)

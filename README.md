@@ -20,6 +20,7 @@ public brand.
 - offers per-Scene retention: Editable tracks preserves independent screen/camera media, while Program movie only renders and verifies the exact canvas, framing, Follow Cursor motion, camera shape, background treatment, and audio before removing raw tracks;
 - edits the output canvas and screen/camera placement, scale, shape, and mirroring after recordings that retain editable tracks; the program layout persists in `edit.json` without touching raw tracks;
 - plays and exports the moving screen+camera composition through one Core Image program renderer; PNG and GIF derivation use the same composed result;
+- adds multiple timed privacy regions in Quick Edit, with blur or opaque redaction, exact source timing, and adjustable final-canvas placement and size; preview, MOV, PNG, and GIF share the same render path while raw tracks stay unchanged;
 - opens finalized editable tracks or a retained program movie with native playback controls and immediate Reveal, Open, Share, and drag actions;
 - exports the current playhead as a full-resolution PNG and opens a reusable GIF maker for either the faithful edited project composition or any local video, with adjustable range, width, frame rate, looping, exact rendered size, Save, Copy, Drag, and macOS Share actions;
 - saves versioned non-destructive edits in `edit.json`, with trim, split/delete, undo/redo, edited playback, and compatible MOV export;

@@ -29,6 +29,88 @@ struct ProjectEditSegment: Codable, Equatable, Identifiable, Sendable {
     var duration: TimeInterval
 }
 
+enum ProjectPrivacyOverlayStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    case blur
+    case solid
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .blur: "Blur"
+        case .solid: "Solid"
+        }
+    }
+}
+
+struct ProjectPrivacyOverlay: Codable, Equatable, Identifiable, Sendable {
+    static let minimumDuration: TimeInterval = 0.05
+    static let minimumDimension = 0.04
+
+    let id: UUID
+    var sourceStart: TimeInterval
+    var duration: TimeInterval
+    var centerX: Double
+    var centerY: Double
+    var width: Double
+    var height: Double
+    var style: ProjectPrivacyOverlayStyle
+
+    init(
+        id: UUID = UUID(),
+        sourceStart: TimeInterval,
+        duration: TimeInterval,
+        centerX: Double = 0.5,
+        centerY: Double = 0.5,
+        width: Double = 0.35,
+        height: Double = 0.18,
+        style: ProjectPrivacyOverlayStyle = .solid
+    ) {
+        self.id = id
+        self.sourceStart = sourceStart
+        self.duration = duration
+        self.centerX = centerX
+        self.centerY = centerY
+        self.width = width
+        self.height = height
+        self.style = style
+    }
+
+    func isActive(at sourceTime: TimeInterval) -> Bool {
+        sourceTime >= sourceStart && sourceTime < sourceStart + duration
+    }
+
+    func validated(sourceDuration: TimeInterval) -> ProjectPrivacyOverlay {
+        var copy = validatedCanvasGeometry()
+        copy.sourceStart = min(
+            max(sourceStart.isFinite ? sourceStart : 0, 0),
+            max(sourceDuration - Self.minimumDuration, 0)
+        )
+        copy.duration = min(
+            max(duration.isFinite ? duration : Self.minimumDuration, Self.minimumDuration),
+            max(sourceDuration - copy.sourceStart, Self.minimumDuration)
+        )
+        return copy
+    }
+
+    func validatedCanvasGeometry() -> ProjectPrivacyOverlay {
+        var copy = self
+        copy.width = min(max(width.isFinite ? width : 0.35, Self.minimumDimension), 1)
+        copy.height = min(max(height.isFinite ? height : 0.18, Self.minimumDimension), 1)
+        copy.centerX = min(max(centerX.isFinite ? centerX : 0.5, copy.width / 2), 1 - copy.width / 2)
+        copy.centerY = min(max(centerY.isFinite ? centerY : 0.5, copy.height / 2), 1 - copy.height / 2)
+        return copy
+    }
+
+    var isPersistable: Bool {
+        sourceStart.isFinite
+            && sourceStart >= 0
+            && duration.isFinite
+            && duration >= Self.minimumDuration
+            && self == validatedCanvasGeometry()
+    }
+}
+
 struct ProjectEditTimeline: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 

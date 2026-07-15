@@ -4,6 +4,46 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testProgramRendererAppliesTimedPrivacyRedactionWithoutChangingOtherFrames() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let outputURL = directory.appending(path: "redacted.mov")
+        let redactedFrameURL = directory.appending(path: "redacted.png")
+        let clearFrameURL = directory.appending(path: "clear.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        let overlay = ProjectPrivacyOverlay(
+            sourceStart: 0,
+            duration: 1,
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.3,
+            height: 0.3,
+            style: .solid
+        )
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(screenURL: screenURL, cameraURL: nil),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: presentation,
+            privacyOverlays: [overlay],
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: redactedFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.5, to: clearFrameURL)
+
+        let redactedCenter = try color(in: redactedFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let redactedCorner = try color(in: redactedFrameURL, normalizedX: 0.05, normalizedY: 0.05)
+        let clearCenter = try color(in: clearFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertLessThan(redactedCenter.red, 60)
+        XCTAssertGreaterThan(redactedCorner.red, 180)
+        XCTAssertGreaterThan(clearCenter.red, 180)
+    }
+
     func testProgramRendererAlignsALateCameraToTheScreenTimeline() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

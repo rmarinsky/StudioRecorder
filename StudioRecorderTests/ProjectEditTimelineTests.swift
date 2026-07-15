@@ -61,7 +61,18 @@ final class ProjectEditTimelineTests: XCTestCase {
             projectID: projectID,
             updatedAt: Date(timeIntervalSinceReferenceDate: 42),
             timelines: [timeline],
-            presentation: presentation
+            presentation: presentation,
+            privacyOverlays: [
+                ProjectPrivacyOverlay(
+                    sourceStart: 2,
+                    duration: 3,
+                    centerX: 0.5,
+                    centerY: 0.25,
+                    width: 0.4,
+                    height: 0.2,
+                    style: .blur
+                )
+            ]
         )
         let store = ProjectEditStore()
 
@@ -87,6 +98,50 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         XCTAssertEqual(document.schemaVersion, 1)
         XCTAssertNil(document.presentation)
+        XCTAssertTrue(document.privacyOverlays.isEmpty)
+    }
+
+    func testPrivacyOverlayValidationKeepsTimingAndRegionInsideTheSourceAndCanvas() {
+        let overlay = ProjectPrivacyOverlay(
+            sourceStart: 20,
+            duration: 5,
+            centerX: 0,
+            centerY: 1,
+            width: 0.4,
+            height: 0.2
+        ).validated(sourceDuration: 10)
+
+        XCTAssertEqual(overlay.sourceStart, 9.95, accuracy: 0.001)
+        XCTAssertEqual(overlay.duration, 0.05, accuracy: 0.001)
+        XCTAssertEqual(overlay.centerX, 0.2, accuracy: 0.001)
+        XCTAssertEqual(overlay.centerY, 0.9, accuracy: 0.001)
+        XCTAssertTrue(overlay.isActive(at: 9.975))
+        XCTAssertFalse(overlay.isActive(at: 10))
+
+        let undersized = ProjectPrivacyOverlay(sourceStart: 0, duration: 1, width: 0.01)
+        XCTAssertFalse(undersized.isPersistable)
+        XCTAssertEqual(
+            undersized.validated(sourceDuration: 10).width,
+            ProjectPrivacyOverlay.minimumDimension,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(ProjectPrivacyOverlay(sourceStart: 0, duration: 1).style, .solid)
+    }
+
+    func testVersionTwoDocumentDecodesWithoutPrivacyOverlays() throws {
+        let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let data = Data(
+            """
+            {"schemaVersion":2,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-15T12:00:00Z","timelines":[],"presentation":null}
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let document = try decoder.decode(ProjectEditDocument.self, from: data)
+
+        XCTAssertEqual(document.schemaVersion, 2)
+        XCTAssertTrue(document.privacyOverlays.isEmpty)
     }
 
     func testEditStoreMigratesLegacyDocumentToCurrentSchema() async throws {

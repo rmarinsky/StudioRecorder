@@ -36,12 +36,14 @@ final class ProjectProgramRenderer {
     func makePlayerItem(
         sources: ProjectProgramSources,
         timeline: ProjectEditTimeline,
-        presentation: CapturePresentationSnapshot
+        presentation: CapturePresentationSnapshot,
+        privacyOverlays: [ProjectPrivacyOverlay] = []
     ) async throws -> AVPlayerItem {
         let rendered = try await makeComposition(
             sources: sources,
             timeline: timeline,
-            presentation: presentation
+            presentation: presentation,
+            privacyOverlays: privacyOverlays
         )
         let item = AVPlayerItem(asset: rendered.asset)
         item.videoComposition = rendered.videoComposition
@@ -52,13 +54,15 @@ final class ProjectProgramRenderer {
         sources: ProjectProgramSources,
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
+        privacyOverlays: [ProjectPrivacyOverlay] = [],
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, sources: sources)
         let rendered = try await makeComposition(
             sources: sources,
             timeline: timeline,
-            presentation: presentation
+            presentation: presentation,
+            privacyOverlays: privacyOverlays
         )
         guard let session = AVAssetExportSession(asset: rendered.asset, presetName: AVAssetExportPresetHighestQuality) else {
             throw ProjectEditRendererError.exportUnavailable
@@ -91,7 +95,8 @@ final class ProjectProgramRenderer {
     private func makeComposition(
         sources: ProjectProgramSources,
         timeline: ProjectEditTimeline,
-        presentation: CapturePresentationSnapshot
+        presentation: CapturePresentationSnapshot,
+        privacyOverlays: [ProjectPrivacyOverlay]
     ) async throws -> (asset: AVMutableComposition, videoComposition: AVMutableVideoComposition) {
         let composition = AVMutableComposition()
         let screenAsset = AVURLAsset(url: sources.screenURL)
@@ -161,6 +166,7 @@ final class ProjectProgramRenderer {
             cursorSamples: sources.cursorTimeline?.samples.filter {
                 sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
             } ?? [],
+            privacyOverlays: privacyOverlays,
             rendersCursor: sources.rendersCursor,
             screenTransform: try await sourceScreenTrack.load(.preferredTransform),
             cameraTransform: cameraTransform
@@ -234,6 +240,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let presentation: CapturePresentationSnapshot
     let timeline: ProjectEditTimeline
     let cursorTimeline: CursorSceneTimeline?
+    let privacyOverlays: [ProjectPrivacyOverlay]
     let rendersCursor: Bool
     let screenTransform: CGAffineTransform
     let cameraTransform: CGAffineTransform
@@ -245,6 +252,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         presentation: CapturePresentationSnapshot,
         timeline: ProjectEditTimeline,
         cursorSamples: [CursorSceneSample],
+        privacyOverlays: [ProjectPrivacyOverlay],
         rendersCursor: Bool,
         screenTransform: CGAffineTransform,
         cameraTransform: CGAffineTransform
@@ -255,6 +263,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         self.presentation = presentation
         self.timeline = timeline
         cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        self.privacyOverlays = privacyOverlays
         self.rendersCursor = rendersCursor
         self.screenTransform = screenTransform
         self.cameraTransform = cameraTransform
@@ -289,6 +298,11 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
             isPrimaryButtonDown: sample.isPrimaryButtonDown
         )
     }
+
+    func activePrivacyOverlays(at compositionTime: CMTime) -> [ProjectPrivacyOverlay] {
+        guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds) else { return [] }
+        return privacyOverlays.filter { $0.isActive(at: sourceTime) }
+    }
 }
 
 private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
@@ -322,6 +336,7 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
             presentation: instruction.presentation,
             screenFraming: instruction.screenFraming(at: request.compositionTime),
             cursor: instruction.cursorState(at: request.compositionTime),
+            privacyOverlays: instruction.activePrivacyOverlays(at: request.compositionTime),
             to: output
         )
         request.finish(withComposedVideoFrame: output)

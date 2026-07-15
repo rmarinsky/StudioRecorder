@@ -4,6 +4,7 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
     case unsupportedSchema(Int)
     case projectMismatch
     case invalidTimeline(String)
+    case invalidPrivacyOverlay
 
     var errorDescription: String? {
         switch self {
@@ -13,30 +14,35 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
             "The edit document belongs to a different recording project."
         case .invalidTimeline(let trackID):
             "The saved edit for track \(trackID) is invalid."
+        case .invalidPrivacyOverlay:
+            "A saved privacy overlay is invalid."
         }
     }
 }
 
 struct ProjectEditDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
     let projectID: UUID
     var updatedAt: Date
     var timelines: [ProjectEditTimeline]
     var presentation: CapturePresentationSnapshot?
+    var privacyOverlays: [ProjectPrivacyOverlay]
 
     init(
         projectID: UUID,
         updatedAt: Date = Date(),
         timelines: [ProjectEditTimeline],
-        presentation: CapturePresentationSnapshot? = nil
+        presentation: CapturePresentationSnapshot? = nil,
+        privacyOverlays: [ProjectPrivacyOverlay] = []
     ) {
         schemaVersion = Self.currentSchemaVersion
         self.projectID = projectID
         self.updatedAt = updatedAt
         self.timelines = timelines
         self.presentation = presentation
+        self.privacyOverlays = privacyOverlays
     }
 
     func timeline(for trackID: String) -> ProjectEditTimeline? {
@@ -58,6 +64,28 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
     ) {
         self.presentation = presentation.validated()
         self.updatedAt = updatedAt
+    }
+
+    mutating func replacePrivacyOverlays(
+        _ privacyOverlays: [ProjectPrivacyOverlay],
+        updatedAt: Date = Date()
+    ) {
+        self.privacyOverlays = privacyOverlays
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        projectID = try container.decode(UUID.self, forKey: .projectID)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        timelines = try container.decode([ProjectEditTimeline].self, forKey: .timelines)
+        presentation = try container.decodeIfPresent(CapturePresentationSnapshot.self, forKey: .presentation)
+        privacyOverlays = try container.decodeIfPresent([ProjectPrivacyOverlay].self, forKey: .privacyOverlays) ?? []
     }
 }
 
@@ -82,11 +110,13 @@ actor ProjectEditStore {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let document = try decoder.decode(ProjectEditDocument.self, from: Data(contentsOf: url))
         try validate(document, expectedProjectID: expectedProjectID, allowsLegacy: true)
-        guard document.schemaVersion == 1 else { return document }
+        guard document.schemaVersion == 1 || document.schemaVersion == 2 else { return document }
         return ProjectEditDocument(
             projectID: document.projectID,
             updatedAt: document.updatedAt,
-            timelines: document.timelines
+            timelines: document.timelines,
+            presentation: document.presentation,
+            privacyOverlays: document.privacyOverlays
         )
     }
 
@@ -105,7 +135,7 @@ actor ProjectEditStore {
         allowsLegacy: Bool
     ) throws {
         guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion
-                || (allowsLegacy && document.schemaVersion == 1) else {
+                || (allowsLegacy && (document.schemaVersion == 1 || document.schemaVersion == 2)) else {
             throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
         }
         guard document.projectID == expectedProjectID else {
@@ -129,6 +159,10 @@ actor ProjectEditStore {
                   Set(timeline.segments.map(\.id)).count == timeline.segments.count else {
                 throw ProjectEditStoreError.invalidTimeline(timeline.trackID)
             }
+        }
+        guard document.privacyOverlays.allSatisfy(\.isPersistable),
+              Set(document.privacyOverlays.map(\.id)).count == document.privacyOverlays.count else {
+            throw ProjectEditStoreError.invalidPrivacyOverlay
         }
     }
 }

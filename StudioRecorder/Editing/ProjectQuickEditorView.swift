@@ -3,6 +3,7 @@ import SwiftUI
 struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
     let onExportMovie: () -> Void
+    @State private var privacyExpanded = false
 
     var body: some View {
         Group {
@@ -79,6 +80,8 @@ struct ProjectQuickEditorView: View {
             }
             .buttonStyle(.bordered)
 
+            privacyEditor(timeline)
+
             HStack(spacing: 8) {
                 Spacer()
 
@@ -122,9 +125,195 @@ struct ProjectQuickEditorView: View {
         }
     }
 
+    private func privacyEditor(_ timeline: ProjectEditTimeline) -> some View {
+        DisclosureGroup(isExpanded: $privacyExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                if session.privacyOverlays.isEmpty {
+                    Text("Add a timed region at the playhead, then place and resize it on the final canvas.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(session.privacyOverlays.enumerated()), id: \.element.id) { index, overlay in
+                                Button {
+                                    session.selectedPrivacyOverlayID = overlay.id
+                                } label: {
+                                    Label(
+                                        "\(overlay.style.label) \(index + 1) · \(sourceRange(overlay))",
+                                        systemImage: overlay.style == .blur ? "drop.halffull" : "rectangle.fill"
+                                    )
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(session.selectedPrivacyOverlayID == overlay.id ? .accentColor : .secondary)
+                                .accessibilityAddTraits(session.selectedPrivacyOverlayID == overlay.id ? .isSelected : [])
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+
+                    if let overlay = selectedPrivacyOverlay {
+                        PrivacyOverlayInspector(
+                            overlay: overlay,
+                            sourceDuration: timeline.sourceDuration,
+                            onChange: session.updatePrivacyOverlay,
+                            onRemove: {
+                                Task { await session.removePrivacyOverlay(overlay.id) }
+                            }
+                        )
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button("Add Solid Redaction", systemImage: "rectangle.fill") {
+                        privacyExpanded = true
+                        Task { await session.addPrivacyOverlay(style: .solid) }
+                    }
+                    Button("Add Blur", systemImage: "drop.halffull") {
+                        privacyExpanded = true
+                        Task { await session.addPrivacyOverlay(style: .blur) }
+                    }
+                    Spacer()
+                    Text("Preview, MOV, frame, and GIF use the same compositor.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!session.canEditPrivacy || session.isWorking)
+
+                if !session.privacyOverlays.isEmpty {
+                    Label(
+                        "Privacy regions apply only during their shown source-time ranges. Review the full export before sharing; Raw Movie actions never include these edits.",
+                        systemImage: "exclamationmark.shield"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 7) {
+                Label("Privacy", systemImage: "eye.slash")
+                    .font(.subheadline.weight(.semibold))
+                if !session.privacyOverlays.isEmpty {
+                    Text("\(session.privacyOverlays.count)")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+        }
+    }
+
+    private var selectedPrivacyOverlay: ProjectPrivacyOverlay? {
+        guard let id = session.selectedPrivacyOverlayID else { return session.privacyOverlays.first }
+        return session.privacyOverlays.first { $0.id == id }
+    }
+
+    private func sourceRange(_ overlay: ProjectPrivacyOverlay) -> String {
+        String(format: "%.1f–%.1fs", overlay.sourceStart, overlay.sourceStart + overlay.duration)
+    }
+
     private func format(_ seconds: TimeInterval) -> String {
         let total = max(Int(seconds.rounded()), 0)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+private struct PrivacyOverlayInspector: View {
+    let overlay: ProjectPrivacyOverlay
+    let sourceDuration: TimeInterval
+    let onChange: (ProjectPrivacyOverlay) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Picker("Treatment", selection: binding(\.style)) {
+                    ForEach(ProjectPrivacyOverlayStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+
+                Spacer()
+
+                Button("Remove", systemImage: "trash", role: .destructive, action: onRemove)
+                    .buttonStyle(.borderless)
+            }
+
+            sliderRow(
+                "Start",
+                value: binding(\.sourceStart),
+                range: 0...max(sourceDuration - 0.05, 0.05),
+                unit: "s"
+            )
+            sliderRow(
+                "Duration",
+                value: binding(\.duration),
+                range: 0.05...max(sourceDuration - overlay.sourceStart, 0.05),
+                unit: "s"
+            )
+            sliderRow("Horizontal", value: binding(\.centerX), range: overlay.width / 2...1 - overlay.width / 2, scale: 100, unit: "%")
+            sliderRow("Vertical", value: binding(\.centerY), range: overlay.height / 2...1 - overlay.height / 2, scale: 100, unit: "%")
+            sliderRow("Width", value: binding(\.width), range: 0.04...1, scale: 100, unit: "%")
+            sliderRow("Height", value: binding(\.height), range: 0.04...1, scale: 100, unit: "%")
+
+            Text("Timing follows the original source, so the region stays attached when clips are trimmed or split.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func binding<Value>(_ keyPath: WritableKeyPath<ProjectPrivacyOverlay, Value>) -> Binding<Value> {
+        Binding(
+            get: { overlay[keyPath: keyPath] },
+            set: { value in
+                var next = overlay
+                next[keyPath: keyPath] = value
+                onChange(next)
+            }
+        )
+    }
+
+    private func sliderRow(
+        _ label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        scale: Double = 1,
+        unit: String
+    ) -> some View {
+        let numericValue = Binding(
+            get: { value.wrappedValue * scale },
+            set: { value.wrappedValue = $0 / scale }
+        )
+        let accessibilityValue = scale == 1
+            ? String(format: "%.2f seconds", value.wrappedValue)
+            : String(format: "%.1f percent", value.wrappedValue * scale)
+        return HStack(spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .frame(width: 68, alignment: .leading)
+            Slider(value: value, in: range)
+                .accessibilityLabel(label)
+                .accessibilityValue(accessibilityValue)
+            TextField(
+                label,
+                value: numericValue,
+                format: .number.precision(.fractionLength(scale == 1 ? 2 : 1))
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(.caption.monospacedDigit())
+            .frame(width: 58)
+            Text(unit)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 12, alignment: .leading)
+        }
     }
 }
 

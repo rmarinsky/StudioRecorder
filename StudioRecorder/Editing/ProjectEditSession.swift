@@ -18,7 +18,9 @@ final class ProjectEditSession: ObservableObject {
 
     @Published private(set) var timeline: ProjectEditTimeline?
     @Published private(set) var presentation = CapturePresentationSnapshot.default
+    @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
     @Published var selectedSegmentID: UUID?
+    @Published var selectedPrivacyOverlayID: UUID?
     @Published private(set) var isLoading = false
     @Published private(set) var isWorking = false
     @Published private(set) var errorMessage: String?
@@ -32,9 +34,9 @@ final class ProjectEditSession: ObservableObject {
     private var programSources: ProjectProgramSources?
     private var undoStack: [ProjectEditTimeline] = []
     private var redoStack: [ProjectEditTimeline] = []
-    private var presentationSaveTask: Task<Void, Never>?
+    private var documentSaveTask: Task<Void, Never>?
     private var presentationRenderTask: Task<Void, Never>?
-    private var presentationRevision = 0
+    private var documentRevision = 0
     private var loadID = UUID()
 
     init(
@@ -54,7 +56,8 @@ final class ProjectEditSession: ObservableObject {
         guard let timeline, let selectedSegmentID else { return false }
         return timeline.segments.count > 1 && timeline.segments.contains { $0.id == selectedSegmentID }
     }
-    var isEdited: Bool { timeline?.isIdentity == false }
+    var isEdited: Bool { timeline?.isIdentity == false || !privacyOverlays.isEmpty }
+    var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
     var playhead: TimeInterval {
         let seconds = player.currentTime().seconds
         return seconds.isFinite ? max(seconds, 0) : 0
@@ -71,9 +74,9 @@ final class ProjectEditSession: ObservableObject {
         let requestID = UUID()
         loadID = requestID
         isLoading = true
-        presentationRevision += 1
-        presentationSaveTask?.cancel()
-        presentationSaveTask = nil
+        documentRevision += 1
+        documentSaveTask?.cancel()
+        documentSaveTask = nil
         presentationRenderTask?.cancel()
         presentationRenderTask = nil
         defer {
@@ -93,8 +96,10 @@ final class ProjectEditSession: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         timeline = nil
+        privacyOverlays = []
         document = nil
         selectedSegmentID = nil
+        selectedPrivacyOverlayID = nil
         undoStack = []
         redoStack = []
         errorMessage = nil
@@ -128,14 +133,17 @@ final class ProjectEditSession: ObservableObject {
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
                 timeline: editTimeline,
-                presentation: loadedPresentation
+                presentation: loadedPresentation,
+                privacyOverlays: editDocument.privacyOverlays
             )
             try Task.checkCancellation()
             guard loadID == requestID else { return }
             document = editDocument
             timeline = editTimeline
             presentation = loadedPresentation
+            privacyOverlays = editDocument.privacyOverlays
             selectedSegmentID = editTimeline.segments.first?.id
+            selectedPrivacyOverlayID = editDocument.privacyOverlays.first?.id
             player.replaceCurrentItem(with: item)
         } catch is CancellationError {
             return
@@ -193,9 +201,15 @@ final class ProjectEditSession: ObservableObject {
 
     func reset() async {
         guard let current = timeline else { return }
+        errorMessage = nil
         do {
             let next = try ProjectEditTimeline(trackID: current.trackID, sourceDuration: current.sourceDuration)
-            await commitEdit(next, selectedSegmentID: next.segments.first?.id, seekTime: 0)
+            if !current.isIdentity {
+                await commitEdit(next, selectedSegmentID: next.segments.first?.id, seekTime: 0)
+            }
+            if errorMessage == nil, !privacyOverlays.isEmpty {
+                await commitPrivacyOverlays([], selectedID: nil)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -225,11 +239,12 @@ final class ProjectEditSession: ObservableObject {
 
     func exportEditedMovie(to destinationURL: URL) async throws {
         guard let sourceURL, let timeline else { throw ProjectEditRendererError.unreadableSource }
-        if let programSources {
+        if let renderSources = renderSources(for: sourceURL) {
             try await programRenderer.exportMovie(
-                sources: programSources,
+                sources: renderSources,
                 timeline: timeline,
-                presentation: presentation,
+                presentation: renderPresentation,
+                privacyOverlays: privacyOverlays,
                 to: destinationURL
             )
         } else {
@@ -243,28 +258,44 @@ final class ProjectEditSession: ObservableObject {
         presentation = validated
         nextDocument.replacePresentation(validated)
         document = nextDocument
-
-        presentationRevision += 1
-        let revision = presentationRevision
-        presentationSaveTask?.cancel()
-        let operationID = loadID
-        presentationSaveTask = Task { [weak self, store] in
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-                try Task.checkCancellation()
-                guard let self,
-                      self.loadID == operationID,
-                      self.presentationRevision == revision,
-                      let latestDocument = self.document else { return }
-                try await store.save(latestDocument, in: projectRootURL)
-            } catch is CancellationError {
-                return
-            } catch {
-                guard let self, self.loadID == operationID else { return }
-                self.errorMessage = error.localizedDescription
-            }
-        }
+        scheduleDocumentSave(in: projectRootURL)
         scheduleProgramRefresh()
+    }
+
+    func addPrivacyOverlay(style: ProjectPrivacyOverlayStyle) async {
+        guard canEditPrivacy,
+              let timeline,
+              let sourceTime = timeline.sourceTime(at: min(playhead, max(timeline.duration - 0.001, 0))) else {
+            return
+        }
+        let duration = max(min(3, timeline.sourceDuration - sourceTime), 0.05)
+        let overlay = ProjectPrivacyOverlay(
+            sourceStart: sourceTime,
+            duration: duration,
+            style: style
+        ).validated(sourceDuration: timeline.sourceDuration)
+        await commitPrivacyOverlays(privacyOverlays + [overlay], selectedID: overlay.id)
+    }
+
+    func updatePrivacyOverlay(_ overlay: ProjectPrivacyOverlay) {
+        guard !isWorking,
+              let timeline,
+              let index = privacyOverlays.firstIndex(where: { $0.id == overlay.id }),
+              var nextDocument = document,
+              let projectRootURL else { return }
+        var next = privacyOverlays
+        next[index] = overlay.validated(sourceDuration: timeline.sourceDuration)
+        privacyOverlays = next
+        nextDocument.replacePrivacyOverlays(next)
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
+    func removePrivacyOverlay(_ id: UUID) async {
+        guard privacyOverlays.contains(where: { $0.id == id }) else { return }
+        let next = privacyOverlays.filter { $0.id != id }
+        await commitPrivacyOverlays(next, selectedID: next.first?.id)
     }
 
     func prepareMediaForDerivedExport() async throws -> PreparedProjectMedia {
@@ -272,18 +303,19 @@ final class ProjectEditSession: ObservableObject {
         guard let timeline else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
-        guard !timeline.isIdentity || programSources != nil else {
+        guard !timeline.isIdentity || programSources != nil || !privacyOverlays.isEmpty else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "Studio Recorder Derived", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let outputURL = directory.appending(path: "\(UUID().uuidString).mov")
-        if let programSources {
+        if let renderSources = renderSources(for: sourceURL) {
             try await programRenderer.exportMovie(
-                sources: programSources,
+                sources: renderSources,
                 timeline: timeline,
-                presentation: presentation,
+                presentation: renderPresentation,
+                privacyOverlays: privacyOverlays,
                 to: outputURL
             )
         } else {
@@ -294,12 +326,12 @@ final class ProjectEditSession: ObservableObject {
 
     func stop() {
         loadID = UUID()
-        presentationRevision += 1
+        documentRevision += 1
         player.pause()
-        presentationSaveTask?.cancel()
+        documentSaveTask?.cancel()
         presentationRenderTask?.cancel()
         if let document, let projectRootURL {
-            presentationSaveTask = Task { [store] in
+            documentSaveTask = Task { [store] in
                 try? await store.save(document, in: projectRootURL)
             }
         }
@@ -331,8 +363,8 @@ final class ProjectEditSession: ObservableObject {
               let sourceURL,
               let projectRootURL,
               document != nil else { return }
-        presentationSaveTask?.cancel()
-        presentationSaveTask = nil
+        documentSaveTask?.cancel()
+        documentSaveTask = nil
         presentationRenderTask?.cancel()
         presentationRenderTask = nil
         let operationID = loadID
@@ -344,7 +376,8 @@ final class ProjectEditSession: ObservableObject {
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
                 timeline: next,
-                presentation: presentation
+                presentation: presentation,
+                privacyOverlays: privacyOverlays
             )
             guard loadID == operationID, var nextDocument = document else { return }
             nextDocument.replaceTimeline(next)
@@ -366,25 +399,28 @@ final class ProjectEditSession: ObservableObject {
     private func makePlayerItem(
         sourceURL: URL,
         timeline: ProjectEditTimeline,
-        presentation: CapturePresentationSnapshot
+        presentation: CapturePresentationSnapshot,
+        privacyOverlays: [ProjectPrivacyOverlay]
     ) async throws -> AVPlayerItem {
-        if let programSources {
+        if let renderSources = renderSources(for: sourceURL, privacyOverlays: privacyOverlays) {
             return try await programRenderer.makePlayerItem(
-                sources: programSources,
+                sources: renderSources,
                 timeline: timeline,
-                presentation: presentation
+                presentation: programSources == nil ? bakedProgramPresentation(from: presentation) : presentation,
+                privacyOverlays: privacyOverlays
             )
         }
         return try await renderer.makePlayerItem(from: sourceURL, timeline: timeline)
     }
 
-    private func scheduleProgramRefresh() {
-        guard let sourceURL, let timeline, programSources != nil else { return }
+    private func scheduleProgramRefresh(force: Bool = false) {
+        guard let sourceURL, let timeline, force || programSources != nil else { return }
         presentationRenderTask?.cancel()
         let operationID = loadID
         let seekTime = playhead
         let wasPlaying = player.rate != 0
         let nextPresentation = presentation
+        let nextPrivacyOverlays = privacyOverlays
         presentationRenderTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(90))
@@ -392,7 +428,8 @@ final class ProjectEditSession: ObservableObject {
                 let item = try await self.makePlayerItem(
                     sourceURL: sourceURL,
                     timeline: timeline,
-                    presentation: nextPresentation
+                    presentation: nextPresentation,
+                    privacyOverlays: nextPrivacyOverlays
                 )
                 try Task.checkCancellation()
                 guard self.loadID == operationID else { return }
@@ -406,5 +443,96 @@ final class ProjectEditSession: ObservableObject {
                 self.errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func commitPrivacyOverlays(
+        _ next: [ProjectPrivacyOverlay],
+        selectedID: UUID?
+    ) async {
+        guard !isWorking,
+              let sourceURL,
+              let timeline,
+              let projectRootURL,
+              var nextDocument = document else { return }
+        documentSaveTask?.cancel()
+        presentationRenderTask?.cancel()
+        let operationID = loadID
+        let seekTime = playhead
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        do {
+            let item = try await makePlayerItem(
+                sourceURL: sourceURL,
+                timeline: timeline,
+                presentation: presentation,
+                privacyOverlays: next
+            )
+            guard loadID == operationID else { return }
+            nextDocument.replacePrivacyOverlays(next)
+            try await store.save(nextDocument, in: projectRootURL)
+            guard loadID == operationID else { return }
+            document = nextDocument
+            privacyOverlays = next
+            selectedPrivacyOverlayID = selectedID
+            player.replaceCurrentItem(with: item)
+            await player.seek(to: CMTime(seconds: seekTime, preferredTimescale: 600))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func scheduleDocumentSave(in projectRootURL: URL) {
+        documentRevision += 1
+        let revision = documentRevision
+        let operationID = loadID
+        documentSaveTask?.cancel()
+        documentSaveTask = Task { [weak self, store] in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                try Task.checkCancellation()
+                guard let self,
+                      self.loadID == operationID,
+                      self.documentRevision == revision,
+                      let document = self.document else { return }
+                try await store.save(document, in: projectRootURL)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.loadID == operationID else { return }
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func renderSources(
+        for sourceURL: URL,
+        privacyOverlays: [ProjectPrivacyOverlay]? = nil
+    ) -> ProjectProgramSources? {
+        if let programSources { return programSources }
+        guard !(privacyOverlays ?? self.privacyOverlays).isEmpty else { return nil }
+        return ProjectProgramSources(screenURL: sourceURL, cameraURL: nil)
+    }
+
+    private var renderPresentation: CapturePresentationSnapshot {
+        programSources == nil ? bakedProgramPresentation(from: presentation) : presentation
+    }
+
+    private func bakedProgramPresentation(
+        from presentation: CapturePresentationSnapshot
+    ) -> CapturePresentationSnapshot {
+        var output = CapturePresentationSnapshot.default
+        output.name = presentation.name
+        output.canvas = presentation.canvas
+        output.screen = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 1,
+            height: 1,
+            shape: .rectangle
+        )
+        output.camera.isVisible = false
+        output.framing = ScreenFramingSnapshot(mode: .fullDisplay)
+        return output
     }
 }

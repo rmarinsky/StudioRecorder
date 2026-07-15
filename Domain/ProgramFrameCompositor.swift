@@ -31,6 +31,7 @@ final class ProgramFrameCompositor: @unchecked Sendable {
         presentation: CapturePresentationSnapshot,
         screenFraming: ScreenFramingSnapshot? = nil,
         cursor: ProgramCursorState? = nil,
+        privacyOverlays: [ProjectPrivacyOverlay] = [],
         to output: CVPixelBuffer
     ) {
         let presentation = presentation.validated()
@@ -62,7 +63,38 @@ final class ProgramFrameCompositor: @unchecked Sendable {
                 over: result
             )
         }
+        result = applyPrivacyOverlays(privacyOverlays, to: result, canvas: canvas)
         context.render(result, to: output, bounds: canvas, colorSpace: CGColorSpaceCreateDeviceRGB())
+    }
+
+    private func applyPrivacyOverlays(
+        _ overlays: [ProjectPrivacyOverlay],
+        to image: CIImage,
+        canvas: CGRect
+    ) -> CIImage {
+        overlays.reduce(image) { result, overlay in
+            let overlay = overlay.validatedCanvasGeometry()
+            let rect = CGRect(
+                x: canvas.width * overlay.centerX - canvas.width * overlay.width / 2,
+                y: canvas.height * (1 - overlay.centerY) - canvas.height * overlay.height / 2,
+                width: canvas.width * overlay.width,
+                height: canvas.height * overlay.height
+            ).intersection(canvas)
+            guard !rect.isEmpty else { return result }
+            let foreground: CIImage
+            switch overlay.style {
+            case .blur:
+                let radius = max(12, min(canvas.width, canvas.height) * 0.025)
+                foreground = result
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                    .cropped(to: rect)
+            case .solid:
+                foreground = CIImage(color: CIColor(red: 0.02, green: 0.02, blue: 0.02, alpha: 1))
+                    .cropped(to: rect)
+            }
+            return foreground.composited(over: result).cropped(to: canvas)
+        }
     }
 
     private func compose(
