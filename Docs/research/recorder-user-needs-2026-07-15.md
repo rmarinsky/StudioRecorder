@@ -77,9 +77,9 @@ Build in this order:
 
 **Technical constraint.** OBS Scene Collections save reusable Sources/Scenes but separate them from output Profiles ([official guide](https://obsproject.com/kb/scene-collections)). Studio Recorder should keep this concept narrow: composition presets, not a plugin graph.
 
-**Existing coverage.** `StudioSceneLibraryStore` atomically persists named Scenes; `StudioSceneLiveContract` blocks unsafe canvas/camera/cursor/region changes; compatible live switches append a timestamped `StudioSceneTimeline`, which playback/export resolves at source time. Tests cover persistence, corruption preservation, rebasing, and incompatible switches.
+**Existing coverage.** `StudioSceneLibraryStore` atomically persists named Scenes; Studio exposes save, rename, duplicate, delete, and large live-switch targets; `StudioSceneLiveContract` blocks unsafe canvas/camera/cursor/region changes; compatible live switches append a timestamped `StudioSceneTimeline`, which playback/export resolves at source time. Tests cover persistence, corruption preservation, rebasing, and incompatible switches.
 
-**Recommendation.** Keep the current narrow Scene model. Prioritize rendered live verification, clearer incompatibility messaging, duplication/reorder, and cut/short-dissolve only. Do not add browser sources, nested scenes, or arbitrary source/device changes.
+**Recommendation.** Keep the current narrow Scene model. Prioritize rendered live verification, scene reordering, and cut/short-dissolve only. Do not add browser sources, nested scenes, or arbitrary source/device changes.
 
 **Acceptance criterion.** Switch repeatedly among Screen, Camera, and Screen + Camera during record, stream, and Record + Stream. Program preview/export must match the recorded Scene timeline frame-for-frame; raw-track retention must not change; incompatible switches must fail before mutating the active Scene.
 

@@ -40,6 +40,8 @@ struct StudioRecorderRootView: View {
     @State private var selectedSceneID: UUID?
     @State private var sceneSwitchError: String?
     @State private var sceneLibraryError: String?
+    @State private var sceneRenameDraft = ""
+    @State private var isRenamingScene = false
     @State private var streamingSceneContract: StudioSceneLiveContract?
     @State private var selectedCanvasSource: StudioCanvasSource?
 
@@ -126,6 +128,14 @@ struct StudioRecorderRootView: View {
             Button("OK", role: .cancel) { sceneLibraryError = nil }
         } message: {
             Text(sceneLibraryError ?? "The scene library could not be updated.")
+        }
+        .alert("Rename Scene", isPresented: $isRenamingScene) {
+            TextField("Scene name", text: $sceneRenameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename", action: renameSelectedScene)
+                .disabled(sceneRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("The new name is saved to this scene preset.")
         }
         .confirmationDialog(
             "Move this recording project to Trash?",
@@ -569,6 +579,8 @@ struct StudioRecorderRootView: View {
                         onSelect: applyScene,
                         onSave: saveCurrentScene,
                         onCreate: createScene,
+                        onRename: beginRenamingSelectedScene,
+                        onDuplicate: duplicateSelectedScene,
                         onDelete: deleteSelectedScene
                     )
                     LiveProgramPreview(
@@ -1251,15 +1263,48 @@ struct StudioRecorderRootView: View {
 
     private func createScene() {
         guard var presentation = snapshot.studioDraft?.presentation else { return }
-        let usedNames = Set(sceneLibrary.scenes.map(\.name))
-        var index = sceneLibrary.scenes.count + 1
-        while usedNames.contains("Scene \(index)") { index += 1 }
-        presentation.name = "Scene \(index)"
+        presentation.name = nextSceneName()
         let scene = StudioScenePreset(presentation: presentation)
         do {
             try sceneLibrary.save(scene)
             selectedSceneID = scene.id
             model.send(.setDraftPresentation(scene.presentation))
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func beginRenamingSelectedScene() {
+        guard let scene = sceneLibrary.scene(id: selectedSceneID) else { return }
+        sceneRenameDraft = scene.name
+        isRenamingScene = true
+    }
+
+    private func renameSelectedScene() {
+        guard var scene = sceneLibrary.scene(id: selectedSceneID) else { return }
+        let name = sceneRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        scene.presentation.name = name
+        do {
+            try sceneLibrary.save(scene)
+            if var currentPresentation = snapshot.studioDraft?.presentation {
+                currentPresentation.name = name
+                model.send(.setDraftPresentation(currentPresentation))
+            }
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func duplicateSelectedScene() {
+        guard let selected = sceneLibrary.scene(id: selectedSceneID) else { return }
+        var presentation = selected.presentation
+        presentation.name = uniqueSceneName(base: "\(selected.name) Copy")
+        let duplicate = StudioScenePreset(presentation: presentation)
+        do {
+            try sceneLibrary.save(duplicate)
+            selectedSceneID = duplicate.id
+            model.send(.setDraftPresentation(duplicate.presentation))
         } catch {
             sceneLibraryError = error.localizedDescription
         }
@@ -1273,6 +1318,21 @@ struct StudioRecorderRootView: View {
         } catch {
             sceneLibraryError = error.localizedDescription
         }
+    }
+
+    private func uniqueSceneName(base: String) -> String {
+        let usedNames = Set(sceneLibrary.scenes.map(\.name))
+        guard usedNames.contains(base) else { return base }
+        var index = 2
+        while usedNames.contains("\(base) \(index)") { index += 1 }
+        return "\(base) \(index)"
+    }
+
+    private func nextSceneName() -> String {
+        let usedNames = Set(sceneLibrary.scenes.map(\.name))
+        var index = 1
+        while usedNames.contains("Scene \(index)") { index += 1 }
+        return "Scene \(index)"
     }
 
     private func captureProgramSnapshot() {
@@ -1584,27 +1644,42 @@ private struct StudioInspector: View {
                 Image(systemName: icon)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.subheadline.weight(.medium))
-                    Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(width: 34, height: 34)
+                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.subheadline.weight(.semibold))
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Configure")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.left")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 52)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
-            activeSourceSettings == settings || canvasSource(for: settings).map { $0 == selectedCanvasSource } == true
-                ? Color.accentColor.opacity(0.10)
-                : Color.clear
+            (activeSourceSettings == settings || canvasSource(for: settings).map { $0 == selectedCanvasSource } == true)
+                ? Color.accentColor.opacity(0.12)
+                : Color.primary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
         )
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(
+                    activeSourceSettings == settings ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.07),
+                    lineWidth: 1
+                )
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
         .popover(
             isPresented: Binding(
                 get: { activeSourceSettings == settings },
@@ -1614,7 +1689,7 @@ private struct StudioInspector: View {
         ) {
             sourceSettingsPanel(settings)
                 .frame(width: 330)
-                .padding(16)
+                .padding(18)
         }
     }
 
@@ -2508,47 +2583,62 @@ private struct SceneSwitcherBar: View {
     let onSelect: (StudioScenePreset) -> Void
     let onSave: () -> Void
     let onCreate: () -> Void
+    let onRename: () -> Void
+    let onDuplicate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Label("Scenes", systemImage: "rectangle.3.group")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            Image(systemName: "rectangle.3.group.fill")
+                .font(.body.weight(.medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28, height: 28)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityLabel("Scenes")
 
             if scenes.isEmpty {
-                Button("Save current scene", action: onSave)
+                Button("Save Current Scene", action: onSave)
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(!canManage)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         ForEach(scenes) { scene in
                             let issue = incompatibility(scene)
                             Button { onSelect(scene) } label: {
                                 HStack(spacing: 6) {
                                     if scene.id == selectedSceneID, isLive {
-                                        Circle().fill(.red).frame(width: 6, height: 6)
+                                        Circle().fill(.red).frame(width: 7, height: 7)
                                     }
                                     Text(scene.name).lineLimit(1)
                                     if issue != nil {
                                         Image(systemName: "lock.fill").font(.caption2)
                                     }
                                 }
-                                .font(.caption.weight(.medium))
-                                .padding(.horizontal, 10)
-                                .frame(minHeight: 34)
+                                .font(.subheadline.weight(scene.id == selectedSceneID ? .semibold : .medium))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 40)
                                 .contentShape(Rectangle())
                                 .background(
                                     scene.id == selectedSceneID
-                                        ? Color.accentColor.opacity(0.16)
-                                        : Color.primary.opacity(0.06),
-                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        ? Color.accentColor.opacity(0.18)
+                                        : Color.primary.opacity(0.055),
+                                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 )
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(
+                                            scene.id == selectedSceneID
+                                                ? Color.accentColor.opacity(0.45)
+                                                : Color.clear,
+                                            lineWidth: 1
+                                        )
+                                }
                             }
                             .buttonStyle(.plain)
                             .help(issue?.message ?? "Switch to \(scene.name)")
+                            .accessibilityHint(issue?.message ?? "Switches to this saved scene")
                         }
                     }
                 }
@@ -2556,36 +2646,53 @@ private struct SceneSwitcherBar: View {
 
             Spacer(minLength: 0)
 
-            if canManage {
+            if canManage, !scenes.isEmpty {
                 Button(action: onSave) {
-                    Image(systemName: selectedSceneID == nil ? "square.and.arrow.down" : "arrow.triangle.2.circlepath")
+                    Label("Save", systemImage: selectedSceneID == nil ? "square.and.arrow.down" : "arrow.triangle.2.circlepath")
                 }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .help(selectedSceneID == nil ? "Save current scene" : "Update selected scene")
                 .disabled(scenes.isEmpty && selectedSceneID != nil)
 
                 Button(action: onCreate) {
-                    Image(systemName: "plus")
+                    Label("New", systemImage: "plus")
                 }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .help("Create scene from current layout")
 
                 if selectedSceneID != nil {
                     Menu {
+                        Button("Rename Scene…", systemImage: "pencil", action: onRename)
+                        Button("Duplicate Scene", systemImage: "plus.square.on.square", action: onDuplicate)
+                        Divider()
                         Button("Delete Scene", systemImage: "trash", role: .destructive, action: onDelete)
                     } label: {
                         Image(systemName: "ellipsis")
+                            .frame(width: 28, height: 28)
                     }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 28)
+                    .menuStyle(.button)
+                    .controlSize(.regular)
                 }
             } else {
-                Text("LIVE")
-                    .font(.caption2.weight(.bold))
+                Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(.red)
+                    .padding(.horizontal, 9)
+                    .frame(minHeight: 30)
+                    .background(Color.red.opacity(0.10), in: Capsule())
             }
         }
-        .frame(minHeight: 36)
-        .padding(.horizontal, 10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(minHeight: 50)
+        .padding(.horizontal, 12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
         .accessibilityElement(children: .contain)
     }
 }
