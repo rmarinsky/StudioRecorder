@@ -113,9 +113,50 @@ final class StudioSceneLibraryStore: ObservableObject {
     }
 }
 
+enum StudioSceneTransitionKind: String, Codable, Equatable, Sendable {
+    case scene
+    case manualZoomStart
+    case manualZoomReset
+}
+
 struct StudioSceneTransition: Codable, Equatable, Sendable {
     let sourceTime: TimeInterval
     let presentation: CapturePresentationSnapshot
+    let kind: StudioSceneTransitionKind
+
+    init(
+        sourceTime: TimeInterval,
+        presentation: CapturePresentationSnapshot,
+        kind: StudioSceneTransitionKind = .scene
+    ) {
+        self.sourceTime = sourceTime
+        self.presentation = presentation
+        self.kind = kind
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceTime, presentation, kind
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sourceTime = try container.decode(TimeInterval.self, forKey: .sourceTime)
+        presentation = try container.decode(CapturePresentationSnapshot.self, forKey: .presentation)
+        kind = try container.decodeIfPresent(StudioSceneTransitionKind.self, forKey: .kind) ?? .scene
+    }
+}
+
+struct StudioManualZoomMarker: Equatable, Identifiable, Sendable {
+    let transitionIndex: Int
+    var sourceTime: TimeInterval
+    var centerX: CGFloat
+    var centerY: CGFloat
+    var scale: CGFloat
+    let minimumSourceTime: TimeInterval
+    let maximumSourceTime: TimeInterval
+
+    var id: Int { transitionIndex }
+    var zoomFactor: CGFloat { 1 / max(scale, 0.01) }
 }
 
 struct StudioSceneTimeline: Codable, Equatable, Sendable {
@@ -124,6 +165,30 @@ struct StudioSceneTimeline: Codable, Equatable, Sendable {
 
     var hasSceneSwitches: Bool { transitions.count > 1 }
 
+    func manualZoomMarkers(sourceDuration: TimeInterval) -> [StudioManualZoomMarker] {
+        guard transitions.count > 1, sourceDuration.isFinite, sourceDuration > 0 else { return [] }
+        return transitions.indices.dropFirst().compactMap { index in
+            let previous = transitions[index - 1]
+            let transition = transitions[index]
+            guard transition.kind == .manualZoomStart,
+                  isFramingOnlyZoom(transition.presentation, from: previous.presentation) else {
+                return nil
+            }
+            let nextTime = index + 1 < transitions.count
+                ? transitions[index + 1].sourceTime
+                : sourceDuration
+            return StudioManualZoomMarker(
+                transitionIndex: index,
+                sourceTime: transition.sourceTime,
+                centerX: transition.presentation.framing.centerX,
+                centerY: transition.presentation.framing.centerY,
+                scale: transition.presentation.framing.scale,
+                minimumSourceTime: min(previous.sourceTime + 0.01, nextTime),
+                maximumSourceTime: max(nextTime - 0.01, previous.sourceTime)
+            )
+        }
+    }
+
     init(initialPresentation: CapturePresentationSnapshot) {
         schemaVersion = 1
         transitions = [
@@ -131,11 +196,16 @@ struct StudioSceneTimeline: Codable, Equatable, Sendable {
         ]
     }
 
-    mutating func append(_ presentation: CapturePresentationSnapshot, at sourceTime: TimeInterval) {
+    mutating func append(
+        _ presentation: CapturePresentationSnapshot,
+        at sourceTime: TimeInterval,
+        kind: StudioSceneTransitionKind = .scene
+    ) {
         guard sourceTime.isFinite, sourceTime >= 0 else { return }
         let transition = StudioSceneTransition(
             sourceTime: sourceTime,
-            presentation: presentation.validated()
+            presentation: presentation.validated(),
+            kind: kind
         )
         if let last = transitions.last, abs(last.sourceTime - sourceTime) < 0.001 {
             transitions[transitions.count - 1] = transition
@@ -151,16 +221,108 @@ struct StudioSceneTimeline: Codable, Equatable, Sendable {
             guard index > 0 else { return transition }
             return StudioSceneTransition(
                 sourceTime: max(transition.sourceTime + offset, 0),
-                presentation: transition.presentation
+                presentation: transition.presentation,
+                kind: transition.kind
             )
         }
         transitions.sort { $0.sourceTime < $1.sourceTime }
+    }
+
+    @discardableResult
+    mutating func updateManualZoomMarker(
+        _ marker: StudioManualZoomMarker,
+        sourceDuration: TimeInterval
+    ) -> Bool {
+        guard marker.transitionIndex > 0,
+              marker.transitionIndex < transitions.count,
+              sourceDuration.isFinite,
+              sourceDuration > 0 else { return false }
+        let index = marker.transitionIndex
+        guard transitions[index].kind == .manualZoomStart,
+              isFramingOnlyZoom(
+            transitions[index].presentation,
+            from: transitions[index - 1].presentation
+        ) else { return false }
+        let lowerBound = min(transitions[index - 1].sourceTime + 0.01, sourceDuration)
+        let upperBound = max(
+            min(index + 1 < transitions.count ? transitions[index + 1].sourceTime - 0.01 : sourceDuration, sourceDuration),
+            lowerBound
+        )
+        let previousFraming = transitions[index].presentation.framing
+        var presentation = transitions[index].presentation
+        presentation.framing = ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: marker.centerX,
+            centerY: marker.centerY,
+            scale: marker.scale
+        ).validated()
+        let nextFraming = presentation.framing
+        transitions[index] = StudioSceneTransition(
+            sourceTime: min(max(marker.sourceTime, lowerBound), upperBound),
+            presentation: presentation.validated(),
+            kind: transitions[index].kind
+        )
+        if index + 1 < transitions.count {
+            for followingIndex in (index + 1)..<transitions.count {
+                guard transitions[followingIndex].presentation.framing == previousFraming else { break }
+                var following = transitions[followingIndex].presentation
+                following.framing = nextFraming
+                transitions[followingIndex] = StudioSceneTransition(
+                    sourceTime: transitions[followingIndex].sourceTime,
+                    presentation: following.validated(),
+                    kind: transitions[followingIndex].kind
+                )
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    mutating func removeManualZoomMarker(at transitionIndex: Int) -> Bool {
+        guard transitionIndex > 0,
+              transitionIndex < transitions.count,
+              transitions[transitionIndex].kind == .manualZoomStart,
+              isFramingOnlyZoom(
+                transitions[transitionIndex].presentation,
+                from: transitions[transitionIndex - 1].presentation
+              ) else { return false }
+        let zoomFraming = transitions[transitionIndex].presentation.framing
+        let restoredFraming = transitions[transitionIndex - 1].presentation.framing
+        if transitionIndex + 1 < transitions.count {
+            for followingIndex in (transitionIndex + 1)..<transitions.count {
+                guard transitions[followingIndex].presentation.framing == zoomFraming else { break }
+                var following = transitions[followingIndex].presentation
+                following.framing = restoredFraming
+                transitions[followingIndex] = StudioSceneTransition(
+                    sourceTime: transitions[followingIndex].sourceTime,
+                    presentation: following.validated(),
+                    kind: transitions[followingIndex].kind
+                )
+            }
+        }
+        transitions.remove(at: transitionIndex)
+        transitions = transitions.reduce(into: []) { result, transition in
+            guard result.last?.presentation != transition.presentation else { return }
+            result.append(transition)
+        }
+        return true
     }
 
     func presentation(at sourceTime: TimeInterval) -> CapturePresentationSnapshot {
         transitions.last { $0.sourceTime <= sourceTime }?.presentation
             ?? transitions.first?.presentation
             ?? .default
+    }
+
+    private func isFramingOnlyZoom(
+        _ candidate: CapturePresentationSnapshot,
+        from previous: CapturePresentationSnapshot
+    ) -> Bool {
+        let framing = candidate.validated().framing
+        guard framing.mode == .fixedRegion, framing.scale < 0.99 else { return false }
+        var withoutZoom = candidate.validated()
+        withoutZoom.framing = previous.validated().framing
+        return withoutZoom.validated() == previous.validated()
     }
 }
 

@@ -4,6 +4,7 @@ struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
     let onExportMovie: () -> Void
     @State private var privacyExpanded = false
+    @State private var zoomExpanded = false
 
     var body: some View {
         Group {
@@ -80,6 +81,7 @@ struct ProjectQuickEditorView: View {
             }
             .buttonStyle(.bordered)
 
+            zoomEditor(timeline)
             privacyEditor(timeline)
 
             HStack(spacing: 8) {
@@ -123,6 +125,75 @@ struct ProjectQuickEditorView: View {
                     .foregroundStyle(.orange)
             }
         }
+    }
+
+    private func zoomEditor(_ timeline: ProjectEditTimeline) -> some View {
+        DisclosureGroup(isExpanded: $zoomExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                if session.manualZoomMarkers.isEmpty {
+                    Text("Use Zoom Here while recording or streaming to create editable pointer-centered zoom markers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(session.manualZoomMarkers.enumerated()), id: \.element.id) { index, marker in
+                                Button {
+                                    session.selectedManualZoomTransitionIndex = marker.transitionIndex
+                                } label: {
+                                    Label(
+                                        "Zoom \(index + 1) · \(String(format: "%.1fs", marker.sourceTime))",
+                                        systemImage: "scope"
+                                    )
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(
+                                    session.selectedManualZoomTransitionIndex == marker.transitionIndex
+                                        ? .accentColor
+                                        : .secondary
+                                )
+                                .accessibilityAddTraits(
+                                    session.selectedManualZoomTransitionIndex == marker.transitionIndex
+                                        ? .isSelected
+                                        : []
+                                )
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+
+                    if let marker = selectedManualZoomMarker {
+                        ManualZoomMarkerInspector(
+                            marker: marker,
+                            onChange: session.updateManualZoomMarker,
+                            onMoveToPlayhead: { session.moveManualZoomMarkerToPlayhead(marker) },
+                            onRemove: { session.removeManualZoomMarker(marker) }
+                        )
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.shield")
+                    Text("Timing follows original source time. Preview, MOV, frame, and GIF reuse the edited marker; raw media stays unchanged.")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 7) {
+                Label("Zoom", systemImage: "scope")
+                    .font(.subheadline.weight(.semibold))
+                if !session.manualZoomMarkers.isEmpty {
+                    Text("\(session.manualZoomMarkers.count)")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+        }
+        .disabled(!session.canEditManualZoom || session.isWorking)
     }
 
     private func privacyEditor(_ timeline: ProjectEditTimeline) -> some View {
@@ -211,6 +282,14 @@ struct ProjectQuickEditorView: View {
         return session.privacyOverlays.first { $0.id == id }
     }
 
+    private var selectedManualZoomMarker: StudioManualZoomMarker? {
+        guard let index = session.selectedManualZoomTransitionIndex else {
+            return session.manualZoomMarkers.first
+        }
+        return session.manualZoomMarkers.first { $0.transitionIndex == index }
+            ?? session.manualZoomMarkers.first
+    }
+
     private func sourceRange(_ overlay: ProjectPrivacyOverlay) -> String {
         String(format: "%.1f–%.1fs", overlay.sourceStart, overlay.sourceStart + overlay.duration)
     }
@@ -218,6 +297,96 @@ struct ProjectQuickEditorView: View {
     private func format(_ seconds: TimeInterval) -> String {
         let total = max(Int(seconds.rounded()), 0)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+private struct ManualZoomMarkerInspector: View {
+    let marker: StudioManualZoomMarker
+    let onChange: (StudioManualZoomMarker) -> Void
+    let onMoveToPlayhead: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button("Move to Playhead", systemImage: "arrow.right.to.line", action: onMoveToPlayhead)
+                Spacer()
+                Button("Remove", systemImage: "trash", role: .destructive, action: onRemove)
+                    .buttonStyle(.borderless)
+            }
+
+            sliderRow(
+                "Start",
+                value: binding(\.sourceTime),
+                range: marker.minimumSourceTime...max(marker.maximumSourceTime, marker.minimumSourceTime + 0.001),
+                unit: "s"
+            )
+            sliderRow("Horizontal", value: binding(\.centerX), range: 0...1, scale: 100, unit: "%")
+            sliderRow("Vertical", value: binding(\.centerY), range: 0...1, scale: 100, unit: "%")
+            sliderRow("Zoom", value: zoomBinding, range: 1.1...4, unit: "×")
+
+            Text("The zoom stays active until the next recorded Scene or Reset Zoom marker.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var zoomBinding: Binding<CGFloat> {
+        Binding(
+            get: { marker.zoomFactor },
+            set: { factor in
+                var next = marker
+                next.scale = 1 / max(factor, 1)
+                onChange(next)
+            }
+        )
+    }
+
+    private func binding<Value>(_ keyPath: WritableKeyPath<StudioManualZoomMarker, Value>) -> Binding<Value> {
+        Binding(
+            get: { marker[keyPath: keyPath] },
+            set: { value in
+                var next = marker
+                next[keyPath: keyPath] = value
+                onChange(next)
+            }
+        )
+    }
+
+    private func sliderRow(
+        _ title: String,
+        value: Binding<TimeInterval>,
+        range: ClosedRange<TimeInterval>,
+        scale: Double = 1,
+        unit: String
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(title).frame(width: 70, alignment: .leading)
+            Slider(value: value, in: range)
+            Text(String(format: "%.1f%@", value.wrappedValue * scale, unit))
+                .monospacedDigit()
+                .frame(width: 56, alignment: .trailing)
+        }
+        .font(.caption)
+    }
+
+    private func sliderRow(
+        _ title: String,
+        value: Binding<CGFloat>,
+        range: ClosedRange<CGFloat>,
+        scale: CGFloat = 1,
+        unit: String
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(title).frame(width: 70, alignment: .leading)
+            Slider(value: value, in: range)
+            Text(String(format: "%.1f%@", value.wrappedValue * scale, unit))
+                .monospacedDigit()
+                .frame(width: 56, alignment: .trailing)
+        }
+        .font(.caption)
     }
 }
 

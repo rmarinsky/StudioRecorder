@@ -70,6 +70,76 @@ final class StudioSceneTests: XCTestCase {
         XCTAssertEqual(timeline.presentation(at: 1.75), second.validated())
     }
 
+    func testManualZoomEditingPreservesUnrelatedSceneChangesAndRawResetTiming() throws {
+        var base = CapturePresentationSnapshot.default
+        base.name = "Base"
+        var zoom = base
+        zoom.framing = ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: 0.25,
+            centerY: 0.4,
+            scale: 0.5
+        )
+        var layoutDuringZoom = zoom
+        layoutDuringZoom.camera.width = 0.42
+        var resetLayout = layoutDuringZoom
+        resetLayout.framing = base.framing
+
+        var timeline = StudioSceneTimeline(initialPresentation: base)
+        timeline.append(zoom, at: 2, kind: .manualZoomStart)
+        timeline.append(layoutDuringZoom, at: 4)
+        timeline.append(resetLayout, at: 6, kind: .manualZoomReset)
+
+        var marker = try XCTUnwrap(timeline.manualZoomMarkers(sourceDuration: 10).first)
+        marker.sourceTime = 3
+        marker.centerX = 0.7
+        marker.centerY = 0.6
+        marker.scale = 0.4
+        XCTAssertTrue(timeline.updateManualZoomMarker(marker, sourceDuration: 10))
+
+        XCTAssertEqual(timeline.presentation(at: 2.5), base.validated())
+        XCTAssertEqual(timeline.presentation(at: 3).framing.centerX, 0.7, accuracy: 0.001)
+        XCTAssertEqual(timeline.presentation(at: 4.5).framing.centerX, 0.7, accuracy: 0.001)
+        XCTAssertEqual(timeline.presentation(at: 4.5).camera.width, 0.42, accuracy: 0.001)
+        XCTAssertEqual(timeline.presentation(at: 6).framing.mode, .fullDisplay)
+
+        XCTAssertTrue(timeline.removeManualZoomMarker(at: marker.transitionIndex))
+        XCTAssertTrue(timeline.manualZoomMarkers(sourceDuration: 10).isEmpty)
+        XCTAssertEqual(timeline.presentation(at: 3.5).framing.mode, .fullDisplay)
+        XCTAssertEqual(timeline.presentation(at: 4.5).framing.mode, .fullDisplay)
+        XCTAssertEqual(timeline.presentation(at: 4.5).camera.width, 0.42, accuracy: 0.001)
+    }
+
+    func testManualZoomDetectionDoesNotExposeAFullSceneChange() {
+        let base = CapturePresentationSnapshot.default
+        var scene = base
+        scene.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.5)
+        var timeline = StudioSceneTimeline(initialPresentation: base)
+        timeline.append(scene, at: 2)
+
+        XCTAssertTrue(timeline.manualZoomMarkers(sourceDuration: 10).isEmpty)
+    }
+
+    func testLegacyTransitionWithoutProvenanceDefaultsToScene() throws {
+        let base = CapturePresentationSnapshot.default
+        var zoom = base
+        zoom.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.5)
+        var timeline = StudioSceneTimeline(initialPresentation: base)
+        timeline.append(zoom, at: 2, kind: .manualZoomStart)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(timeline)) as? [String: Any]
+        )
+        var transitions = try XCTUnwrap(object["transitions"] as? [[String: Any]])
+        transitions[1].removeValue(forKey: "kind")
+        object["transitions"] = transitions
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(StudioSceneTimeline.self, from: legacyData)
+
+        XCTAssertEqual(decoded.transitions[1].kind, .scene)
+        XCTAssertTrue(decoded.manualZoomMarkers(sourceDuration: 10).isEmpty)
+    }
+
     func testLiveSwitchRejectsCanvasCameraAndUnavailableFollowCursorChanges() {
         var initial = CapturePresentationSnapshot.default
         initial.canvas = CaptureCanvasSnapshot(preset: .fullHD)

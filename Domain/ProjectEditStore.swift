@@ -5,6 +5,7 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
     case projectMismatch
     case invalidTimeline(String)
     case invalidPrivacyOverlay
+    case invalidSceneTimeline
 
     var errorDescription: String? {
         switch self {
@@ -16,12 +17,14 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
             "The saved edit for track \(trackID) is invalid."
         case .invalidPrivacyOverlay:
             "A saved privacy overlay is invalid."
+        case .invalidSceneTimeline:
+            "The saved Scene timeline is invalid."
         }
     }
 }
 
 struct ProjectEditDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     let projectID: UUID
@@ -29,13 +32,15 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
     var timelines: [ProjectEditTimeline]
     var presentation: CapturePresentationSnapshot?
     var privacyOverlays: [ProjectPrivacyOverlay]
+    var sceneTimeline: StudioSceneTimeline?
 
     init(
         projectID: UUID,
         updatedAt: Date = Date(),
         timelines: [ProjectEditTimeline],
         presentation: CapturePresentationSnapshot? = nil,
-        privacyOverlays: [ProjectPrivacyOverlay] = []
+        privacyOverlays: [ProjectPrivacyOverlay] = [],
+        sceneTimeline: StudioSceneTimeline? = nil
     ) {
         schemaVersion = Self.currentSchemaVersion
         self.projectID = projectID
@@ -43,6 +48,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.timelines = timelines
         self.presentation = presentation
         self.privacyOverlays = privacyOverlays
+        self.sceneTimeline = sceneTimeline
     }
 
     func timeline(for trackID: String) -> ProjectEditTimeline? {
@@ -74,8 +80,16 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    mutating func replaceSceneTimeline(
+        _ sceneTimeline: StudioSceneTimeline?,
+        updatedAt: Date = Date()
+    ) {
+        self.sceneTimeline = sceneTimeline
+        self.updatedAt = updatedAt
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays
+        case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays, sceneTimeline
     }
 
     init(from decoder: Decoder) throws {
@@ -86,6 +100,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         timelines = try container.decode([ProjectEditTimeline].self, forKey: .timelines)
         presentation = try container.decodeIfPresent(CapturePresentationSnapshot.self, forKey: .presentation)
         privacyOverlays = try container.decodeIfPresent([ProjectPrivacyOverlay].self, forKey: .privacyOverlays) ?? []
+        sceneTimeline = try container.decodeIfPresent(StudioSceneTimeline.self, forKey: .sceneTimeline)
     }
 }
 
@@ -110,13 +125,14 @@ actor ProjectEditStore {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let document = try decoder.decode(ProjectEditDocument.self, from: Data(contentsOf: url))
         try validate(document, expectedProjectID: expectedProjectID, allowsLegacy: true)
-        guard document.schemaVersion == 1 || document.schemaVersion == 2 else { return document }
+        guard document.schemaVersion < ProjectEditDocument.currentSchemaVersion else { return document }
         return ProjectEditDocument(
             projectID: document.projectID,
             updatedAt: document.updatedAt,
             timelines: document.timelines,
             presentation: document.presentation,
-            privacyOverlays: document.privacyOverlays
+            privacyOverlays: document.privacyOverlays,
+            sceneTimeline: document.sceneTimeline
         )
     }
 
@@ -135,7 +151,7 @@ actor ProjectEditStore {
         allowsLegacy: Bool
     ) throws {
         guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion
-                || (allowsLegacy && (document.schemaVersion == 1 || document.schemaVersion == 2)) else {
+                || (allowsLegacy && (1...3).contains(document.schemaVersion)) else {
             throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
         }
         guard document.projectID == expectedProjectID else {
@@ -163,6 +179,16 @@ actor ProjectEditStore {
         guard document.privacyOverlays.allSatisfy(\.isPersistable),
               Set(document.privacyOverlays.map(\.id)).count == document.privacyOverlays.count else {
             throw ProjectEditStoreError.invalidPrivacyOverlay
+        }
+        if let sceneTimeline = document.sceneTimeline {
+            guard sceneTimeline.schemaVersion == 1,
+                  !sceneTimeline.transitions.isEmpty,
+                  sceneTimeline.transitions.first?.sourceTime == 0,
+                  sceneTimeline.transitions.allSatisfy({ $0.sourceTime.isFinite && $0.sourceTime >= 0 }),
+                  zip(sceneTimeline.transitions, sceneTimeline.transitions.dropFirst())
+                    .allSatisfy({ pair in pair.0.sourceTime <= pair.1.sourceTime }) else {
+                throw ProjectEditStoreError.invalidSceneTimeline
+            }
         }
     }
 }

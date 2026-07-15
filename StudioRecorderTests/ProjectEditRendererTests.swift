@@ -249,6 +249,55 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertLessThan(right.red, 80)
     }
 
+    func testProgramRendererReplaysAnEditedManualZoomMarker() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "split-screen.mov")
+        let outputURL = directory.appending(path: "edited-manual-zoom.mov")
+        let beforeFrameURL = directory.appending(path: "before-zoom.png")
+        let zoomFrameURL = directory.appending(path: "edited-zoom.png")
+        try await writeSplitMovie(to: screenURL)
+
+        var base = CapturePresentationSnapshot.default
+        base.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        base.camera.isVisible = false
+        var zoom = base
+        zoom.framing = ScreenFramingSnapshot(
+            mode: .fixedRegion,
+            centerX: 0.1,
+            centerY: 0.5,
+            scale: 0.5
+        )
+        var sceneTimeline = StudioSceneTimeline(initialPresentation: base)
+        sceneTimeline.append(zoom, at: 0.5, kind: .manualZoomStart)
+        sceneTimeline.append(base, at: 1.5, kind: .manualZoomReset)
+        var marker = try XCTUnwrap(sceneTimeline.manualZoomMarkers(sourceDuration: 2).first)
+        marker.sourceTime = 1
+        marker.centerX = 0.9
+        XCTAssertTrue(sceneTimeline.updateManualZoomMarker(marker, sourceDuration: 2))
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                sceneTimeline: sceneTimeline
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-edited-zoom", sourceDuration: 2),
+            presentation: base,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.75, to: beforeFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: zoomFrameURL)
+
+        let before = try color(in: beforeFrameURL, normalizedX: 0.25, normalizedY: 0.5)
+        let editedZoom = try color(in: zoomFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(before.red, 180)
+        XCTAssertLessThan(before.blue, 80)
+        XCTAssertGreaterThan(editedZoom.blue, 180)
+        XCTAssertLessThan(editedZoom.red, 80)
+    }
+
     func testProgramRendererComposesIndependentlyPlacedScreenAndCameraSources() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

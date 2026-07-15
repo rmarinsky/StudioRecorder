@@ -95,12 +95,23 @@ final class ProjectEditTimelineTests: XCTestCase {
         let rawTrackURL = rawTracksURL.appending(path: "screen-3.mov")
         let originalRawBytes = Data("raw-track-must-not-change".utf8)
         try originalRawBytes.write(to: rawTrackURL)
+        let rawSceneURL = rootURL.appending(path: "scene/layout.json")
+        try FileManager.default.createDirectory(
+            at: rawSceneURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let originalSceneBytes = Data("captured-scene-must-not-change".utf8)
+        try originalSceneBytes.write(to: rawSceneURL)
 
         var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
         try timeline.split(at: 5)
         var presentation = CapturePresentationSnapshot.default
         presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
         presentation.camera.centerX = 0.25
+        var sceneTimeline = StudioSceneTimeline(initialPresentation: presentation)
+        var zoomed = presentation
+        zoomed.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.5)
+        sceneTimeline.append(zoomed, at: 2, kind: .manualZoomStart)
         let document = ProjectEditDocument(
             projectID: projectID,
             updatedAt: Date(timeIntervalSinceReferenceDate: 42),
@@ -116,7 +127,8 @@ final class ProjectEditTimelineTests: XCTestCase {
                     height: 0.2,
                     style: .blur
                 )
-            ]
+            ],
+            sceneTimeline: sceneTimeline
         )
         let store = ProjectEditStore()
 
@@ -125,6 +137,7 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         XCTAssertEqual(reloaded, document)
         XCTAssertEqual(try Data(contentsOf: rawTrackURL), originalRawBytes)
+        XCTAssertEqual(try Data(contentsOf: rawSceneURL), originalSceneBytes)
         XCTAssertTrue(FileManager.default.fileExists(atPath: rootURL.appending(path: "edit.json").path))
     }
 
@@ -186,6 +199,22 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         XCTAssertEqual(document.schemaVersion, 2)
         XCTAssertTrue(document.privacyOverlays.isEmpty)
+    }
+
+    func testVersionThreeDocumentDecodesWithoutASceneTimelineOverride() throws {
+        let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let data = Data(
+            """
+            {"schemaVersion":3,"projectID":"\(projectID.uuidString)","updatedAt":"2026-07-15T12:00:00Z","timelines":[],"presentation":null,"privacyOverlays":[]}
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let document = try decoder.decode(ProjectEditDocument.self, from: data)
+
+        XCTAssertEqual(document.schemaVersion, 3)
+        XCTAssertNil(document.sceneTimeline)
     }
 
     func testEditStoreMigratesLegacyDocumentToCurrentSchema() async throws {

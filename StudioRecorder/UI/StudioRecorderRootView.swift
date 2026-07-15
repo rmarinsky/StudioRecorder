@@ -1145,7 +1145,9 @@ struct StudioRecorderRootView: View {
                 scale: 0.5
             )
         }
-        guard model.send(.setDraftPresentation(presentation)) != .ignored else {
+        guard model.send(
+            .setDraftManualZoomPresentation(presentation, isReset: isManualZoomActive)
+        ) != .ignored else {
             sceneSwitchError = "This session cannot change its capture region while live."
             return
         }
@@ -1157,7 +1159,7 @@ struct StudioRecorderRootView: View {
         guard isManualZoomActive,
               var presentation = snapshot.studioDraft?.presentation else { return }
         presentation.framing = manualZoomRestoreFraming ?? manualZoomBaseFraming ?? presentation.framing
-        if model.send(.setDraftPresentation(presentation)) != .ignored {
+        if model.send(.setDraftManualZoomPresentation(presentation, isReset: true)) != .ignored {
             isManualZoomActive = false
             manualZoomRestoreFraming = nil
         }

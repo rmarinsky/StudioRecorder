@@ -418,7 +418,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     @discardableResult
-    func updateLivePresentation(_ presentation: CapturePresentationSnapshot) -> Bool {
+    func updateLivePresentation(
+        _ presentation: CapturePresentationSnapshot,
+        transitionKind: StudioSceneTransitionKind = .scene
+    ) -> Bool {
         guard state == .recording || state == .paused,
               let request = activeCaptureRequest,
               let project = activeProject,
@@ -433,7 +436,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             ?? StudioSceneTimeline(initialPresentation: request.presentation)
         timeline.append(
             presentation,
-            at: max(ProcessInfo.processInfo.systemUptime - recordingStartedAt, 0)
+            at: max(ProcessInfo.processInfo.systemUptime - recordingStartedAt, 0),
+            kind: transitionKind
         )
         do {
             try projectStore.writeStudioSceneTimeline(timeline, in: project)

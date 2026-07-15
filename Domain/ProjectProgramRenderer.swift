@@ -35,6 +35,20 @@ struct ProjectProgramSources: Sendable {
         self.cameraTimeOffset = cameraTimeOffset
         self.rendersCursor = rendersCursor
     }
+
+    func replacingSceneTimeline(_ sceneTimeline: StudioSceneTimeline?) -> ProjectProgramSources {
+        ProjectProgramSources(
+            screenURL: screenURL,
+            cameraURL: cameraURL,
+            audioURL: audioURL,
+            screenDisplayID: screenDisplayID,
+            cursorTimeline: cursorTimeline,
+            sceneTimeline: sceneTimeline,
+            screenWasCapturedAsFixedRegion: screenWasCapturedAsFixedRegion,
+            cameraTimeOffset: cameraTimeOffset,
+            rendersCursor: rendersCursor
+        )
+    }
 }
 
 @MainActor

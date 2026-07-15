@@ -19,8 +19,10 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var timeline: ProjectEditTimeline?
     @Published private(set) var presentation = CapturePresentationSnapshot.default
     @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
+    @Published private(set) var sceneTimeline: StudioSceneTimeline?
     @Published var selectedSegmentID: UUID?
     @Published var selectedPrivacyOverlayID: UUID?
+    @Published var selectedManualZoomTransitionIndex: Int?
     @Published private(set) var isLoading = false
     @Published private(set) var isWorking = false
     @Published private(set) var errorMessage: String?
@@ -56,8 +58,17 @@ final class ProjectEditSession: ObservableObject {
         guard let timeline, let selectedSegmentID else { return false }
         return timeline.segments.count > 1 && timeline.segments.contains { $0.id == selectedSegmentID }
     }
-    var isEdited: Bool { timeline?.isIdentity == false || !privacyOverlays.isEmpty }
+    var isEdited: Bool {
+        timeline?.isIdentity == false ||
+            !privacyOverlays.isEmpty ||
+            sceneTimeline != programSources?.sceneTimeline
+    }
     var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
+    var canEditManualZoom: Bool { canPersistEdits && timeline != nil && sceneTimeline != nil }
+    var manualZoomMarkers: [StudioManualZoomMarker] {
+        guard let sceneTimeline, let timeline else { return [] }
+        return sceneTimeline.manualZoomMarkers(sourceDuration: timeline.sourceDuration)
+    }
     var playhead: TimeInterval {
         let seconds = player.currentTime().seconds
         return seconds.isFinite ? max(seconds, 0) : 0
@@ -97,9 +108,11 @@ final class ProjectEditSession: ObservableObject {
         player.replaceCurrentItem(with: nil)
         timeline = nil
         privacyOverlays = []
+        sceneTimeline = nil
         document = nil
         selectedSegmentID = nil
         selectedPrivacyOverlayID = nil
+        selectedManualZoomTransitionIndex = nil
         undoStack = []
         redoStack = []
         errorMessage = nil
@@ -122,6 +135,7 @@ final class ProjectEditSession: ObservableObject {
             let loadedDocument = try await store.load(from: projectRootURL, expectedProjectID: projectID)
             var editDocument = loadedDocument ?? ProjectEditDocument(projectID: projectID, timelines: [])
             let loadedPresentation = (editDocument.presentation ?? initialPresentation).validated()
+            let loadedSceneTimeline = editDocument.sceneTimeline ?? programSources?.sceneTimeline
             let editTimeline: ProjectEditTimeline
             if let saved = editDocument.timeline(for: track.id),
                abs(saved.sourceDuration - duration) < 0.1 {
@@ -130,6 +144,7 @@ final class ProjectEditSession: ObservableObject {
                 editTimeline = try ProjectEditTimeline(trackID: track.id, sourceDuration: duration)
                 editDocument.replaceTimeline(editTimeline)
             }
+            sceneTimeline = loadedSceneTimeline
             let item = try await makePlayerItem(
                 sourceURL: sourceURL,
                 timeline: editTimeline,
@@ -144,6 +159,9 @@ final class ProjectEditSession: ObservableObject {
             privacyOverlays = editDocument.privacyOverlays
             selectedSegmentID = editTimeline.segments.first?.id
             selectedPrivacyOverlayID = editDocument.privacyOverlays.first?.id
+            selectedManualZoomTransitionIndex = loadedSceneTimeline?
+                .manualZoomMarkers(sourceDuration: editTimeline.sourceDuration)
+                .first?.transitionIndex
             player.replaceCurrentItem(with: item)
         } catch is CancellationError {
             return
@@ -209,6 +227,9 @@ final class ProjectEditSession: ObservableObject {
             }
             if errorMessage == nil, !privacyOverlays.isEmpty {
                 await commitPrivacyOverlays([], selectedID: nil)
+            }
+            if errorMessage == nil, sceneTimeline != programSources?.sceneTimeline {
+                updateSceneTimeline(programSources?.sceneTimeline, selectedIndex: nil)
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -296,6 +317,32 @@ final class ProjectEditSession: ObservableObject {
         guard privacyOverlays.contains(where: { $0.id == id }) else { return }
         let next = privacyOverlays.filter { $0.id != id }
         await commitPrivacyOverlays(next, selectedID: next.first?.id)
+    }
+
+    func updateManualZoomMarker(_ marker: StudioManualZoomMarker) {
+        guard !isWorking,
+              let timeline,
+              var next = sceneTimeline,
+              next.updateManualZoomMarker(marker, sourceDuration: timeline.sourceDuration) else { return }
+        updateSceneTimeline(next, selectedIndex: marker.transitionIndex)
+    }
+
+    func moveManualZoomMarkerToPlayhead(_ marker: StudioManualZoomMarker) {
+        guard let timeline,
+              let sourceTime = timeline.sourceTime(
+                at: min(playhead, max(timeline.duration - 0.001, 0))
+              ) else { return }
+        var next = marker
+        next.sourceTime = sourceTime
+        updateManualZoomMarker(next)
+    }
+
+    func removeManualZoomMarker(_ marker: StudioManualZoomMarker) {
+        guard !isWorking,
+              var next = sceneTimeline,
+              next.removeManualZoomMarker(at: marker.transitionIndex) else { return }
+        let nextSelection = next.manualZoomMarkers(sourceDuration: timeline?.sourceDuration ?? 0).first?.transitionIndex
+        updateSceneTimeline(next, selectedIndex: nextSelection)
     }
 
     func prepareMediaForDerivedExport() async throws -> PreparedProjectMedia {
@@ -505,11 +552,24 @@ final class ProjectEditSession: ObservableObject {
         }
     }
 
+    private func updateSceneTimeline(
+        _ next: StudioSceneTimeline?,
+        selectedIndex: Int?
+    ) {
+        guard var nextDocument = document, let projectRootURL else { return }
+        sceneTimeline = next
+        selectedManualZoomTransitionIndex = selectedIndex
+        nextDocument.replaceSceneTimeline(next)
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
     private func renderSources(
         for sourceURL: URL,
         privacyOverlays: [ProjectPrivacyOverlay]? = nil
     ) -> ProjectProgramSources? {
-        if let programSources { return programSources }
+        if let programSources { return programSources.replacingSceneTimeline(sceneTimeline) }
         guard !(privacyOverlays ?? self.privacyOverlays).isEmpty else { return nil }
         return ProjectProgramSources(screenURL: sourceURL, cameraURL: nil)
     }

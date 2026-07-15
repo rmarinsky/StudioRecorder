@@ -187,6 +187,7 @@ enum AppIntent: Equatable {
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
     case setDraftPresentation(CapturePresentationSnapshot)
+    case setDraftManualZoomPresentation(CapturePresentationSnapshot, isReset: Bool)
     case setDraftRetentionPolicy(MediaRetentionPolicy)
     case recordWithoutMicrophone
     case recordWithoutCamera
@@ -622,20 +623,14 @@ final class StudioRecorderModel: ObservableObject {
             result = .draftChanged
 
         case .setDraftPresentation(let presentation):
-            let validated = presentation.validated()
-            let canRestoreIdlePresentation = snapshot.captureState == .ready &&
-                !snapshot.isCaptureCommandInFlight &&
-                snapshot.studioDraft != nil
-            if canEditDraft || canRestoreIdlePresentation {
-                snapshot.studioDraft?.presentation = validated
-            } else {
-                guard (snapshot.captureState == .recording || snapshot.captureState == .paused),
-                      !snapshot.isCaptureCommandInFlight,
-                      coordinator?.updateLivePresentation(validated) == true else {
-                    return .ignored
-                }
-                snapshot.studioDraft?.presentation = validated
-            }
+            guard setDraftPresentation(presentation, transitionKind: .scene) else { return .ignored }
+            result = .draftChanged
+
+        case .setDraftManualZoomPresentation(let presentation, let isReset):
+            guard setDraftPresentation(
+                presentation,
+                transitionKind: isReset ? .manualZoomReset : .manualZoomStart
+            ) else { return .ignored }
             result = .draftChanged
 
         case .setDraftRetentionPolicy(let policy):
@@ -746,6 +741,27 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.captureState == .ready &&
             !snapshot.isCaptureCommandInFlight &&
             snapshot.studioDraft != nil
+    }
+
+    private func setDraftPresentation(
+        _ presentation: CapturePresentationSnapshot,
+        transitionKind: StudioSceneTransitionKind
+    ) -> Bool {
+        let validated = presentation.validated()
+        let canRestoreIdlePresentation = snapshot.captureState == .ready &&
+            !snapshot.isCaptureCommandInFlight &&
+            snapshot.studioDraft != nil
+        if canEditDraft || canRestoreIdlePresentation {
+            snapshot.studioDraft?.presentation = validated
+            return true
+        }
+        guard (snapshot.captureState == .recording || snapshot.captureState == .paused),
+              !snapshot.isCaptureCommandInFlight,
+              coordinator?.updateLivePresentation(validated, transitionKind: transitionKind) == true else {
+            return false
+        }
+        snapshot.studioDraft?.presentation = validated
+        return true
     }
 
     private func currentCaptureDraft() -> StudioDraft {
