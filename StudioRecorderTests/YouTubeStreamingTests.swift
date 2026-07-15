@@ -236,6 +236,44 @@ final class YouTubeStreamingTests: XCTestCase {
         await pipeline.stop()
     }
 
+    func testLivePipelineSendsTheVisibleShortcutOverlay() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.cursor.showsShortcutKeys = true
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: presentation.canvas.pixelSize,
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: presentation,
+            audioConfiguration: audio
+        ) { _ in }
+        await pipeline.showShortcut("⌘K")
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .red)),
+            cursor: nil
+        )
+
+        let latestVideo = await sink.latestVideo()
+        let output = try XCTUnwrap(latestVideo?.value.imageBuffer)
+        let pill = try pixel(in: CIImage(cvPixelBuffer: output), x: 340, y: 43)
+        XCTAssertLessThan(pill.red, 180)
+        await pipeline.stop()
+    }
+
     func testStoppingWhileConnectingClosesThePendingStream() async throws {
         let sink = BlockingStreamSink()
         let pipeline = LiveProgramPipeline(sink: sink)

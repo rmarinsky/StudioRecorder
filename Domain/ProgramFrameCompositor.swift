@@ -1,5 +1,6 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import CoreText
 import CoreVideo
 import Foundation
 
@@ -31,6 +32,7 @@ final class ProgramFrameCompositor: @unchecked Sendable {
         presentation: CapturePresentationSnapshot,
         screenFraming: ScreenFramingSnapshot? = nil,
         cursor: ProgramCursorState? = nil,
+        shortcutLabel: String? = nil,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         to output: CVPixelBuffer
     ) {
@@ -64,7 +66,69 @@ final class ProgramFrameCompositor: @unchecked Sendable {
             )
         }
         result = applyPrivacyOverlays(privacyOverlays, to: result, canvas: canvas)
+        if let shortcutLabel,
+           let shortcut = shortcutImage(label: shortcutLabel, canvas: canvas) {
+            result = shortcut.composited(over: result).cropped(to: canvas)
+        }
         context.render(result, to: output, bounds: canvas, colorSpace: CGColorSpaceCreateDeviceRGB())
+    }
+
+    private func shortcutImage(label: String, canvas: CGRect) -> CIImage? {
+        let label = String(label.filter { !$0.isNewline }.prefix(32))
+        guard !label.isEmpty, canvas.width > 0, canvas.height > 0 else { return nil }
+        let scale = max(min(canvas.width / 1_920, canvas.height / 1_080), 0.5)
+        let fontSize = 28 * scale
+        let horizontalPadding = 24 * scale
+        let height = 62 * scale
+        let font = CTFontCreateWithName("SF Pro Rounded" as CFString, fontSize, nil)
+        let attributed = NSAttributedString(
+            string: label,
+            attributes: [
+                kCTFontAttributeName as NSAttributedString.Key: font,
+                kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(gray: 1, alpha: 0.96),
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributed)
+        let textBounds = CTLineGetBoundsWithOptions(line, [.useOpticalBounds])
+        let width = min(
+            max(textBounds.width + horizontalPadding * 2, height),
+            canvas.width * 0.8
+        )
+        let pixelWidth = max(Int(width.rounded(.up)), 1)
+        let pixelHeight = max(Int(height.rounded(.up)), 1)
+        guard let drawing = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: pixelWidth * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+        let pill = CGPath(
+            roundedRect: bounds.insetBy(dx: 1, dy: 1),
+            cornerWidth: height / 2,
+            cornerHeight: height / 2,
+            transform: nil
+        )
+        drawing.addPath(pill)
+        drawing.setFillColor(CGColor(gray: 0.04, alpha: 0.84))
+        drawing.fillPath()
+        drawing.addPath(pill)
+        drawing.setStrokeColor(CGColor(gray: 1, alpha: 0.18))
+        drawing.setLineWidth(max(scale, 1))
+        drawing.strokePath()
+        drawing.textPosition = CGPoint(
+            x: max((width - textBounds.width) / 2 - textBounds.minX, horizontalPadding / 2),
+            y: (height - textBounds.height) / 2 - textBounds.minY
+        )
+        CTLineDraw(line, drawing)
+        guard let image = drawing.makeImage() else { return nil }
+        return CIImage(cgImage: image).transformed(by: CGAffineTransform(
+            translationX: canvas.midX - width / 2,
+            y: canvas.minY + canvas.height * 0.065
+        ))
     }
 
     private func applyPrivacyOverlays(

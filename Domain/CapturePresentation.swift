@@ -532,16 +532,25 @@ enum SourcePlacementManipulator {
 struct CursorTreatmentSnapshot: Codable, Equatable, Sendable {
     var scale: CGFloat
     var highlightsClicks: Bool
+    var showsShortcutKeys: Bool?
 
-    init(scale: CGFloat = 1.5, highlightsClicks: Bool = true) {
+    var resolvedShowsShortcutKeys: Bool { showsShortcutKeys ?? false }
+
+    init(
+        scale: CGFloat = 1.5,
+        highlightsClicks: Bool = true,
+        showsShortcutKeys: Bool = false
+    ) {
         self.scale = scale
         self.highlightsClicks = highlightsClicks
+        self.showsShortcutKeys = showsShortcutKeys
     }
 
     func validated() -> CursorTreatmentSnapshot {
         CursorTreatmentSnapshot(
             scale: min(max(scale, 1), 4),
-            highlightsClicks: highlightsClicks
+            highlightsClicks: highlightsClicks,
+            showsShortcutKeys: resolvedShowsShortcutKeys
         )
     }
 }

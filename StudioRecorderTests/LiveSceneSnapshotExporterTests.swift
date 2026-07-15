@@ -86,6 +86,35 @@ final class LiveSceneSnapshotExporterTests: XCTestCase {
         XCTAssertGreaterThan(corner.blue, 200)
     }
 
+    func testExporterIncludesTheVisibleShortcutOverlay() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appending(path: "shortcut-stage.png")
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.cursor.showsShortcutKeys = true
+
+        try await LiveSceneSnapshotExporter().export(
+            sources: LiveSceneSnapshotSources(
+                screen: try solidImage(red: 1, green: 0, blue: 0, width: 640, height: 360),
+                camera: nil
+            ),
+            presentation: presentation,
+            screenFraming: nil,
+            cursor: nil,
+            shortcutLabel: "⇧⌘P",
+            to: destination
+        )
+
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(destination as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let pill = try rgba(in: image, x: 340, y: 43)
+        XCTAssertLessThan(pill.red, 180)
+    }
+
     private func solidImage(
         red: CGFloat,
         green: CGFloat,

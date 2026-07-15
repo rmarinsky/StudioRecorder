@@ -396,6 +396,7 @@ struct ProjectDetailView: View {
             audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) },
             screenDisplayID: screen.displayID,
             cursorTimeline: cursorTimeline,
+            shortcutTimeline: shortcutTimeline,
             sceneTimeline: studioSceneTimeline?.hasSceneSwitches == true ? studioSceneTimeline : nil,
             screenWasCapturedAsFixedRegion: project.presentation?.framing.mode == .fixedRegion,
             cameraTimeOffset: camera.map {
@@ -424,6 +425,12 @@ struct ProjectDetailView: View {
         let url = project.rootURL.appending(path: "scene/cursor.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(CursorSceneTimeline.self, from: data)
+    }
+
+    private var shortcutTimeline: SafeShortcutTimeline? {
+        let url = project.rootURL.appending(path: "scene/shortcuts.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(SafeShortcutTimeline.self, from: data)
     }
 
     private var studioSceneTimeline: StudioSceneTimeline? {

@@ -9,6 +9,7 @@ struct ProjectProgramSources: Sendable {
     let audioURL: URL?
     let screenDisplayID: UInt32?
     let cursorTimeline: CursorSceneTimeline?
+    let shortcutTimeline: SafeShortcutTimeline?
     let sceneTimeline: StudioSceneTimeline?
     let screenWasCapturedAsFixedRegion: Bool
     let cameraTimeOffset: TimeInterval
@@ -20,6 +21,7 @@ struct ProjectProgramSources: Sendable {
         audioURL: URL? = nil,
         screenDisplayID: UInt32? = nil,
         cursorTimeline: CursorSceneTimeline? = nil,
+        shortcutTimeline: SafeShortcutTimeline? = nil,
         sceneTimeline: StudioSceneTimeline? = nil,
         screenWasCapturedAsFixedRegion: Bool = false,
         cameraTimeOffset: TimeInterval = 0,
@@ -30,6 +32,7 @@ struct ProjectProgramSources: Sendable {
         self.audioURL = audioURL
         self.screenDisplayID = screenDisplayID
         self.cursorTimeline = cursorTimeline
+        self.shortcutTimeline = shortcutTimeline
         self.sceneTimeline = sceneTimeline
         self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.cameraTimeOffset = cameraTimeOffset
@@ -43,6 +46,7 @@ struct ProjectProgramSources: Sendable {
             audioURL: audioURL,
             screenDisplayID: screenDisplayID,
             cursorTimeline: cursorTimeline,
+            shortcutTimeline: shortcutTimeline,
             sceneTimeline: sceneTimeline,
             screenWasCapturedAsFixedRegion: screenWasCapturedAsFixedRegion,
             cameraTimeOffset: cameraTimeOffset,
@@ -186,6 +190,7 @@ final class ProjectProgramRenderer {
             cursorSamples: sources.cursorTimeline?.samples.filter {
                 sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
             } ?? [],
+            shortcutTimeline: sources.shortcutTimeline,
             sceneTimeline: sources.sceneTimeline,
             screenWasCapturedAsFixedRegion: sources.screenWasCapturedAsFixedRegion,
             privacyOverlays: privacyOverlays,
@@ -262,6 +267,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let presentation: CapturePresentationSnapshot
     let timeline: ProjectEditTimeline
     let cursorTimeline: CursorSceneTimeline?
+    let shortcutTimeline: SafeShortcutTimeline?
     let sceneTimeline: StudioSceneTimeline?
     let screenWasCapturedAsFixedRegion: Bool
     let privacyOverlays: [ProjectPrivacyOverlay]
@@ -276,6 +282,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         presentation: CapturePresentationSnapshot,
         timeline: ProjectEditTimeline,
         cursorSamples: [CursorSceneSample],
+        shortcutTimeline: SafeShortcutTimeline?,
         sceneTimeline: StudioSceneTimeline?,
         screenWasCapturedAsFixedRegion: Bool,
         privacyOverlays: [ProjectPrivacyOverlay],
@@ -289,6 +296,7 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         self.presentation = presentation
         self.timeline = timeline
         cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        self.shortcutTimeline = shortcutTimeline
         self.sceneTimeline = sceneTimeline
         self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.privacyOverlays = privacyOverlays
@@ -350,6 +358,12 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds) else { return [] }
         return privacyOverlays.filter { $0.isActive(at: sourceTime) }
     }
+
+    func activeShortcutLabel(at compositionTime: CMTime) -> String? {
+        guard presentation(at: compositionTime).cursor.resolvedShowsShortcutKeys,
+              let sourceTime = timeline.sourceTime(at: compositionTime.seconds) else { return nil }
+        return shortcutTimeline?.activeLabel(at: sourceTime)
+    }
 }
 
 private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
@@ -384,6 +398,7 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
             presentation: presentation,
             screenFraming: instruction.screenFraming(at: request.compositionTime),
             cursor: instruction.cursorState(at: request.compositionTime),
+            shortcutLabel: instruction.activeShortcutLabel(at: request.compositionTime),
             privacyOverlays: instruction.activePrivacyOverlays(at: request.compositionTime),
             to: output
         )

@@ -19,6 +19,14 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(decoded.resolvedName, "Scene 1")
     }
 
+    func testLegacyCursorTreatmentKeepsShortcutDisplayOff() throws {
+        let data = Data(#"{"scale":1.5,"highlightsClicks":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(CursorTreatmentSnapshot.self, from: data)
+
+        XCTAssertFalse(decoded.resolvedShowsShortcutKeys)
+        XCTAssertFalse(decoded.validated().resolvedShowsShortcutKeys)
+    }
+
     func testLegacyCameraBackgroundDefaultsToAdaptivePerformance() throws {
         let legacy = """
         {

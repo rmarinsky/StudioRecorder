@@ -25,6 +25,7 @@ struct StudioRecorderRootView: View {
     @StateObject private var streaming = YouTubeStreamingCoordinator()
     @StateObject private var streamArchive = LiveProgramArchiveCoordinator()
     @StateObject private var sceneLibrary = StudioSceneLibraryStore()
+    @StateObject private var shortcutMonitor = SafeShortcutMonitor()
     @State private var deliveryMode = StreamDeliveryMode.record
     @State private var importedGIFSource: GIFMakerSource?
     @State private var gifImportError: String?
@@ -160,9 +161,13 @@ struct StudioRecorderRootView: View {
         presentedRoot
         .task {
             await model.launch()
+            configureShortcutMonitor()
             await updateLiveScene(for: snapshot.route)
         }
-        .onDisappear { removeExternalPointerMonitor() }
+        .onDisappear {
+            removeExternalPointerMonitor()
+            shortcutMonitor.stop()
+        }
         .onChange(of: snapshot.route) { _, route in
             if route != .studio {
                 resetManualZoomIfNeeded()
@@ -172,6 +177,7 @@ struct StudioRecorderRootView: View {
                 }
             }
             updateExternalPointerMonitor()
+            updateShortcutMonitor()
             Task { await updateLiveScene(for: route) }
         }
         .onChange(of: snapshot.captureState) { _, state in
@@ -196,6 +202,7 @@ struct StudioRecorderRootView: View {
             if let presentation {
                 Task { await streaming.pipeline.updatePresentation(presentation) }
             }
+            updateShortcutMonitor()
         }
     }
 
@@ -245,6 +252,7 @@ struct StudioRecorderRootView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            shortcutMonitor.refreshAccess()
             Task { await model.appBecameActive() }
         }
     }
@@ -613,6 +621,7 @@ struct StudioRecorderRootView: View {
                         screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording,
                         isPaused: snapshot.captureState == .paused,
+                        shortcutLabel: shortcutMonitor.visibleLabel,
                         presentation: presentationBinding,
                         selectedSource: $selectedCanvasSource,
                         isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
@@ -674,6 +683,8 @@ struct StudioRecorderRootView: View {
                     ),
                     presentation: presentationBinding,
                     selectedCanvasSource: $selectedCanvasSource,
+                    hasShortcutMonitoringAccess: shortcutMonitor.hasGlobalAccess,
+                    onRequestShortcutMonitoringAccess: shortcutMonitor.requestGlobalAccess,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                 )
                 .frame(width: 304)
@@ -1190,6 +1201,23 @@ struct StudioRecorderRootView: View {
         self.externalPointerMonitor = nil
     }
 
+    private var shouldMonitorShortcuts: Bool {
+        snapshot.route == .studio
+            && (snapshot.studioDraft?.presentation.cursor.resolvedShowsShortcutKeys ?? false)
+    }
+
+    private func configureShortcutMonitor() {
+        shortcutMonitor.onShortcut = { label in
+            model.recordSafeShortcut(label)
+            Task { await streaming.pipeline.showShortcut(label) }
+        }
+        updateShortcutMonitor()
+    }
+
+    private func updateShortcutMonitor() {
+        shortcutMonitor.update(isEnabled: shouldMonitorShortcuts)
+    }
+
     private var studioDestinationPath: String {
         snapshot.studioDraft?.destination.url.path(percentEncoded: false) ?? "Movies/Studio Recorder"
     }
@@ -1303,6 +1331,7 @@ struct StudioRecorderRootView: View {
                 capturesCamera: draft.capturesCamera,
                 recordsCursorTelemetry: draft.includeCursor || draft.presentation.framing.mode == .followCursor
             )
+            shortcutMonitor.clearVisibleShortcut()
             streaming.start(
                 configuration: streamConfiguration,
                 presentation: draft.presentation,
@@ -1312,6 +1341,7 @@ struct StudioRecorderRootView: View {
             )
         }
         if deliveryMode.includesRecording {
+            shortcutMonitor.clearVisibleShortcut()
             model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
             model.send(.toggleRecording)
         }
@@ -1468,6 +1498,7 @@ struct StudioRecorderRootView: View {
                     capturesCamera: draft.capturesCamera,
                     includesCursor: draft.includeCursor,
                     excludesStudioRecorder: draft.excludeStudioRecorder,
+                    shortcutLabel: shortcutMonitor.visibleLabel,
                     to: destinationURL
                 )
                 lastSnapshotURL = destinationURL
@@ -1599,6 +1630,8 @@ private struct StudioInspector: View {
     @Binding var retentionPolicy: MediaRetentionPolicy
     @Binding var presentation: CapturePresentationSnapshot
     @Binding var selectedCanvasSource: StudioCanvasSource?
+    let hasShortcutMonitoringAccess: Bool
+    let onRequestShortcutMonitoringAccess: () -> Void
     let isLocked: Bool
     @State private var activeSourceSettings: SourceSettings?
 
@@ -1699,6 +1732,27 @@ private struct StudioInspector: View {
                             .foregroundStyle(.secondary)
                     }
                     .disabled(isLocked)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                }
+                Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
+                    .disabled(isLocked)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                if presentation.cursor.resolvedShowsShortcutKeys {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if !hasShortcutMonitoringAccess {
+                            Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(isLocked)
+                        }
+                    }
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
                 }
@@ -2056,6 +2110,15 @@ private struct StudioInspector: View {
         )
     }
 
+    private var shortcutDisplayBinding: Binding<Bool> {
+        Binding(
+            get: { presentation.cursor.resolvedShowsShortcutKeys },
+            set: { enabled in
+                presentation.cursor.showsShortcutKeys = enabled
+            }
+        )
+    }
+
     private var canvasWidthBinding: Binding<Int> {
         Binding(
             get: { presentation.canvas.width },
@@ -2222,6 +2285,7 @@ private struct LiveProgramPreview: View {
     let screenPreviewError: String?
     let isRecording: Bool
     let isPaused: Bool
+    let shortcutLabel: String?
     @Binding var presentation: CapturePresentationSnapshot
     @Binding var selectedSource: StudioCanvasSource?
     let isLocked: Bool
@@ -2389,6 +2453,10 @@ private struct LiveProgramPreview: View {
                         .allowsHitTesting(false)
                 }
 
+                if let shortcutLabel {
+                    shortcutOverlay(shortcutLabel, previewSize: proxy.size)
+                }
+
                 if !isLocked, selectedSource == .screen, screenImage != nil {
                     sourceSelectionOverlay(
                         for: .screen,
@@ -2422,6 +2490,30 @@ private struct LiveProgramPreview: View {
         .onMoveCommand(perform: nudgeSelectedSource)
         .accessibilityLabel("Live selected screen and camera preview")
         .accessibilityHint("Click a source to select it. Drag to move, use its corner handles to resize, or use the arrow keys to nudge.")
+    }
+
+    private func shortcutOverlay(_ label: String, previewSize: CGSize) -> some View {
+        let canvasSize = presentation.canvas.pixelSize
+        let outputScale = max(min(canvasSize.width / 1_920, canvasSize.height / 1_080), 0.5)
+        let displayScale = min(
+            previewSize.width / max(canvasSize.width, 1),
+            previewSize.height / max(canvasSize.height, 1)
+        )
+        let scale = max(outputScale * displayScale, 0.01)
+        let height = 62 * scale
+        return Text(label)
+            .font(.system(size: 28 * scale, weight: .regular, design: .rounded))
+            .foregroundStyle(.white.opacity(0.96))
+            .padding(.horizontal, 24 * scale)
+            .frame(minWidth: height, minHeight: height)
+            .background(.black.opacity(0.84), in: Capsule())
+            .overlay { Capsule().stroke(.white.opacity(0.18), lineWidth: max(displayScale, 0.5)) }
+            .frame(maxWidth: previewSize.width * 0.8)
+            .padding(.bottom, canvasSize.height * 0.065 * displayScale)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .allowsHitTesting(false)
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            .accessibilityLabel("Shortcut \(label)")
     }
 
     @ViewBuilder

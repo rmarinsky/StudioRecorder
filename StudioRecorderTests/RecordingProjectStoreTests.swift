@@ -6,6 +6,33 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testShortcutTimelinePersistsInsideTheRecoverableScenePackage() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(
+            sources: [
+                .init(
+                    displayID: 1,
+                    name: "Display",
+                    pixelWidth: 640,
+                    pixelHeight: 360,
+                    metadataState: .known
+                ),
+            ],
+            primaryAudioDisplayID: 1,
+            capturesMicrophone: false
+        )
+        let timeline = SafeShortcutTimeline(events: [
+            SafeShortcutEvent(time: 1.25, duration: 1.5, label: "⌘K"),
+        ])
+
+        try store.writeShortcutTimeline(timeline, in: project)
+
+        let data = try Data(contentsOf: project.rootURL.appending(path: "scene/shortcuts.json"))
+        XCTAssertEqual(try JSONDecoder().decode(SafeShortcutTimeline.self, from: data), timeline)
+    }
+
     func testLiveProgramArchiveProjectStartsWithOneRecoverableProgramTrack() async throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }
@@ -369,6 +396,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         var presentation = CapturePresentationSnapshot.default
         presentation.name = "Baked Scene"
         presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.cursor.showsShortcutKeys = true
         let request = CaptureRequest(
             id: UUID(),
             createdAt: Date(),
@@ -411,18 +439,24 @@ final class RecordingProjectStoreTests: XCTestCase {
         let sourceDuration = try await AVURLAsset(url: screenURL).load(.duration).seconds
         var pauseEdit = try ProjectEditTimeline(trackID: "screen-7", sourceDuration: sourceDuration)
         try pauseEdit.trimEnd(to: sourceDuration / 2)
+        let shortcutTimeline = SafeShortcutTimeline(events: [
+            SafeShortcutEvent(time: 0.1, label: "⌘K"),
+        ])
+        try store.writeShortcutTimeline(shortcutTimeline, in: project)
 
         try await RecordingRetentionFinalizer().finalize(
             project: project,
             request: request,
             projectStore: store,
             cursorTimeline: nil,
+            shortcutTimeline: shortcutTimeline,
             editTimeline: pauseEdit
         )
 
         let programURL = project.rootURL.appending(path: "program.mov")
         XCTAssertTrue(FileManager.default.fileExists(atPath: programURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "raw-tracks").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "scene/shortcuts.json").path))
         let manifest = try decodeManifest(at: project.rootURL)
         XCTAssertEqual(manifest.tracks, [RecordingRetentionFinalizer.programTrack])
         XCTAssertNotNil(manifest.stoppedAt)

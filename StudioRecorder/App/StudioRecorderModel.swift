@@ -510,6 +510,10 @@ final class StudioRecorderModel: ObservableObject {
         cameraPreviewSession = session.map(CameraSessionReference.init(session:))
     }
 
+    func recordSafeShortcut(_ label: String) {
+        coordinator?.recordSafeShortcut(label)
+    }
+
     func recoverProject(_ projectID: String) async throws {
         guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
         try await coordinator.recoverProject(projectID)

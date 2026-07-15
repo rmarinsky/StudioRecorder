@@ -35,6 +35,7 @@ final class RecordingRetentionFinalizer {
         request: CaptureRequest,
         projectStore: RecordingProjectStore,
         cursorTimeline: CursorSceneTimeline?,
+        shortcutTimeline: SafeShortcutTimeline? = nil,
         sceneTimeline: StudioSceneTimeline? = nil,
         editTimeline: ProjectEditTimeline? = nil
     ) async throws {
@@ -74,6 +75,7 @@ final class RecordingRetentionFinalizer {
                 audioURL: audioURL,
                 screenDisplayID: screen.displayID,
                 cursorTimeline: cursorTimeline,
+                shortcutTimeline: shortcutTimeline,
                 sceneTimeline: sceneTimeline,
                 screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
                 cameraTimeOffset: camera.map {
@@ -103,6 +105,10 @@ final class RecordingRetentionFinalizer {
         let editURL = project.rootURL.appending(path: ProjectEditStore.filename)
         if fileManager.fileExists(atPath: editURL.path) {
             try? fileManager.removeItem(at: editURL)
+        }
+        let shortcutTimelineURL = project.rootURL.appending(path: "scene/shortcuts.json")
+        if fileManager.fileExists(atPath: shortcutTimelineURL.path) {
+            try? fileManager.removeItem(at: shortcutTimelineURL)
         }
     }
 

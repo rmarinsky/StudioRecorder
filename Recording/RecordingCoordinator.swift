@@ -58,6 +58,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var studioSceneTimeline: StudioSceneTimeline?
+    private var safeShortcutTimeline = SafeShortcutTimeline()
     private var recordingPauseTimeline = RecordingPauseTimeline()
     private var recordingStartedAt: TimeInterval?
     private var recordingStartedAtByDisplayID: [UInt32: TimeInterval] = [:]
@@ -160,6 +161,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         recordingStartedAtByDisplayID = [:]
         hasAuthoritativeRecordingStart = false
         recordingPauseTimeline = RecordingPauseTimeline()
+        safeShortcutTimeline = SafeShortcutTimeline()
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
         }
@@ -292,6 +294,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         state = .recording
     }
 
+    func recordSafeShortcut(_ label: String) {
+        guard state == .recording,
+              let recordingStartedAt,
+              let activeProject,
+              let activeCaptureRequest else { return }
+        let sourceTime = max(ProcessInfo.processInfo.systemUptime - recordingStartedAt, 0)
+        let presentation = studioSceneTimeline?.presentation(at: sourceTime)
+            ?? activeCaptureRequest.presentation
+        guard presentation.cursor.resolvedShowsShortcutKeys else { return }
+        safeShortcutTimeline.append(label: label, at: sourceTime)
+        do {
+            try projectStore.writeShortcutTimeline(safeShortcutTimeline, in: activeProject)
+        } catch {
+            finalizationWarning = "Shortcut display is active, but its editable timing could not be saved. \(error.localizedDescription)"
+        }
+    }
+
     func stopRecording() async {
         guard state == .recording || state == .paused else { return }
         isTearingDown = true
@@ -310,6 +329,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         if let activeProject, let activeCaptureRequest {
             do {
                 try persistCursorTelemetry(in: activeProject)
+                try persistShortcutTelemetry(in: activeProject)
                 let pauseEditTimelines = try await makePauseEditTimelines(
                     project: activeProject,
                     request: activeCaptureRequest,
@@ -330,6 +350,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     request: activeCaptureRequest,
                     projectStore: projectStore,
                     cursorTimeline: recordedCursorTimeline,
+                    shortcutTimeline: safeShortcutTimeline.events.isEmpty ? nil : safeShortcutTimeline,
                     sceneTimeline: studioSceneTimeline,
                     editTimeline: pauseEditTimelines.first(where: {
                         $0.trackID == preferredScreenTrackID(
@@ -513,6 +534,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         try projectStore.writeCursorTimeline(recordedCursorTimeline, in: project)
     }
 
+    private func persistShortcutTelemetry(in project: RecordingProject) throws {
+        guard !safeShortcutTimeline.events.isEmpty else { return }
+        try projectStore.writeShortcutTimeline(safeShortcutTimeline, in: project)
+    }
+
     private func makePauseEditTimelines(
         project: RecordingProject,
         request: CaptureRequest,
@@ -628,6 +654,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func completeInterruptedTeardown(reason: String) async {
         if let activeProject {
             try? persistCursorTelemetry(in: activeProject)
+            try? persistShortcutTelemetry(in: activeProject)
             try? projectStore.markInterrupted(activeProject, detail: reason)
         }
         clearCaptureState()
@@ -646,6 +673,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         activeProject = nil
         activeCaptureRequest = nil
         studioSceneTimeline = nil
+        safeShortcutTimeline = SafeShortcutTimeline()
         recordingStartedAt = nil
         recordingStartedAtByDisplayID = [:]
         hasAuthoritativeRecordingStart = false
@@ -662,8 +690,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
               var timeline = studioSceneTimeline else { return }
         timeline.offsetSceneSwitches(by: provisionalStart - startedAt)
         studioSceneTimeline = timeline
+        safeShortcutTimeline.offsetEvents(by: provisionalStart - startedAt)
         do {
             try projectStore.writeStudioSceneTimeline(timeline, in: project)
+            try persistShortcutTelemetry(in: project)
         } catch {
             finalizationWarning = "The recording is safe, but scene switch timing could not be updated. \(error.localizedDescription)"
         }

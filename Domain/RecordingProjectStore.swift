@@ -588,6 +588,12 @@ final class RecordingProjectStore {
         try write(timeline, to: sceneURL.appending(path: "cursor.json"))
     }
 
+    func writeShortcutTimeline(_ timeline: SafeShortcutTimeline, in project: RecordingProject) throws {
+        let sceneURL = project.rootURL.appending(path: "scene", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: sceneURL, withIntermediateDirectories: true)
+        try write(timeline, to: sceneURL.appending(path: "shortcuts.json"))
+    }
+
     func writeStudioSceneTimeline(_ timeline: StudioSceneTimeline, in project: RecordingProject) throws {
         let sceneURL = project.rootURL.appending(path: "scene", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: sceneURL, withIntermediateDirectories: true)

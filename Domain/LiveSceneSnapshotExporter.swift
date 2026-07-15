@@ -39,6 +39,7 @@ actor LiveSceneSnapshotExporter {
         presentation: CapturePresentationSnapshot,
         screenFraming: ScreenFramingSnapshot?,
         cursor: ProgramCursorState?,
+        shortcutLabel: String? = nil,
         to destinationURL: URL
     ) throws {
         let presentation = presentation.validated()
@@ -51,6 +52,7 @@ actor LiveSceneSnapshotExporter {
             presentation: presentation,
             screenFraming: screenFraming,
             cursor: cursor,
+            shortcutLabel: shortcutLabel,
             to: output
         )
         let canvas = CGRect(origin: .zero, size: presentation.canvas.pixelSize)

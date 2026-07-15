@@ -153,6 +153,8 @@ actor LiveProgramPipeline {
     private let compositor = ProgramFrameCompositor(personQuality: .live)
     private var presentation = CapturePresentationSnapshot.default
     private var rendersCursor = false
+    private var shortcutLabel: String?
+    private var shortcutExpiresAt: TimeInterval = 0
     private var latestCamera: SendableSampleBuffer?
     private var pixelBufferPool: CVPixelBufferPool?
     private var isRunning = false
@@ -193,6 +195,8 @@ actor LiveProgramPipeline {
         let generation = streamGeneration
         self.presentation = presentation.validated()
         rendersCursor = includesCursor
+        shortcutLabel = nil
+        shortcutExpiresAt = 0
         activeConfiguration = configuration
         activeAudioConfiguration = audioConfiguration
         activeStateHandler = stateHandler
@@ -250,6 +254,8 @@ actor LiveProgramPipeline {
         let archive = activeArchive
         activeArchive = nil
         latestCamera = nil
+        shortcutLabel = nil
+        shortcutExpiresAt = 0
         pixelBufferPool = nil
         activeConfiguration = nil
         activeAudioConfiguration = nil
@@ -260,6 +266,16 @@ actor LiveProgramPipeline {
 
     func updatePresentation(_ presentation: CapturePresentationSnapshot) {
         self.presentation = presentation.validated()
+        if !self.presentation.cursor.resolvedShowsShortcutKeys {
+            shortcutLabel = nil
+            shortcutExpiresAt = 0
+        }
+    }
+
+    func showShortcut(_ label: String, duration: TimeInterval = 1.5) {
+        guard presentation.cursor.resolvedShowsShortcutKeys else { return }
+        shortcutLabel = String(label.prefix(32))
+        shortcutExpiresAt = ProcessInfo.processInfo.systemUptime + min(max(duration, 0.2), 5)
     }
 
     func appendCamera(_ sampleBuffer: SendableSampleBuffer) {
@@ -292,6 +308,7 @@ actor LiveProgramPipeline {
                 CGPoint(x: $0.normalizedX, y: $0.normalizedY)
             }),
             cursor: rendersCursor ? cursor : nil,
+            shortcutLabel: activeShortcutLabel,
             to: outputBuffer
         )
         guard let composed = makeSampleBuffer(
@@ -319,6 +336,12 @@ actor LiveProgramPipeline {
         }
         composedVideoFrames += 1
         totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
+    }
+
+    private var activeShortcutLabel: String? {
+        guard presentation.cursor.resolvedShowsShortcutKeys,
+              ProcessInfo.processInfo.systemUptime < shortcutExpiresAt else { return nil }
+        return shortcutLabel
     }
 
     func healthSnapshot(configuration: YouTubeStreamConfiguration) -> LiveStreamHealthSnapshot {

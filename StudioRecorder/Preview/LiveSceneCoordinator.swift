@@ -226,6 +226,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         capturesCamera: Bool,
         includesCursor: Bool,
         excludesStudioRecorder: Bool,
+        shortcutLabel: String? = nil,
         to destinationURL: URL
     ) async throws {
         guard let previewedDisplay else {
@@ -267,6 +268,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             presentation: presentation,
             screenFraming: framing,
             cursor: cursor,
+            shortcutLabel: shortcutLabel,
             to: destinationURL
         )
     }

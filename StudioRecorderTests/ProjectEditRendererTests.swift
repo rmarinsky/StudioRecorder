@@ -4,6 +4,44 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testProgramRendererReplaysSafeShortcutTelemetryWithoutChangingRawMedia() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let outputURL = directory.appending(path: "shortcuts.mov")
+        let shortcutFrameURL = directory.appending(path: "shortcut.png")
+        let clearFrameURL = directory.appending(path: "clear.png")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        let rawBytes = try Data(contentsOf: screenURL)
+        let shortcutTimeline = SafeShortcutTimeline(events: [
+            SafeShortcutEvent(time: 0.25, duration: 1, label: "⇧⌘P"),
+        ])
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.cursor.showsShortcutKeys = true
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                shortcutTimeline: shortcutTimeline
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-shortcuts", sourceDuration: 2),
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: shortcutFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.75, to: clearFrameURL)
+
+        let shortcut = try color(in: shortcutFrameURL, normalizedX: 0.5, normalizedY: 0.12)
+        let clear = try color(in: clearFrameURL, normalizedX: 0.5, normalizedY: 0.12)
+        XCTAssertLessThan(shortcut.red, 180)
+        XCTAssertGreaterThan(clear.red, 180)
+        XCTAssertEqual(try Data(contentsOf: screenURL), rawBytes)
+    }
+
     func testProgramRendererAppliesTimedPrivacyRedactionWithoutChangingOtherFrames() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
