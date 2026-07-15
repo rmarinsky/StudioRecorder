@@ -8,6 +8,7 @@ final class CapturePresentationTests: XCTestCase {
         let encoded = try JSONEncoder().encode(CapturePresentationSnapshot.default)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "cameraBackground")
+        object.removeValue(forKey: "name")
 
         let decoded = try JSONDecoder().decode(
             CapturePresentationSnapshot.self,
@@ -15,6 +16,16 @@ final class CapturePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(decoded.resolvedCameraBackground, .off)
+        XCTAssertEqual(decoded.resolvedName, "Scene 1")
+    }
+
+    func testSceneNameIsBoundedAndBlankNamesResolveToTheDefault() {
+        var presentation = CapturePresentationSnapshot.default
+        presentation.name = String(repeating: "a", count: 100)
+        XCTAssertEqual(presentation.validated().name?.count, 80)
+
+        presentation.name = "   "
+        XCTAssertEqual(presentation.validated().resolvedName, "Scene 1")
     }
 
     func testGreenScreenMakesTheKeyColorTransparentAndKeepsForegroundObjects() throws {

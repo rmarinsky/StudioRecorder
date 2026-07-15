@@ -309,6 +309,7 @@ struct CursorTreatmentSnapshot: Codable, Equatable, Sendable {
 }
 
 struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
+    var name: String? = nil
     var canvas: CaptureCanvasSnapshot
     var framing: ScreenFramingSnapshot
     var screen: SourcePlacementSnapshot
@@ -318,6 +319,11 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
 
     var resolvedCameraBackground: CameraBackgroundSnapshot {
         (cameraBackground ?? .off).validated()
+    }
+
+    var resolvedName: String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Scene 1" : String(trimmed.prefix(80))
     }
 
     static let `default` = CapturePresentationSnapshot(
@@ -341,6 +347,7 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
 
     func validated() -> CapturePresentationSnapshot {
         CapturePresentationSnapshot(
+            name: name.map { String($0.prefix(80)) },
             canvas: canvas.validated(),
             framing: framing.validated(),
             screen: screen.validated(),

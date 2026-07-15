@@ -358,7 +358,8 @@ struct StudioRecorderRootView: View {
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("Scene preview").font(.headline)
+                        Text(snapshot.studioDraft?.presentation.resolvedName ?? "Scene 1")
+                            .font(.headline)
                         Spacer()
                         Text("\(canvasWidth) × \(canvasHeight)  ·  30 fps")
                             .font(.caption.monospacedDigit())
@@ -648,7 +649,7 @@ private struct ProjectRow: View {
                 .frame(width: 92, height: 54)
                 .overlay(Image(systemName: statusIcon).foregroundStyle(statusColor))
             VStack(alignment: .leading, spacing: 4) {
-                Text("Recording · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                Text(project.presentation?.resolvedName ?? "Scene 1")
                     .fontWeight(.medium)
                 Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s") · \(project.captureProfile)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -714,6 +715,9 @@ private struct StudioInspector: View {
             VStack(alignment: .leading, spacing: 0) {
                 inspectorHeader("Scene")
                 VStack(alignment: .leading, spacing: 10) {
+                    TextField("Scene name", text: sceneNameBinding)
+                        .textFieldStyle(.roundedBorder)
+
                     Picker("Output", selection: canvasPresetBinding) {
                         ForEach(CaptureCanvasPreset.allCases) { preset in
                             Text(preset.label).tag(Optional(preset))
@@ -994,6 +998,13 @@ private struct StudioInspector: View {
                     )
                 }
             }
+        )
+    }
+
+    private var sceneNameBinding: Binding<String> {
+        Binding(
+            get: { presentation.name ?? presentation.resolvedName },
+            set: { presentation.name = String($0.prefix(80)) }
         )
     }
 

@@ -103,9 +103,9 @@ struct ProjectDetailView: View {
             Divider().frame(height: 22)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Recording · \(project.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                Text(editSession.presentation.resolvedName)
                     .font(.headline)
-                Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s") · \(project.captureProfile)")
+                Text("Recorded \(project.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(project.displayCount) display\(project.displayCount == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -18,6 +18,9 @@ struct ProjectPresentationEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            TextField("Scene name", text: sceneNameBinding)
+                .textFieldStyle(.roundedBorder)
+
             RecordedProgramCanvas(
                 screenImage: screenImage,
                 cameraImage: cameraImage,
@@ -66,6 +69,13 @@ struct ProjectPresentationEditorView: View {
             refreshCameraImage()
         }
         .onChange(of: presentation.cameraBackground) { _, _ in refreshCameraImage() }
+    }
+
+    private var sceneNameBinding: Binding<String> {
+        Binding(
+            get: { presentation.name ?? presentation.resolvedName },
+            set: { presentation.name = String($0.prefix(80)) }
+        )
     }
 
     @ViewBuilder
