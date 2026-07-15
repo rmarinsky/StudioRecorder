@@ -150,6 +150,7 @@ struct ProjectDetailView: View {
                         .background(selectedTrackID == track.id ? Color.accentColor.opacity(0.10) : Color.clear)
                     }
                     .buttonStyle(.plain)
+                    .disabled(editSession.isWorking)
                     Divider()
                 }
 

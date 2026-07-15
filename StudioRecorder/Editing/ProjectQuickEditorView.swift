@@ -145,21 +145,25 @@ private struct ProjectTimelineStrip: View {
                     let start = timeline.segments.prefix(index).reduce(0) { $0 + $1.duration }
                     let x = availableWidth * (start / timeline.duration)
                     let width = max(3, availableWidth * (segment.duration / timeline.duration) - 2)
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(selectedSegmentID == segment.id ? Color.accentColor : Color.accentColor.opacity(0.45))
-                        .overlay {
-                            if width > 72 {
-                                Text("\(index + 1)  ·  \(sourceRange(segment))")
-                                    .font(.caption2.monospacedDigit().weight(.medium))
-                                    .foregroundStyle(selectedSegmentID == segment.id ? .white : .primary)
-                                    .lineLimit(1)
+                    Button {
+                        onSelect(segment.id)
+                    } label: {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selectedSegmentID == segment.id ? Color.accentColor : Color.accentColor.opacity(0.45))
+                            .overlay {
+                                if width > 72 {
+                                    Text("\(index + 1)  ·  \(sourceRange(segment))")
+                                        .font(.caption2.monospacedDigit().weight(.medium))
+                                        .foregroundStyle(selectedSegmentID == segment.id ? .white : .primary)
+                                        .lineLimit(1)
+                                }
                             }
-                        }
-                        .frame(width: width, height: 42)
-                        .offset(x: x)
-                        .onTapGesture { onSelect(segment.id) }
-                        .accessibilityLabel("Segment \(index + 1), source \(sourceRange(segment))")
-                        .accessibilityAddTraits(selectedSegmentID == segment.id ? .isSelected : [])
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: width, height: 42)
+                    .offset(x: x)
+                    .accessibilityLabel("Segment \(index + 1), source \(sourceRange(segment))")
+                    .accessibilityAddTraits(selectedSegmentID == segment.id ? .isSelected : [])
                 }
 
                 Rectangle()

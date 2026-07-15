@@ -59,6 +59,8 @@ final class ProjectEditSession: ObservableObject {
         undoStack = []
         redoStack = []
         errorMessage = nil
+        self.projectRootURL = projectRootURL
+        self.sourceURL = sourceURL
         isLoading = true
         defer {
             if loadID == requestID { isLoading = false }
@@ -89,8 +91,6 @@ final class ProjectEditSession: ObservableObject {
             let item = try await renderer.makePlayerItem(from: sourceURL, timeline: editTimeline)
             try Task.checkCancellation()
             guard loadID == requestID else { return }
-            self.projectRootURL = projectRootURL
-            self.sourceURL = sourceURL
             document = editDocument
             timeline = editTimeline
             selectedSegmentID = editTimeline.segments.first?.id
@@ -187,7 +187,10 @@ final class ProjectEditSession: ObservableObject {
     }
 
     func prepareMediaForDerivedExport() async throws -> PreparedProjectMedia {
-        guard let sourceURL, let timeline else { throw ProjectEditRendererError.unreadableSource }
+        guard let sourceURL else { throw ProjectEditRendererError.unreadableSource }
+        guard let timeline else {
+            return PreparedProjectMedia(url: sourceURL, isTemporary: false)
+        }
         guard !timeline.isIdentity else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
@@ -230,14 +233,17 @@ final class ProjectEditSession: ObservableObject {
               let sourceURL,
               let projectRootURL,
               var nextDocument = document else { return }
+        let operationID = loadID
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
 
         do {
             let item = try await renderer.makePlayerItem(from: sourceURL, timeline: next)
+            guard loadID == operationID else { return }
             nextDocument.replaceTimeline(next)
             try await store.save(nextDocument, in: projectRootURL)
+            guard loadID == operationID else { return }
             document = nextDocument
             timeline = next
             self.selectedSegmentID = selectedSegmentID

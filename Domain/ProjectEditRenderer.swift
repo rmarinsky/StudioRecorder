@@ -5,6 +5,7 @@ enum ProjectEditRendererError: LocalizedError, Equatable {
     case unreadableSource
     case noMediaTracks
     case exportUnavailable
+    case unsafeDestination
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum ProjectEditRendererError: LocalizedError, Equatable {
             "The selected raw movie has no editable media tracks."
         case .exportUnavailable:
             "A compatible movie export is unavailable for this edit."
+        case .unsafeDestination:
+            "Choose a destination outside the project's immutable raw tracks."
         }
     }
 }
@@ -25,12 +28,35 @@ final class ProjectEditRenderer {
     }
 
     func exportMovie(from sourceURL: URL, timeline: ProjectEditTimeline, to destinationURL: URL) async throws {
+        try validateDestination(destinationURL, for: sourceURL)
         let composition = try await makeComposition(from: sourceURL, timeline: timeline)
         guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw ProjectEditRendererError.exportUnavailable
         }
-        try? FileManager.default.removeItem(at: destinationURL)
-        try await session.export(to: destinationURL, as: .mov)
+        let temporaryURL = destinationURL.deletingLastPathComponent()
+            .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        try await session.export(to: temporaryURL, as: .mov)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+
+    private func validateDestination(_ destinationURL: URL, for sourceURL: URL) throws {
+        let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
+        let destination = destinationURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard source != destination else {
+            throw ProjectEditRendererError.unsafeDestination
+        }
+
+        let sourceDirectory = source.deletingLastPathComponent()
+        if sourceDirectory.lastPathComponent == "raw-tracks",
+           destination.path.hasPrefix(sourceDirectory.path + "/") {
+            throw ProjectEditRendererError.unsafeDestination
+        }
     }
 
     private func makeComposition(from sourceURL: URL, timeline: ProjectEditTimeline) async throws -> AVMutableComposition {

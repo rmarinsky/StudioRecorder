@@ -1,14 +1,36 @@
 @preconcurrency import AVFoundation
+import ImageIO
 import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testRendererRejectsTheRawSourceAsAnExportDestinationWithoutDeletingIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.mov")
+        try await writeReadableMovie(to: sourceURL)
+        let originalBytes = try Data(contentsOf: sourceURL)
+        let timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2)
+
+        do {
+            try await ProjectEditRenderer().exportMovie(from: sourceURL, timeline: timeline, to: sourceURL)
+            XCTFail("Expected an unsafe destination error")
+        } catch {
+            XCTAssertEqual(error as? ProjectEditRendererError, .unsafeDestination)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
+    }
+
     func testRendererExportsOnlyTheOrderedSegmentsInTheEditTimeline() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let sourceURL = directory.appending(path: "source.mov")
         let outputURL = directory.appending(path: "edited.mov")
+        let firstFrameURL = directory.appending(path: "first.png")
+        let secondFrameURL = directory.appending(path: "second.png")
         try await writeReadableMovie(to: sourceURL)
 
         let firstID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
@@ -25,6 +47,18 @@ final class ProjectEditRendererTests: XCTestCase {
         let outputDuration = try await output.load(.duration).seconds
         XCTAssertEqual(outputDuration, 1, accuracy: 0.08)
         XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+
+        let mediaExporter = ProjectMediaExporter()
+        try await mediaExporter.exportScreenshot(from: outputURL, at: 0.1, to: firstFrameURL)
+        try await mediaExporter.exportScreenshot(from: outputURL, at: 0.6, to: secondFrameURL)
+        let firstColor = try averageColor(in: firstFrameURL)
+        let secondColor = try averageColor(in: secondFrameURL)
+        XCTAssertGreaterThan(firstColor.red, 180)
+        XCTAssertLessThan(firstColor.green, 80)
+        XCTAssertLessThan(firstColor.blue, 80)
+        XCTAssertGreaterThan(secondColor.red, 180)
+        XCTAssertGreaterThan(secondColor.green, 180)
+        XCTAssertGreaterThan(secondColor.blue, 180)
     }
 
     private func writeReadableMovie(to url: URL) async throws {
@@ -56,15 +90,29 @@ final class ProjectEditRendererTests: XCTestCase {
         }
         input.markAsFinished()
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            writer.finishWriting {
-                if writer.status == .completed {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: writer.error ?? NSError(domain: "ProjectEditRendererTests", code: 1))
-                }
-            }
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            throw writer.error ?? NSError(domain: "ProjectEditRendererTests", code: 1)
         }
+    }
+
+    private func averageColor(in url: URL) throws -> (red: UInt8, green: UInt8, blue: UInt8) {
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = try XCTUnwrap(
+            CGContext(
+                data: &pixel,
+                width: 1,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return (pixel[0], pixel[1], pixel[2])
     }
 
     private func pixelBuffer(color: UInt32) throws -> CVPixelBuffer {
