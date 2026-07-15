@@ -249,7 +249,8 @@ struct StudioDraft: Equatable {
         displays: [AvailableDisplay],
         microphones: [AvailableMicrophone],
         cameras: [AvailableCamera] = [],
-        permissions: PermissionSnapshot
+        permissions: PermissionSnapshot,
+        retentionPolicyOverride: MediaRetentionPolicy? = nil
     ) throws -> CaptureRequest {
         let issues = validationIssues(
             displays: displays,
@@ -305,7 +306,7 @@ struct StudioDraft: Equatable {
                 destinationURL: destination.url,
                 destinationBookmarkID: destination.bookmarkID,
                 fallbackPath: destination.fallbackPath,
-                retentionPolicy: retentionPolicy
+                retentionPolicy: retentionPolicyOverride ?? retentionPolicy
             )
         )
     }

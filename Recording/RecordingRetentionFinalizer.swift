@@ -17,12 +17,7 @@ enum RecordingRetentionFinalizerError: LocalizedError {
 
 @MainActor
 final class RecordingRetentionFinalizer {
-    static let programTrack = RecordingTrackDescriptor(
-        id: "program",
-        kind: .program,
-        displayID: nil,
-        relativePath: "program.mov"
-    )
+    static let programTrack = RecordingTrackDescriptor.program
 
     private let renderer: ProjectProgramRenderer
     private let fileManager: FileManager

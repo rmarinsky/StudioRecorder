@@ -440,6 +440,39 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(store.preferences.audio.capturesMicrophone)
     }
 
+    func testStreamSafetyArchiveFreezesProgramOnlyRequestWithoutChangingDraftPreference() throws {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .ready
+        snapshot.permissionSnapshot = PermissionSnapshot(screenRecording: .granted, microphone: .granted)
+        snapshot.availableDisplays = [AvailableDisplay(
+            id: 7,
+            title: "Display",
+            pixelSize: CGSize(width: 3_840, height: 2_160)
+        )]
+        snapshot.availableMicrophones = [AvailableMicrophone(
+            id: "mic",
+            name: "Microphone",
+            isSystemDefault: true
+        )]
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            permissionCenter: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+        model.send(.newRecording)
+        model.send(.setSelectedDisplayIDs([7]))
+
+        let request = try XCTUnwrap(model.makeCaptureRequest(retentionPolicy: .programOnly))
+
+        XCTAssertEqual(request.storage.resolvedRetentionPolicy, .programOnly)
+        XCTAssertEqual(model.snapshot.studioDraft?.retentionPolicy, .editableTracks)
+        XCTAssertNil(model.snapshot.activeCaptureRequest)
+        XCTAssertFalse(model.snapshot.isCaptureCommandInFlight)
+    }
+
     func testDraftOverridesNeverRewriteSavedDefaults() {
         let store = makePreferencesStore()
         var snapshot = StudioRecorderSnapshot()

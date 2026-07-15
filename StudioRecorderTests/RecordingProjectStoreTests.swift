@@ -6,6 +6,36 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testLiveProgramArchiveProjectStartsWithOneRecoverableProgramTrack() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let request = archiveCaptureRequest(destination: destination)
+
+        let project = try store.createProgramArchiveProject(request: request)
+        let manifest = try decodeManifest(at: project.rootURL)
+        let events = try decodeJournal(at: store.journalURL(for: project))
+
+        XCTAssertEqual(manifest.tracks, [.program])
+        XCTAssertEqual(manifest.captureRequest, request)
+        XCTAssertEqual(events.map(\.kind), [.projectCreated, .trackPrepared])
+        XCTAssertEqual(events.last?.trackID, RecordingTrackDescriptor.program.id)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: "raw-tracks").path
+        ))
+
+        try await writeReadableMovie(to: project.rootURL.appending(
+            path: RecordingTrackDescriptor.program.relativePath
+        ))
+        try store.markStarted(trackID: RecordingTrackDescriptor.program.id, in: project)
+        try store.markInterrupted(project, detail: "Synthetic interruption")
+
+        let discovered = await store.discoverProjects()
+        let recovered = try XCTUnwrap(discovered.single)
+        XCTAssertEqual(recovered.lifecycle, .needsRecovery)
+        XCTAssertEqual(recovered.recoveryReport.tracks.single?.state, .partialReadable)
+    }
+
     func testProjectTrackTimingUsesRecordedTrackStartEvents() {
         let screenStart = Date(timeIntervalSince1970: 1_000)
         let cameraStart = Date(timeIntervalSince1970: 1_002.25)
@@ -416,6 +446,44 @@ final class RecordingProjectStoreTests: XCTestCase {
         let packageURL = rootURL.appending(path: "\(name).recordingproject", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: packageURL.appending(path: "raw-tracks", directoryHint: .isDirectory), withIntermediateDirectories: true)
         return packageURL
+    }
+
+    private func archiveCaptureRequest(destination: URL) -> CaptureRequest {
+        CaptureRequest(
+            id: UUID(),
+            createdAt: Date(timeIntervalSinceReferenceDate: 42),
+            displaySources: [
+                DisplaySourceSnapshot(
+                    id: 9,
+                    name: "Studio Display",
+                    pixelWidth: 2_560,
+                    pixelHeight: 1_440,
+                    metadataState: .known
+                ),
+            ],
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: true,
+                capturesMicrophone: true,
+                microphone: MicrophoneSourceSnapshot(id: "mic", name: "Microphone"),
+                primaryAudioDisplayID: 9,
+                excludesStudioRecorderAudio: true
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .h264,
+                includeCursor: true,
+                excludeStudioRecorder: true,
+                programResolutionTarget: "1920x1080",
+                cursorRendering: .composited
+            ),
+            presentation: .default,
+            storage: StorageCaptureSnapshot(
+                destinationURL: destination,
+                destinationBookmarkID: "test-destination",
+                fallbackPath: destination.path,
+                retentionPolicy: .programOnly
+            )
+        )
     }
 
     private func legacyManifestData(id: UUID, createdAt: Date, displays: [UInt32], stoppedAt: Date?) -> Data {

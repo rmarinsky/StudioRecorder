@@ -467,6 +467,27 @@ final class StudioRecorderModel: ObservableObject {
         await launch()
     }
 
+    func refreshProjects() async {
+        guard let coordinator else { return }
+        await coordinator.refreshProjects()
+        synchronizeFromCoordinator()
+    }
+
+    func makeCaptureRequest(retentionPolicy: MediaRetentionPolicy) -> CaptureRequest? {
+        guard snapshot.route == .studio,
+              snapshot.captureState == .ready,
+              snapshot.requiredCapturePermission == nil,
+              !snapshot.selectedDisplayIDs.isEmpty else { return nil }
+        let draft = currentCaptureDraft()
+        return try? draft.freeze(
+            displays: snapshot.availableDisplays,
+            microphones: snapshot.availableMicrophones,
+            cameras: snapshot.availableCameras,
+            permissions: snapshot.permissionSnapshot,
+            retentionPolicyOverride: retentionPolicy
+        )
+    }
+
     func requestPermission(_ permission: CapturePermission) async {
         await permissionCenter?.request(permission)
         await launch()
@@ -656,14 +677,7 @@ final class StudioRecorderModel: ObservableObject {
                 guard snapshot.route == .studio else { return .ignored }
                 guard snapshot.requiredCapturePermission == nil else { return .ignored }
                 guard !snapshot.selectedDisplayIDs.isEmpty else { return .ignored }
-                var draft = snapshot.studioDraft ?? preferencesStore.makeStudioDraft(
-                    displays: snapshot.availableDisplays,
-                    microphones: snapshot.availableMicrophones,
-                    cameras: snapshot.availableCameras
-                )
-                draft.selectedDisplayIDs = snapshot.selectedDisplayIDs
-                draft.capturesMicrophone = snapshot.capturesMicrophone
-                draft.capturesCamera = snapshot.capturesCamera
+                let draft = currentCaptureDraft()
                 guard let request = try? draft.freeze(
                     displays: snapshot.availableDisplays,
                     microphones: snapshot.availableMicrophones,
@@ -695,6 +709,18 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.captureState == .ready &&
             !snapshot.isCaptureCommandInFlight &&
             snapshot.studioDraft != nil
+    }
+
+    private func currentCaptureDraft() -> StudioDraft {
+        var draft = snapshot.studioDraft ?? preferencesStore.makeStudioDraft(
+            displays: snapshot.availableDisplays,
+            microphones: snapshot.availableMicrophones,
+            cameras: snapshot.availableCameras
+        )
+        draft.selectedDisplayIDs = snapshot.selectedDisplayIDs
+        draft.capturesMicrophone = snapshot.capturesMicrophone
+        draft.capturesCamera = snapshot.capturesCamera
+        return draft
     }
 
     private func createFreshStudioDraft() {

@@ -286,6 +286,103 @@ final class YouTubeStreamingTests: XCTestCase {
         await pipeline.stop()
     }
 
+    func testLocalArchiveKeepsComposedFramesDuringReconnectAndFinishesOnceOnStop() async throws {
+        let sink = ReconnectableStreamSink()
+        let archive = InspectableProgramArchiveSink()
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 3,
+                baseDelaySeconds: 5,
+                maximumDelaySeconds: 5
+            )
+        )
+        let reconnecting = expectation(description: "Reconnect begins")
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration(),
+            localArchive: archive
+        ) { state in
+            if case .reconnecting = state { reconnecting.fulfill() }
+        }
+        let frame = SendableSampleBuffer(value: try videoSampleBuffer(color: .blue))
+        await pipeline.appendScreen(frame, cursor: nil)
+
+        await sink.dropConnection()
+        await fulfillment(of: [reconnecting], timeout: 1)
+        await pipeline.appendScreen(frame, cursor: nil)
+        await pipeline.stop()
+        await pipeline.stop()
+
+        let streamedVideoCount = await sink.videoCount()
+        let archivedVideoCount = await archive.videoCount()
+        let archiveFinishCount = await archive.finishCount()
+        XCTAssertEqual(streamedVideoCount, 1)
+        XCTAssertEqual(archivedVideoCount, 2)
+        XCTAssertEqual(archiveFinishCount, 1)
+    }
+
+    func testReconnectExhaustionFinalizesLocalArchiveBeforeReportingFailure() async throws {
+        let sink = ReconnectableStreamSink(reconnectFailures: 2)
+        let archive = InspectableProgramArchiveSink()
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 2,
+                baseDelaySeconds: 0,
+                maximumDelaySeconds: 0
+            )
+        )
+        let failed = expectation(description: "Reconnect failure is reported")
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration(),
+            localArchive: archive
+        ) { state in
+            if case .failed = state { failed.fulfill() }
+        }
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil
+        )
+
+        await sink.dropConnection()
+        await fulfillment(of: [failed], timeout: 1)
+
+        let finishCount = await archive.finishCount()
+        let videoCount = await archive.videoCount()
+        XCTAssertEqual(finishCount, 1)
+        XCTAssertEqual(videoCount, 1)
+    }
+
+    func testSlowLocalArchiveNeverDelaysTheCurrentLiveFrame() async throws {
+        let sink = InspectableStreamSink()
+        let archive = BlockingProgramArchiveSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration(),
+            localArchive: archive
+        ) { _ in }
+
+        let appendTask = Task {
+            await pipeline.appendScreen(
+                SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+                cursor: nil
+            )
+        }
+        await archive.waitUntilVideoAppendStarts()
+
+        let liveVideoCount = await sink.videoCount()
+        XCTAssertEqual(liveVideoCount, 1)
+        await archive.resumeVideoAppend()
+        _ = try await appendTask.value
+        await pipeline.stop()
+    }
+
     func testDropDuringReconnectCompletionStartsAnotherReconnectInsteadOfGoingFalseLive() async throws {
         let sink = ReconnectableStreamSink(dropsOnSuccessfulReconnects: 1)
         let pipeline = LiveProgramPipeline(
@@ -529,8 +626,63 @@ private actor InspectableStreamSink: LiveProgramSink {
     func disconnect() {}
 
     func latestVideo() -> SendableSampleBuffer? { videos.last }
+    func videoCount() -> Int { videos.count }
 
     func connectedAudioConfiguration() -> LiveStreamAudioConfiguration? { audioConfiguration }
+}
+
+private actor InspectableProgramArchiveSink: LiveProgramArchiveSink {
+    private var videos: [SendableSampleBuffer] = []
+    private var audio: [(SendableSampleBuffer, UInt8)] = []
+    private var finishes = 0
+
+    func appendVideo(_ sampleBuffer: SendableSampleBuffer) {
+        videos.append(sampleBuffer)
+    }
+
+    func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) {
+        audio.append((sampleBuffer, track))
+    }
+
+    func fail(_ message: String) {}
+
+    func finish() {
+        finishes += 1
+    }
+
+    func videoCount() -> Int { videos.count }
+    func finishCount() -> Int { finishes }
+}
+
+private actor BlockingProgramArchiveSink: LiveProgramArchiveSink {
+    private var appendStarted = false
+    private var appendWaiters: [CheckedContinuation<Void, Never>] = []
+    private var appendContinuation: CheckedContinuation<Void, Never>?
+
+    func appendVideo(_ sampleBuffer: SendableSampleBuffer) async {
+        appendStarted = true
+        appendWaiters.forEach { $0.resume() }
+        appendWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            appendContinuation = continuation
+        }
+    }
+
+    func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) {}
+    func fail(_ message: String) {}
+    func finish() {}
+
+    func waitUntilVideoAppendStarts() async {
+        guard !appendStarted else { return }
+        await withCheckedContinuation { continuation in
+            appendWaiters.append(continuation)
+        }
+    }
+
+    func resumeVideoAppend() {
+        appendContinuation?.resume()
+        appendContinuation = nil
+    }
 }
 
 private actor BlockingStreamSink: LiveProgramSink {

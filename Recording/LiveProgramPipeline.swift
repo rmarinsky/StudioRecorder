@@ -10,6 +10,13 @@ struct LiveStreamAudioConfiguration: Equatable, Sendable {
     let excludesStudioRecorderAudio: Bool
 }
 
+protocol LiveProgramArchiveSink: Sendable {
+    func appendVideo(_ sampleBuffer: SendableSampleBuffer) async
+    func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) async
+    func fail(_ message: String) async
+    func finish() async
+}
+
 struct LiveStreamHealthSnapshot: Equatable, Sendable {
     let canvasSize: CGSize
     let targetFrameRate: Int
@@ -59,7 +66,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
         configuration: YouTubeStreamConfiguration,
         presentation: CapturePresentationSnapshot,
         includesCursor: Bool,
-        audioConfiguration: LiveStreamAudioConfiguration
+        audioConfiguration: LiveStreamAudioConfiguration,
+        localArchive: (any LiveProgramArchiveSink)? = nil
     ) {
         guard !state.isActive else { return }
         let attemptID = UUID()
@@ -73,7 +81,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
                     configuration: configuration,
                     presentation: presentation,
                     includesCursor: includesCursor,
-                    audioConfiguration: audioConfiguration
+                    audioConfiguration: audioConfiguration,
+                    localArchive: localArchive
                 ) { [weak self] state in
                     guard let self, self.activeAttemptID == attemptID else { return }
                     self.state = state
@@ -152,6 +161,7 @@ actor LiveProgramPipeline {
     private var activeConfiguration: YouTubeStreamConfiguration?
     private var activeAudioConfiguration: LiveStreamAudioConfiguration?
     private var activeStateHandler: StateHandler?
+    private var activeArchive: (any LiveProgramArchiveSink)?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectRequestedWhileRetrying = false
     private var healthStartedAt: TimeInterval?
@@ -172,6 +182,7 @@ actor LiveProgramPipeline {
         presentation: CapturePresentationSnapshot,
         includesCursor: Bool = true,
         audioConfiguration: LiveStreamAudioConfiguration,
+        localArchive: (any LiveProgramArchiveSink)? = nil,
         stateHandler: @escaping StateHandler
     ) async throws {
         guard !isRunning else { return }
@@ -182,6 +193,7 @@ actor LiveProgramPipeline {
         activeConfiguration = configuration
         activeAudioConfiguration = audioConfiguration
         activeStateHandler = stateHandler
+        activeArchive = localArchive
         isTransportLive = false
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
         healthStartedAt = nil
@@ -213,7 +225,10 @@ actor LiveProgramPipeline {
             activeConfiguration = nil
             activeAudioConfiguration = nil
             activeStateHandler = nil
+            let archive = activeArchive
+            activeArchive = nil
             await sink.disconnect()
+            await archive?.finish()
             throw error
         }
     }
@@ -226,12 +241,15 @@ actor LiveProgramPipeline {
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectRequestedWhileRetrying = false
+        let archive = activeArchive
+        activeArchive = nil
         latestCamera = nil
         pixelBufferPool = nil
         activeConfiguration = nil
         activeAudioConfiguration = nil
         activeStateHandler = nil
         await sink.disconnect()
+        await archive?.finish()
     }
 
     func updatePresentation(_ presentation: CapturePresentationSnapshot) {
@@ -249,7 +267,8 @@ actor LiveProgramPipeline {
         guard isRunning else { return }
         let renderStartedAt = ProcessInfo.processInfo.systemUptime
         healthStartedAt = healthStartedAt ?? renderStartedAt
-        guard isTransportLive else {
+        let archive = activeArchive
+        guard isTransportLive || archive != nil else {
             droppedVideoFrames += 1
             return
         }
@@ -276,7 +295,20 @@ actor LiveProgramPipeline {
             droppedVideoFrames += 1
             return
         }
-        await sink.appendVideo(SendableSampleBuffer(value: composed))
+        let composedBuffer = SendableSampleBuffer(value: composed)
+        if isTransportLive {
+            await sink.appendVideo(composedBuffer)
+        } else {
+            droppedVideoFrames += 1
+        }
+        if let archive {
+            if let archiveBuffer = copySampleBuffer(composed) {
+                await archive.appendVideo(archiveBuffer)
+            } else {
+                activeArchive = nil
+                await archive.fail("The composed video buffer could not be copied into the local safety archive.")
+            }
+        }
         composedVideoFrames += 1
         totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
     }
@@ -297,8 +329,18 @@ actor LiveProgramPipeline {
     }
 
     func appendAudio(_ sampleBuffer: SendableSampleBuffer, track: UInt8) async {
-        guard isRunning, isTransportLive else { return }
-        await sink.appendAudio(sampleBuffer, track: track)
+        guard isRunning else { return }
+        if isTransportLive {
+            await sink.appendAudio(sampleBuffer, track: track)
+        }
+        if let archive = activeArchive {
+            if let archiveBuffer = copySampleBuffer(sampleBuffer.value) {
+                await archive.appendAudio(archiveBuffer, track: track)
+            } else {
+                activeArchive = nil
+                await archive.fail("An audio buffer could not be copied into the local safety archive.")
+            }
+        }
     }
 
     private func connectSink(
@@ -431,9 +473,12 @@ actor LiveProgramPipeline {
         activeConfiguration = nil
         activeAudioConfiguration = nil
         activeStateHandler = nil
+        let archive = activeArchive
+        activeArchive = nil
         reconnectTask = nil
         reconnectRequestedWhileRetrying = false
         let detail = lastError?.localizedDescription ?? "The connection did not recover."
+        await archive?.finish()
         await stateHandler(.failed(
             "YouTube reconnect failed after \(reconnectPolicy.maximumAttempts) attempts. \(detail)"
         ))
@@ -510,5 +555,16 @@ actor LiveProgramPipeline {
             sampleBufferOut: &sampleBuffer
         ) == noErr else { return nil }
         return sampleBuffer
+    }
+
+    private func copySampleBuffer(_ sampleBuffer: CMSampleBuffer) -> SendableSampleBuffer? {
+        var copy: CMSampleBuffer?
+        guard CMSampleBufferCreateCopy(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleBufferOut: &copy
+        ) == noErr,
+        let copy else { return nil }
+        return SendableSampleBuffer(value: copy)
     }
 }

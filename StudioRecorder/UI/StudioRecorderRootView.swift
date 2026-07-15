@@ -9,6 +9,7 @@ struct StudioRecorderRootView: View {
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
     @StateObject private var liveScene = LiveSceneCoordinator()
     @StateObject private var streaming = YouTubeStreamingCoordinator()
+    @StateObject private var streamArchive = LiveProgramArchiveCoordinator()
     @State private var deliveryMode = StreamDeliveryMode.record
     @State private var importedGIFSource: GIFMakerSource?
     @State private var gifImportError: String?
@@ -124,6 +125,14 @@ struct StudioRecorderRootView: View {
         .onChange(of: streaming.state) { _, state in
             guard !state.isActive else { return }
             Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+        }
+        .onChange(of: streamArchive.state) { _, state in
+            switch state {
+            case .ready, .failed:
+                Task { await model.refreshProjects() }
+            case .idle, .preparing, .recording, .finalizing:
+                break
+            }
         }
         .onChange(of: snapshot.capturesCamera) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
@@ -555,6 +564,11 @@ struct StudioRecorderRootView: View {
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
                     }
+                    if deliveryMode == .stream || streamArchive.state.isActive {
+                        Label(streamArchive.state.label, systemImage: "externaldrive.fill")
+                            .font(.caption2)
+                            .foregroundStyle(streamArchiveColor)
+                    }
                     if let health = streaming.health, streaming.state.isActive {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(streamHealthOutputSummary(health))
@@ -828,6 +842,12 @@ struct StudioRecorderRootView: View {
         snapshot.captureState == .recording || streaming.state.isActive
     }
 
+    private var streamArchiveColor: Color {
+        if case .failed = streamArchive.state { return .orange }
+        if case .ready = streamArchive.state { return .green }
+        return .secondary
+    }
+
     private var deliveryButtonTitle: String {
         isDeliveryActive ? "Stop" : deliveryMode.label
     }
@@ -924,12 +944,25 @@ struct StudioRecorderRootView: View {
                     microphoneDeviceID: draft.microphoneDeviceID,
                     excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
                 )
+                let localArchive: LiveProgramArchiveSession?
+                if deliveryMode == .stream {
+                    guard let request = model.makeCaptureRequest(retentionPolicy: .programOnly),
+                          let archive = streamArchive.start(
+                            request: request,
+                            streamConfiguration: streamConfiguration,
+                            audioConfiguration: audio
+                          ) else { return }
+                    localArchive = archive
+                } else {
+                    localArchive = nil
+                }
                 await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
                 streaming.start(
                     configuration: streamConfiguration,
                     presentation: draft.presentation,
                     includesCursor: draft.includeCursor,
-                    audioConfiguration: audio
+                    audioConfiguration: audio,
+                    localArchive: localArchive
                 )
             }
             if deliveryMode.includesRecording {

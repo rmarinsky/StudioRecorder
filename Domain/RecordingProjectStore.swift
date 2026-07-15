@@ -48,6 +48,16 @@ struct RecordingTrackDescriptor: Codable, Equatable, Sendable, Identifiable {
     let relativePath: String
 }
 
+extension RecordingTrackDescriptor {
+    static let program = RecordingTrackDescriptor(
+        id: "program",
+        kind: .program,
+        displayID: nil,
+        relativePath: "program.mov"
+    )
+
+}
+
 enum RecordingTrackRecoveryState: String, Equatable, Sendable {
     case finalized
     case partialReadable
@@ -378,24 +388,54 @@ final class RecordingProjectStore {
     }
 
     func createProject(request: CaptureRequest) throws -> RecordingProject {
+        var tracks = request.displaySources.map {
+            RecordingTrackDescriptor(
+                id: "screen-\($0.id)",
+                kind: .screen,
+                displayID: $0.id,
+                relativePath: "raw-tracks/screen-\($0.id).mov"
+            )
+        }
+        if request.camera != nil {
+            tracks.append(
+                RecordingTrackDescriptor(
+                    id: "camera",
+                    kind: .camera,
+                    displayID: nil,
+                    relativePath: "raw-tracks/camera.mov"
+                )
+            )
+        }
+        return try createProject(request: request, tracks: tracks, createsRawTracksDirectory: true)
+    }
+
+    func createProgramArchiveProject(request: CaptureRequest) throws -> RecordingProject {
+        try createProject(
+            request: request,
+            tracks: [.program],
+            createsRawTracksDirectory: false
+        )
+    }
+
+    private func createProject(
+        request: CaptureRequest,
+        tracks: [RecordingTrackDescriptor],
+        createsRawTracksDirectory: Bool
+    ) throws -> RecordingProject {
         let projectsDirectory = baseDirectory ?? request.storage.destinationURL
         guard let projectsDirectory else { throw RecordingProjectStoreError.missingCaptureDestination }
         let createdAt = request.createdAt
         let projectID = request.id
         let timestamp = ISO8601DateFormatter().string(from: createdAt).replacingOccurrences(of: ":", with: "-")
         let rootURL = projectsDirectory.appending(path: "\(timestamp)-\(projectID.uuidString.prefix(8)).recordingproject", directoryHint: .isDirectory)
-        let rawTracksURL = rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: rawTracksURL, withIntermediateDirectories: true)
+        if createsRawTracksDirectory {
+            let rawTracksURL = rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: rawTracksURL, withIntermediateDirectories: true)
+        } else {
+            try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        }
 
         let displays = request.displaySources.map(\.id)
-        var tracks = displays.map {
-            RecordingTrackDescriptor(id: "screen-\($0)", kind: .screen, displayID: $0, relativePath: "raw-tracks/screen-\($0).mov")
-        }
-        if request.camera != nil {
-            tracks.append(
-                RecordingTrackDescriptor(id: "camera", kind: .camera, displayID: nil, relativePath: "raw-tracks/camera.mov")
-            )
-        }
         let manifest = RecordingProjectManifest(
             schemaVersion: 2,
             id: projectID,
@@ -708,7 +748,7 @@ final class RecordingProjectStore {
         let rawTracksURL = rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory).standardizedFileURL
         let candidate = rootURL.appending(path: track.relativePath).standardizedFileURL
         if track.kind == .program {
-            let programURL = rootURL.appending(path: "program.mov").standardizedFileURL
+            let programURL = rootURL.appending(path: RecordingTrackDescriptor.program.relativePath).standardizedFileURL
             return candidate == programURL ? candidate : nil
         }
         guard candidate.deletingLastPathComponent().standardizedFileURL == rawTracksURL,
