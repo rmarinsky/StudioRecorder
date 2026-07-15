@@ -8,12 +8,50 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .ready))
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .preparing))
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .recording))
+        XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .paused))
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .stopping))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .projects, captureState: .recording))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .settings, captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .recording))
+        XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .paused))
         XCTAssertFalse(LiveScenePolicy.shouldPreserveCameraSession(captureState: .ready))
+    }
+
+    func testPauseCommandWaitsForRuntimeStateAndThenResumes() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .recording
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.toggleRecordingPause), .recordingPauseRequested)
+        XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
+        XCTAssertEqual(model.send(.toggleRecordingPause), .ignored)
+
+        var paused = model.snapshot
+        paused.applyCaptureState(.recording)
+        XCTAssertTrue(paused.isCaptureCommandInFlight)
+        paused.applyCaptureState(.paused)
+        XCTAssertFalse(paused.isCaptureCommandInFlight)
+
+        let pausedModel = StudioRecorderModel(coordinator: nil, initialSnapshot: paused)
+        XCTAssertEqual(pausedModel.send(.toggleRecordingPause), .recordingResumeRequested)
+        XCTAssertTrue(pausedModel.snapshot.isCaptureCommandInFlight)
+
+        var resumed = pausedModel.snapshot
+        resumed.applyCaptureState(.paused)
+        XCTAssertTrue(resumed.isCaptureCommandInFlight)
+        resumed.applyCaptureState(.recording)
+        XCTAssertFalse(resumed.isCaptureCommandInFlight)
+    }
+
+    func testStopCommandWorksWhileRecordingIsPaused() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .paused
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.toggleRecording), .recordingStopRequested)
+        XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
     }
 
     func testSettingsIsAnInWindowRoute() {
@@ -393,7 +431,7 @@ final class StudioRecorderModelTests: XCTestCase {
     }
 
     func testCaptureAudioAndStorageSettingsLockFromPreparingThroughFinalizing() {
-        for state in [RecordingState.preparing, .recording, .stopping] {
+        for state in [RecordingState.preparing, .recording, .paused, .stopping] {
             let store = makePreferencesStore()
             var snapshot = StudioRecorderSnapshot()
             snapshot.captureState = state

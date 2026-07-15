@@ -2,6 +2,50 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testPauseTimelineCompactsMultiplePausedRangesWithoutTouchingSourceTime() throws {
+        var pauses = RecordingPauseTimeline()
+        XCTAssertTrue(pauses.pause(at: 103))
+        XCTAssertTrue(pauses.resume(at: 105))
+        XCTAssertTrue(pauses.pause(at: 108))
+        XCTAssertTrue(pauses.resume(at: 110))
+
+        let timeline = try pauses.makeEditTimeline(
+            trackID: "screen-7",
+            recordingStartedAt: 100,
+            stoppedAt: 112,
+            sourceDuration: 12,
+            segmentIDs: [
+                UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+                UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                UUID(uuidString: "99999999-8888-7777-6666-555555555555")!,
+            ]
+        )
+
+        XCTAssertEqual(timeline.duration, 8, accuracy: 0.001)
+        XCTAssertEqual(
+            timeline.segments,
+            [
+                ProjectEditSegment(
+                    id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+                    sourceStart: 0,
+                    duration: 3
+                ),
+                ProjectEditSegment(
+                    id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                    sourceStart: 5,
+                    duration: 3
+                ),
+                ProjectEditSegment(
+                    id: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!,
+                    sourceStart: 10,
+                    duration: 2
+                ),
+            ]
+        )
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 3)), 5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 6)), 10, accuracy: 0.001)
+    }
+
     func testEditedPlaybackTimeMapsBackToRecordedCursorTime() throws {
         var timeline = try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 10)
         try timeline.trimStart(to: 3)

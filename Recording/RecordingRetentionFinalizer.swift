@@ -35,7 +35,8 @@ final class RecordingRetentionFinalizer {
         request: CaptureRequest,
         projectStore: RecordingProjectStore,
         cursorTimeline: CursorSceneTimeline?,
-        sceneTimeline: StudioSceneTimeline? = nil
+        sceneTimeline: StudioSceneTimeline? = nil,
+        editTimeline: ProjectEditTimeline? = nil
     ) async throws {
         guard request.storage.resolvedRetentionPolicy == .programOnly else {
             try projectStore.close(project)
@@ -49,7 +50,13 @@ final class RecordingRetentionFinalizer {
         }
         let screenAsset = AVURLAsset(url: screenURL)
         let duration = try await screenAsset.load(.duration).seconds
-        let timeline = try ProjectEditTimeline(trackID: screen.id, sourceDuration: duration)
+        let timeline = if let editTimeline,
+                          editTimeline.trackID == screen.id,
+                          abs(editTimeline.sourceDuration - duration) < 0.1 {
+            editTimeline
+        } else {
+            try ProjectEditTimeline(trackID: screen.id, sourceDuration: duration)
+        }
         let camera = tracks.first { $0.kind == .camera }
         let cameraURL = camera.flatMap { projectStore.rawTrackURL(for: $0.id, in: project) }
         let audio = request.primaryAudioDisplayID.flatMap { displayID in
@@ -92,6 +99,10 @@ final class RecordingRetentionFinalizer {
         let rawTracksURL = project.rootURL.appending(path: "raw-tracks", directoryHint: .isDirectory)
         if fileManager.fileExists(atPath: rawTracksURL.path) {
             try? fileManager.removeItem(at: rawTracksURL)
+        }
+        let editURL = project.rootURL.appending(path: ProjectEditStore.filename)
+        if fileManager.fileExists(atPath: editURL.path) {
+            try? fileManager.removeItem(at: editURL)
         }
     }
 

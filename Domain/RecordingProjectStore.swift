@@ -173,6 +173,8 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
     case trackStarted
     case trackFinished
     case trackFailed
+    case recordingPaused
+    case recordingResumed
     case finalizationStarted
     case projectClosed
     case projectInterrupted
@@ -185,6 +187,8 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
         case "track-started": self = .trackStarted
         case "track-finished": self = .trackFinished
         case "track-failed": self = .trackFailed
+        case "recording-paused": self = .recordingPaused
+        case "recording-resumed": self = .recordingResumed
         case "finalization-started": self = .finalizationStarted
         case "project-closed": self = .projectClosed
         case "project-interrupted": self = .projectInterrupted
@@ -458,8 +462,8 @@ final class RecordingProjectStore {
         return project
     }
 
-    func markStarted(displayID: UInt32, in project: RecordingProject) throws {
-        try markStarted(trackID: project.trackID(for: displayID), in: project)
+    func markStarted(displayID: UInt32, in project: RecordingProject, timestamp: Date = Date()) throws {
+        try markStarted(trackID: project.trackID(for: displayID), in: project, timestamp: timestamp)
     }
 
     func markFinished(displayID: UInt32, in project: RecordingProject) throws {
@@ -475,8 +479,8 @@ final class RecordingProjectStore {
         try append(.init(kind: .trackPrepared, trackID: trackID), to: project)
     }
 
-    func markStarted(trackID: String?, in project: RecordingProject) throws {
-        try append(.init(kind: .trackStarted, trackID: trackID), to: project)
+    func markStarted(trackID: String?, in project: RecordingProject, timestamp: Date = Date()) throws {
+        try append(.init(kind: .trackStarted, trackID: trackID, timestamp: timestamp), to: project)
     }
 
     func markFinished(trackID: String?, in project: RecordingProject) throws {
@@ -485,6 +489,14 @@ final class RecordingProjectStore {
 
     func markFailure(trackID: String?, detail: String, in project: RecordingProject) throws {
         try append(.init(kind: .trackFailed, trackID: trackID, detail: .init(message: detail)), to: project)
+    }
+
+    func markRecordingPaused(in project: RecordingProject, timestamp: Date = Date()) throws {
+        try append(.init(kind: .recordingPaused, timestamp: timestamp), to: project)
+    }
+
+    func markRecordingResumed(in project: RecordingProject, timestamp: Date = Date()) throws {
+        try append(.init(kind: .recordingResumed, timestamp: timestamp), to: project)
     }
 
     func close(
@@ -586,6 +598,67 @@ final class RecordingProjectStore {
         let url = project.rootURL.appending(path: "scene/layout.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? Self.makeDecoder().decode(StudioSceneTimeline.self, from: data)
+    }
+
+    func restorePauseEdits(from snapshot: RecordingProjectSnapshot) async throws {
+        guard let projectID = snapshot.identity.manifestID,
+              case .success(let events) = Self.readJournal(
+                  at: snapshot.rootURL.appending(path: "journal.ndjson")
+              ) else { return }
+        let pauseEvents = events.filter {
+            $0.kind == .recordingPaused || $0.kind == .recordingResumed
+        }
+        guard pauseEvents.contains(where: { $0.kind == .recordingPaused }) else { return }
+
+        var pauses = RecordingPauseTimeline()
+        for event in pauseEvents {
+            let timestamp = event.timestamp.timeIntervalSinceReferenceDate
+            switch event.kind {
+            case .recordingPaused:
+                _ = pauses.pause(at: timestamp)
+            case .recordingResumed:
+                _ = pauses.resume(at: timestamp)
+            default:
+                break
+            }
+        }
+
+        let readableTrackIDs = Set(snapshot.recoveryReport.tracks.compactMap { track in
+            switch track.state {
+            case .finalized, .partialReadable: track.id
+            case .missing, .unreadable, .unknownV1: nil
+            }
+        })
+        var timelines: [ProjectEditTimeline] = []
+        for track in snapshot.tracks where track.kind == .screen && readableTrackIDs.contains(track.id) {
+            guard let startedAt = events.first(where: {
+                $0.kind == .trackStarted && $0.trackID == track.id
+            })?.timestamp.timeIntervalSinceReferenceDate else { continue }
+            let url = snapshot.rootURL.appending(path: track.relativePath)
+            let duration = try await AVURLAsset(url: url).load(.duration).seconds
+            guard let timeline = try? pauses.makeEditTimeline(
+                trackID: track.id,
+                recordingStartedAt: startedAt,
+                stoppedAt: startedAt + duration,
+                sourceDuration: duration
+            ) else { continue }
+            timelines.append(timeline)
+        }
+        guard !timelines.isEmpty else { return }
+
+        let editStore = ProjectEditStore()
+        var document = try await editStore.load(
+            from: snapshot.rootURL,
+            expectedProjectID: projectID
+        ) ?? ProjectEditDocument(
+            projectID: projectID,
+            timelines: [],
+            presentation: snapshot.presentation
+        )
+        for timeline in timelines {
+            document.replaceTimeline(timeline)
+        }
+        try await editStore.save(document, in: snapshot.rootURL)
     }
 
     func discoverProjects(in additionalDirectories: [URL] = []) async -> [RecordingProjectSnapshot] {
@@ -813,13 +886,35 @@ final class RecordingProjectStore {
     nonisolated private static func makeEncoder(prettyPrinted: Bool) -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = prettyPrinted ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            try container.encode(formatter.string(from: date))
+        }
         return encoder
     }
 
     nonisolated private static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let fractionalFormatter = ISO8601DateFormatter()
+            fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractionalFormatter.date(from: value) {
+                return date
+            }
+            let legacyFormatter = ISO8601DateFormatter()
+            legacyFormatter.formatOptions = [.withInternetDateTime]
+            guard let date = legacyFormatter.date(from: value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Invalid ISO-8601 date: \(value)"
+                )
+            }
+            return date
+        }
         return decoder
     }
 }

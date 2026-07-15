@@ -319,7 +319,50 @@ final class RecordingProjectStoreTests: XCTestCase {
         )
     }
 
-    func testProgramOnlyFinalizationVerifiesProgramBeforeRemovingRawTracks() async throws {
+    func testRecoveryReconstructsPauseCutsForEveryReadableScreenTrack() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = RecordingProjectStore(baseDirectory: rootURL)
+        let project = try store.createProject(displays: [1, 2], primaryAudioDisplayID: 1)
+        for displayID in [UInt32(1), 2] {
+            try await writeReadableMovie(
+                to: try outputURL(for: displayID, in: project, store: store),
+                frameCount: 31
+            )
+        }
+        let reference = Date(timeIntervalSinceReferenceDate: 100)
+        try store.markStarted(displayID: 1, in: project, timestamp: reference)
+        try store.markStarted(
+            displayID: 2,
+            in: project,
+            timestamp: reference.addingTimeInterval(0.1)
+        )
+        try store.markRecordingPaused(
+            in: project,
+            timestamp: reference.addingTimeInterval(0.2)
+        )
+        try store.markRecordingResumed(
+            in: project,
+            timestamp: reference.addingTimeInterval(0.5)
+        )
+        try store.markInterrupted(project, detail: "Simulated force quit")
+
+        let interruptedProjects = await store.discoverProjects()
+        let interrupted = try XCTUnwrap(interruptedProjects.single)
+        try await store.restorePauseEdits(from: interrupted)
+        try store.recoverReadableTracks(from: interrupted)
+
+        let document = try await ProjectEditStore().load(
+            from: project.rootURL,
+            expectedProjectID: project.id
+        )
+        let timelines = try XCTUnwrap(document?.timelines)
+        XCTAssertEqual(Set(timelines.map(\.trackID)), ["screen-1", "screen-2"])
+        XCTAssertTrue(timelines.allSatisfy { !$0.isIdentity })
+        XCTAssertTrue(timelines.allSatisfy { $0.duration < $0.sourceDuration - 0.2 })
+    }
+
+    func testProgramOnlyFinalizationAppliesPauseEditBeforeRemovingRawTracks() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }
         let store = RecordingProjectStore(baseDirectory: rootURL)
@@ -361,15 +404,20 @@ final class RecordingProjectStoreTests: XCTestCase {
             )
         )
         let project = try store.createProject(request: request)
-        try await writeReadableMovie(to: try outputURL(for: 7, in: project, store: store))
+        let screenURL = try outputURL(for: 7, in: project, store: store)
+        try await writeReadableMovie(to: screenURL, frameCount: 31)
         try store.markStarted(displayID: 7, in: project)
         try store.markFinished(displayID: 7, in: project)
+        let sourceDuration = try await AVURLAsset(url: screenURL).load(.duration).seconds
+        var pauseEdit = try ProjectEditTimeline(trackID: "screen-7", sourceDuration: sourceDuration)
+        try pauseEdit.trimEnd(to: sourceDuration / 2)
 
         try await RecordingRetentionFinalizer().finalize(
             project: project,
             request: request,
             projectStore: store,
-            cursorTimeline: nil
+            cursorTimeline: nil,
+            editTimeline: pauseEdit
         )
 
         let programURL = project.rootURL.appending(path: "program.mov")
@@ -383,6 +431,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         let videoTrack = try XCTUnwrap(videoTracks.first)
         let naturalSize = try await videoTrack.load(.naturalSize)
         XCTAssertEqual(naturalSize, CGSize(width: 640, height: 360))
+        let programDuration = try await asset.load(.duration).seconds
+        XCTAssertLessThan(programDuration, sourceDuration * 0.75)
         let snapshots = await store.discoverProjects()
         let snapshot = try XCTUnwrap(snapshots.single)
         XCTAssertEqual(snapshot.lifecycle, .finalized)
@@ -518,7 +568,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         try XCTUnwrap(store.rawTrackURL(for: displayID, in: project))
     }
 
-    private func writeReadableMovie(to url: URL) async throws {
+    private func writeReadableMovie(to url: URL, frameCount: Int = 2) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(
             mediaType: .video,
@@ -540,8 +590,17 @@ final class RecordingProjectStoreTests: XCTestCase {
             kCVReturnSuccess
         )
         let frame = try XCTUnwrap(pixelBuffer)
-        XCTAssertTrue(adaptor.append(frame, withPresentationTime: .zero))
-        XCTAssertTrue(adaptor.append(frame, withPresentationTime: CMTime(value: 1, timescale: 30)))
+        for frameIndex in 0..<max(frameCount, 2) {
+            while !input.isReadyForMoreMediaData {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            XCTAssertTrue(
+                adaptor.append(
+                    frame,
+                    withPresentationTime: CMTime(value: CMTimeValue(frameIndex), timescale: 30)
+                )
+            )
+        }
         input.markAsFinished()
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

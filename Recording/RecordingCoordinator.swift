@@ -15,6 +15,7 @@ enum RecordingState: Equatable {
     case preparing
     case ready
     case recording
+    case paused
     case stopping
     case failed(String)
 
@@ -23,6 +24,7 @@ enum RecordingState: Equatable {
         case .preparing: "Checking capture access"
         case .ready: "Ready"
         case .recording: "Recording"
+        case .paused: "Recording paused"
         case .stopping: "Finishing files"
         case .failed(let message): message
         }
@@ -49,13 +51,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private let projectStore = RecordingProjectStore()
+    private let projectEditStore = ProjectEditStore()
     private let retentionFinalizer = RecordingRetentionFinalizer()
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var studioSceneTimeline: StudioSceneTimeline?
+    private var recordingPauseTimeline = RecordingPauseTimeline()
     private var recordingStartedAt: TimeInterval?
+    private var recordingStartedAtByDisplayID: [UInt32: TimeInterval] = [:]
     private var hasAuthoritativeRecordingStart = false
     nonisolated private let cursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
@@ -132,6 +137,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         guard let project = interruptedProjects.first(where: { $0.id == projectID }) else {
             throw RecordingRecoveryError.notRecoverable
         }
+        try await projectStore.restorePauseEdits(from: project)
         try projectStore.recoverReadableTracks(from: project)
         await refreshProjects()
     }
@@ -151,7 +157,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         terminalFailure = nil
         finalizationWarning = nil
         recordingStartedAt = nil
+        recordingStartedAtByDisplayID = [:]
         hasAuthoritativeRecordingStart = false
+        recordingPauseTimeline = RecordingPauseTimeline()
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
         }
@@ -248,14 +256,51 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
-    func stopRecording() async {
+    func pauseRecording() {
         guard state == .recording else { return }
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        guard recordingPauseTimeline.pause(at: timestamp) else { return }
+        if let activeProject {
+            do {
+                try projectStore.markRecordingPaused(in: activeProject)
+            } catch {
+                finalizationWarning = "Pause is active, but its recovery marker could not be saved. \(error.localizedDescription)"
+            }
+        }
+        durationTask?.cancel()
+        durationTask = nil
+        if let recordingStartedAt {
+            recordedDuration = recordingPauseTimeline.recordedDuration(
+                recordingStartedAt: recordingStartedAt,
+                at: timestamp
+            )
+        }
+        state = .paused
+    }
+
+    func resumeRecording() {
+        guard state == .paused else { return }
+        guard recordingPauseTimeline.resume(at: ProcessInfo.processInfo.systemUptime) else { return }
+        if let activeProject {
+            do {
+                try projectStore.markRecordingResumed(in: activeProject)
+            } catch {
+                finalizationWarning = "Recording resumed, but its recovery marker could not be saved. \(error.localizedDescription)"
+            }
+        }
+        startDurationTimer()
+        state = .recording
+    }
+
+    func stopRecording() async {
+        guard state == .recording || state == .paused else { return }
         isTearingDown = true
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
         stopCursorTelemetry()
         let stopErrors = await stopCaptures()
+        let stoppedAt = ProcessInfo.processInfo.systemUptime
 
         if let reason = terminalFailure ?? stopErrors.first {
             await completeInterruptedTeardown(reason: reason)
@@ -265,17 +310,38 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         if let activeProject, let activeCaptureRequest {
             do {
                 try persistCursorTelemetry(in: activeProject)
+                let pauseEditTimelines = try await makePauseEditTimelines(
+                    project: activeProject,
+                    request: activeCaptureRequest,
+                    stoppedAt: stoppedAt
+                )
+                if !pauseEditTimelines.isEmpty {
+                    try await projectEditStore.save(
+                        ProjectEditDocument(
+                            projectID: activeProject.id,
+                            timelines: pauseEditTimelines,
+                            presentation: activeCaptureRequest.presentation
+                        ),
+                        in: activeProject.rootURL
+                    )
+                }
                 try await retentionFinalizer.finalize(
                     project: activeProject,
                     request: activeCaptureRequest,
                     projectStore: projectStore,
                     cursorTimeline: recordedCursorTimeline,
-                    sceneTimeline: studioSceneTimeline
+                    sceneTimeline: studioSceneTimeline,
+                    editTimeline: pauseEditTimelines.first(where: {
+                        $0.trackID == preferredScreenTrackID(
+                            project: activeProject,
+                            request: activeCaptureRequest
+                        )
+                    })
                 )
             } catch {
                 do {
                     try projectStore.close(activeProject)
-                    finalizationWarning = "The program movie could not be finalized, so editable tracks were kept. \(error.localizedDescription)"
+                    finalizationWarning = "The recording is safe, but automatic finalization did not complete. Editable tracks were kept. \(error.localizedDescription)"
                 } catch {
                     await completeInterruptedTeardown(reason: error.localizedDescription)
                     return
@@ -340,16 +406,20 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         durationTask?.cancel()
         durationTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                self?.recordedDuration += 1
+                guard let self, let recordingStartedAt else { continue }
+                recordedDuration = recordingPauseTimeline.recordedDuration(
+                    recordingStartedAt: recordingStartedAt,
+                    at: ProcessInfo.processInfo.systemUptime
+                )
             }
         }
     }
 
     @discardableResult
     func updateLivePresentation(_ presentation: CapturePresentationSnapshot) -> Bool {
-        guard state == .recording,
+        guard state == .recording || state == .paused,
               let request = activeCaptureRequest,
               let project = activeProject,
               let recordingStartedAt else { return false }
@@ -437,6 +507,32 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func persistCursorTelemetry(in project: RecordingProject) throws {
         guard let recordedCursorTimeline else { return }
         try projectStore.writeCursorTimeline(recordedCursorTimeline, in: project)
+    }
+
+    private func makePauseEditTimelines(
+        project: RecordingProject,
+        request: CaptureRequest,
+        stoppedAt: TimeInterval
+    ) async throws -> [ProjectEditTimeline] {
+        guard recordingPauseTimeline.hasPauses,
+              let recordingStartedAt else { return [] }
+        var timelines: [ProjectEditTimeline] = []
+        for source in request.displaySources {
+            guard let trackID = project.trackID(for: source.id),
+                  let trackURL = projectStore.rawTrackURL(for: trackID, in: project) else { continue }
+            let duration = try await AVURLAsset(url: trackURL).load(.duration).seconds
+            timelines.append(try recordingPauseTimeline.makeEditTimeline(
+                trackID: trackID,
+                recordingStartedAt: recordingStartedAtByDisplayID[source.id] ?? recordingStartedAt,
+                stoppedAt: stoppedAt,
+                sourceDuration: duration
+            ))
+        }
+        return timelines
+    }
+
+    private func preferredScreenTrackID(project: RecordingProject, request: CaptureRequest) -> String? {
+        (request.primaryAudioDisplayID ?? request.displaySources.first?.id).flatMap(project.trackID(for:))
     }
 
     private var recordedCursorTimeline: CursorSceneTimeline? {
@@ -547,7 +643,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         activeCaptureRequest = nil
         studioSceneTimeline = nil
         recordingStartedAt = nil
+        recordingStartedAtByDisplayID = [:]
         hasAuthoritativeRecordingStart = false
+        recordingPauseTimeline = RecordingPauseTimeline()
     }
 
     private func adoptAuthoritativeRecordingStart(_ startedAt: TimeInterval, in project: RecordingProject) {
@@ -571,14 +669,20 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 extension RecordingCoordinator: SCRecordingOutputDelegate {
     nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
         let outputStartedAt = ProcessInfo.processInfo.systemUptime
+        let outputStartedAtWallClock = Date()
         Task { @MainActor [weak self] in
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
+            self.recordingStartedAtByDisplayID[capture.displayID] = outputStartedAt
             let primaryDisplayID = self.activeCaptureRequest?.primaryAudioDisplayID
                 ?? self.activeCaptureRequest?.displaySources.first?.id
             if capture.displayID == primaryDisplayID {
                 self.adoptAuthoritativeRecordingStart(outputStartedAt, in: project)
             }
-            try? self.projectStore.markStarted(displayID: capture.displayID, in: project)
+            try? self.projectStore.markStarted(
+                displayID: capture.displayID,
+                in: project,
+                timestamp: outputStartedAtWallClock
+            )
         }
     }
 

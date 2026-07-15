@@ -579,6 +579,7 @@ struct StudioRecorderRootView: View {
                         selectedDisplayID: primarySelectedDisplayID,
                         screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording,
+                        isPaused: snapshot.captureState == .paused,
                         presentation: presentationBinding,
                         selectedSource: $selectedCanvasSource,
                         isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
@@ -657,7 +658,7 @@ struct StudioRecorderRootView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 286)
-                    .disabled(snapshot.captureState == .recording || streaming.state.isActive)
+                    .disabled(isLocalRecordingActive || streaming.state.isActive)
                     Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                         .font(.caption)
                         .foregroundStyle(streaming.state == .live ? .red : .secondary)
@@ -666,6 +667,16 @@ struct StudioRecorderRootView: View {
                         Label("Local recording continues", systemImage: "record.circle")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
+                    }
+                    if snapshot.captureState == .paused {
+                        Label(
+                            streaming.state.isActive
+                                ? "Recording paused · Stream: \(streaming.state.label)"
+                                : "Paused time will be cut · Raw safety tracks continue",
+                            systemImage: "pause.circle.fill"
+                        )
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
                     }
                     if deliveryMode == .stream || streamArchive.state.isActive {
                         Label(streamArchive.state.label, systemImage: "externaldrive.fill")
@@ -710,6 +721,26 @@ struct StudioRecorderRootView: View {
                         || liveScene.screenImage == nil
                         || snapshotNeedsCameraFrame
                 )
+                if isLocalRecordingActive {
+                    Button {
+                        model.send(.toggleRecordingPause)
+                    } label: {
+                        Label(
+                            snapshot.captureState == .paused ? "Resume" : "Pause",
+                            systemImage: snapshot.captureState == .paused ? "play.fill" : "pause.fill"
+                        )
+                        .frame(minWidth: 88)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(snapshot.isCaptureCommandInFlight)
+                    .help("Pause or resume local recording (⇧⌘P)")
+
+                    Text(formattedRecordedDuration)
+                        .font(.body.monospacedDigit().weight(.medium))
+                        .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
+                        .accessibilityLabel("Recorded duration \(formattedRecordedDuration)")
+                }
                 Button(action: toggleDelivery) {
                     Label(deliveryButtonTitle, systemImage: isDeliveryActive ? "stop.fill" : "record.circle.fill")
                         .frame(minWidth: 122)
@@ -979,7 +1010,16 @@ struct StudioRecorderRootView: View {
     }
 
     private var isDeliveryActive: Bool {
-        snapshot.captureState == .recording || streaming.state.isActive
+        isLocalRecordingActive || streaming.state.isActive
+    }
+
+    private var isLocalRecordingActive: Bool {
+        snapshot.captureState == .recording || snapshot.captureState == .paused
+    }
+
+    private var formattedRecordedDuration: String {
+        let seconds = max(Int(snapshot.recordedDuration.rounded(.down)), 0)
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
     private var streamArchiveColor: Color {
@@ -999,6 +1039,7 @@ struct StudioRecorderRootView: View {
         }
         switch snapshot.captureState {
         case .recording: return .red
+        case .paused: return .orange
         case .failed: return .orange
         case .ready: return .green
         case .preparing, .stopping: return .secondary
@@ -1090,7 +1131,7 @@ struct StudioRecorderRootView: View {
 
     private func toggleDelivery() {
         if isDeliveryActive {
-            if snapshot.captureState == .recording {
+            if isLocalRecordingActive {
                 model.send(.toggleRecording)
             }
             if streaming.state.isActive {
@@ -1973,6 +2014,7 @@ private struct LiveProgramPreview: View {
     let selectedDisplayID: UInt32?
     let screenPreviewError: String?
     let isRecording: Bool
+    let isPaused: Bool
     @Binding var presentation: CapturePresentationSnapshot
     @Binding var selectedSource: StudioCanvasSource?
     let isLocked: Bool
@@ -2116,7 +2158,13 @@ private struct LiveProgramPreview: View {
                 .padding(10)
                 .allowsHitTesting(false)
 
-                if isRecording {
+                if isPaused {
+                    Label("PAUSED", systemImage: "pause.circle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .allowsHitTesting(false)
+                } else if isRecording {
                     Label("REC", systemImage: "record.circle.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.red)
                         .padding(10)
@@ -2159,7 +2207,7 @@ private struct LiveProgramPreview: View {
         .aspectRatio(presentation.canvas.aspectRatio, contentMode: .fit)
         .overlay {
             RoundedRectangle(cornerRadius: 14)
-                .stroke(isRecording ? Color.red : Color.clear, lineWidth: 1)
+                .stroke(isPaused ? Color.orange : (isRecording ? Color.red : Color.clear), lineWidth: 1)
         }
         .focusable(!isLocked)
         .focused($isStageFocused)

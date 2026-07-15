@@ -176,6 +176,7 @@ enum AppIntent: Equatable {
     case closeProject
     case focusProjectSearch
     case toggleRecording
+    case toggleRecordingPause
     case setSelectedDisplayIDs(Set<UInt32>)
     case setCapturesMicrophone(Bool)
     case setCapturesCamera(Bool)
@@ -213,6 +214,8 @@ enum AppIntentResult: Equatable {
     case projectSearchRequested
     case recordingStartRequested(CaptureRequest)
     case recordingStopRequested
+    case recordingPauseRequested
+    case recordingResumeRequested
     case displaySelectionChanged
     case microphoneCaptureChanged
     case microphoneDisabledForDraft
@@ -225,6 +228,8 @@ enum AppIntentResult: Equatable {
 enum PendingCaptureCommand: Equatable {
     case start
     case stop
+    case pause
+    case resume
 }
 
 struct StudioRecorderSnapshot: Equatable {
@@ -243,6 +248,7 @@ struct StudioRecorderSnapshot: Equatable {
     var capturesCamera = false
     var studioDraft: StudioDraft?
     var activeCaptureRequest: CaptureRequest?
+    var recordedDuration: TimeInterval = 0
     var finalizationWarning: String?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
@@ -250,7 +256,7 @@ struct StudioRecorderSnapshot: Equatable {
     var areRecordingSettingsLocked: Bool {
         if pendingCaptureCommand == .start || activeCaptureRequest != nil { return true }
         return switch captureState {
-        case .preparing, .recording, .stopping: true
+        case .preparing, .recording, .paused, .stopping: true
         case .ready, .failed: false
         }
     }
@@ -259,7 +265,7 @@ struct StudioRecorderSnapshot: Equatable {
     }
     var showsCaptureRepair: Bool {
         guard requiredCapturePermission != nil else { return false }
-        return captureState != .recording && captureState != .stopping
+        return captureState != .recording && captureState != .paused && captureState != .stopping
     }
     var draftValidationIssues: [StudioDraftValidationIssue] {
         studioDraft?.validationIssues(
@@ -278,7 +284,8 @@ struct StudioRecorderSnapshot: Equatable {
         captureState = state
 
         switch (pendingCaptureCommand, state) {
-        case (.start?, .ready), (.stop?, .recording):
+        case (.start?, .ready), (.stop?, .recording), (.stop?, .paused),
+             (.pause?, .recording), (.resume?, .paused):
             break
         case (.some, _):
             pendingCaptureCommand = nil
@@ -454,6 +461,7 @@ final class StudioRecorderModel: ObservableObject {
     func appBecameActive() async {
         if snapshot.captureState == .preparing ||
             snapshot.captureState == .recording ||
+            snapshot.captureState == .paused ||
             snapshot.captureState == .stopping {
             if let permissionCenter {
                 snapshot.permissionSnapshot = await permissionCenter.refresh()
@@ -619,7 +627,7 @@ final class StudioRecorderModel: ObservableObject {
                 snapshot.studioDraft?.presentation = validated
             } else {
                 guard snapshot.route == .studio,
-                      snapshot.captureState == .recording,
+                      (snapshot.captureState == .recording || snapshot.captureState == .paused),
                       !snapshot.isCaptureCommandInFlight,
                       coordinator?.updateLivePresentation(validated) == true else {
                     return .ignored
@@ -705,7 +713,24 @@ final class StudioRecorderModel: ObservableObject {
                 snapshot.beginCaptureCommand(.stop)
                 result = .recordingStopRequested
 
+            case .paused:
+                snapshot.beginCaptureCommand(.stop)
+                result = .recordingStopRequested
+
             case .preparing, .stopping, .failed:
+                return .ignored
+            }
+
+        case .toggleRecordingPause:
+            guard !snapshot.isCaptureCommandInFlight else { return .ignored }
+            switch snapshot.captureState {
+            case .recording:
+                snapshot.beginCaptureCommand(.pause)
+                result = .recordingPauseRequested
+            case .paused:
+                snapshot.beginCaptureCommand(.resume)
+                result = .recordingResumeRequested
+            case .preparing, .ready, .stopping, .failed:
                 return .ignored
             }
         }
@@ -773,6 +798,14 @@ final class StudioRecorderModel: ObservableObject {
                 self?.synchronizeFromCoordinator()
             }
 
+        case .recordingPauseRequested:
+            coordinator.pauseRecording()
+            synchronizeFromCoordinator()
+
+        case .recordingResumeRequested:
+            coordinator.resumeRecording()
+            synchronizeFromCoordinator()
+
         case .ignored, .routeChanged, .projectOpened, .projectClosed, .projectSearchRequested, .displaySelectionChanged,
              .microphoneCaptureChanged, .microphoneDisabledForDraft, .cameraDisabledForDraft, .draftChanged:
             break
@@ -791,6 +824,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.projects = coordinator.projects
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
+        snapshot.recordedDuration = coordinator.recordedDuration
 
         if snapshot.studioDraft != nil {
             snapshot.studioDraft?.reconcile(
@@ -820,7 +854,7 @@ final class StudioRecorderModel: ObservableObject {
                 snapshot.launchPhase = .needsCaptureRepair(snapshot.permissionSnapshot)
             case .preparing:
                 snapshot.launchPhase = .checking
-            case .ready, .recording, .stopping:
+            case .ready, .recording, .paused, .stopping:
                 snapshot.launchPhase = .ready
             }
         }

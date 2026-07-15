@@ -9,7 +9,7 @@ enum LiveScenePolicy {
     static func shouldRun(route: MainRoute, captureState: RecordingState) -> Bool {
         guard route == .studio else { return false }
         return switch captureState {
-        case .ready, .preparing, .recording, .stopping:
+        case .ready, .preparing, .recording, .paused, .stopping:
             true
         case .failed:
             false
@@ -22,7 +22,7 @@ enum LiveScenePolicy {
 
     static func shouldPreserveCameraSession(captureState: RecordingState) -> Bool {
         switch captureState {
-        case .preparing, .recording, .stopping:
+        case .preparing, .recording, .paused, .stopping:
             true
         case .ready, .failed:
             false

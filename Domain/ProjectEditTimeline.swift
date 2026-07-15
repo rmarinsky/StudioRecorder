@@ -6,6 +6,7 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
     case splitAtSegmentBoundary
     case segmentNotFound
     case cannotDeleteOnlySegment
+    case recordingContainsOnlyPausedTime
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
             "The selected edit segment no longer exists."
         case .cannotDeleteOnlySegment:
             "At least one segment must remain in the edit."
+        case .recordingContainsOnlyPausedTime:
+            "Resume recording briefly before stopping so the project contains usable recorded time."
         }
     }
 }
@@ -27,6 +30,112 @@ struct ProjectEditSegment: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     var sourceStart: TimeInterval
     var duration: TimeInterval
+}
+
+struct RecordingPauseInterval: Equatable, Sendable {
+    let startedAt: TimeInterval
+    let endedAt: TimeInterval
+}
+
+struct RecordingPauseTimeline: Equatable, Sendable {
+    private(set) var intervals: [RecordingPauseInterval] = []
+    private(set) var currentPauseStartedAt: TimeInterval?
+
+    var isPaused: Bool { currentPauseStartedAt != nil }
+    var hasPauses: Bool { isPaused || !intervals.isEmpty }
+
+    @discardableResult
+    mutating func pause(at timestamp: TimeInterval) -> Bool {
+        guard timestamp.isFinite, currentPauseStartedAt == nil else { return false }
+        currentPauseStartedAt = timestamp
+        return true
+    }
+
+    @discardableResult
+    mutating func resume(at timestamp: TimeInterval) -> Bool {
+        guard timestamp.isFinite,
+              let startedAt = currentPauseStartedAt,
+              timestamp >= startedAt else { return false }
+        intervals.append(.init(startedAt: startedAt, endedAt: timestamp))
+        currentPauseStartedAt = nil
+        return true
+    }
+
+    func recordedDuration(recordingStartedAt: TimeInterval, at timestamp: TimeInterval) -> TimeInterval {
+        guard recordingStartedAt.isFinite, timestamp.isFinite else { return 0 }
+        let sourceDuration = max(timestamp - recordingStartedAt, 0)
+        let pausedDuration = sourcePauseRanges(
+            recordingStartedAt: recordingStartedAt,
+            stoppedAt: timestamp,
+            sourceDuration: sourceDuration
+        ).reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
+        return max(sourceDuration - pausedDuration, 0)
+    }
+
+    func makeEditTimeline(
+        trackID: String,
+        recordingStartedAt: TimeInterval,
+        stoppedAt: TimeInterval,
+        sourceDuration: TimeInterval,
+        segmentIDs: [UUID] = []
+    ) throws -> ProjectEditTimeline {
+        guard sourceDuration.isFinite, sourceDuration > 0 else {
+            throw ProjectEditTimelineError.invalidSourceDuration
+        }
+        let pauses = sourcePauseRanges(
+            recordingStartedAt: recordingStartedAt,
+            stoppedAt: stoppedAt,
+            sourceDuration: sourceDuration
+        )
+        var keptRanges: [Range<TimeInterval>] = []
+        var cursor: TimeInterval = 0
+        for pause in pauses {
+            if pause.lowerBound > cursor {
+                keptRanges.append(cursor..<pause.lowerBound)
+            }
+            cursor = max(cursor, pause.upperBound)
+        }
+        if cursor < sourceDuration {
+            keptRanges.append(cursor..<sourceDuration)
+        }
+        guard !keptRanges.isEmpty else {
+            throw ProjectEditTimelineError.recordingContainsOnlyPausedTime
+        }
+
+        var timeline = try ProjectEditTimeline(trackID: trackID, sourceDuration: sourceDuration)
+        timeline.segments = keptRanges.enumerated().map { index, range in
+            ProjectEditSegment(
+                id: segmentIDs.indices.contains(index) ? segmentIDs[index] : UUID(),
+                sourceStart: range.lowerBound,
+                duration: range.upperBound - range.lowerBound
+            )
+        }
+        return timeline
+    }
+
+    private func sourcePauseRanges(
+        recordingStartedAt: TimeInterval,
+        stoppedAt: TimeInterval,
+        sourceDuration: TimeInterval
+    ) -> [Range<TimeInterval>] {
+        var completed = intervals
+        if let currentPauseStartedAt {
+            completed.append(.init(startedAt: currentPauseStartedAt, endedAt: stoppedAt))
+        }
+        let ranges = completed.compactMap { interval -> Range<TimeInterval>? in
+            let lower = min(max(interval.startedAt - recordingStartedAt, 0), sourceDuration)
+            let upper = min(max(interval.endedAt - recordingStartedAt, lower), sourceDuration)
+            return upper > lower ? lower..<upper : nil
+        }.sorted { $0.lowerBound < $1.lowerBound }
+
+        return ranges.reduce(into: []) { merged, range in
+            guard let last = merged.last, range.lowerBound <= last.upperBound else {
+                merged.append(range)
+                return
+            }
+            merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+        }
+    }
 }
 
 enum ProjectPrivacyOverlayStyle: String, Codable, CaseIterable, Identifiable, Sendable {

@@ -43,9 +43,9 @@ Build in this order:
 
 **Existing coverage.** Follow Cursor, scalable cursor/click treatment, frame-aligned cursor history, fixed-region framing, and live/record/export compositor parity exist. Named Scene switches preserve a timestamped presentation timeline. Pause/resume, manual zoom blocks, and key telemetry do not.
 
-**Recommendation.** Add `Pause/Resume` and `Mark Zoom Here` to the HUD/shortcuts. Record frame-aligned, editable zoom and command-key events. Default to modifier combinations, navigation, and function keys; do not create a general key log or capture Secure Input.
+**Recommendation.** Add `Pause/Resume` and `Mark Zoom Here` to the HUD/shortcuts. Pause is a local-recording action: Record + Stream keeps RTMPS live and Stream-only exposes no Pause. Keep raw safety tracks continuous for recovery, but automatically omit paused ranges from project playback, program-only output, GIFs, snapshots, and edited exports. Record frame-aligned, editable zoom and command-key events. Default to modifier combinations, navigation, and function keys; do not create a general key log or capture Secure Input. Apple exposes native camera-file pause/resume, but `SCRecordingOutput` has no matching pause API, so non-destructive timeline compaction avoids risky screen/audio recorder reconfiguration ([AVCaptureFileOutput](https://developer.apple.com/documentation/AVFoundation/AVCaptureFileOutput), [SCRecordingOutput](https://developer.apple.com/documentation/screencapturekit/screcordingoutput)).
 
-**Acceptance criterion.** Paused time is absent from screen, camera, system audio, mic, cursor, keys, scene timeline, and export. Manual zoom is movable/resizable/retargetable. Preview, MOV, GIF, and live program render the same event at the same frame within one output frame of tolerance.
+**Acceptance criterion.** Paused time is absent from normal project playback and every derived output; raw safety tracks remain byte-preserving and recoverable. Duration freezes while paused. Scene and cursor events remain source-time aligned across each omitted range. Record + Stream explicitly says the stream remains live; Stream-only has no Pause. Manual zoom is movable/resizable/retargetable. Preview, MOV, GIF, and live program render the same event at the same frame within one output frame of tolerance.
 
 ### 3. Editable audio without a second application
 

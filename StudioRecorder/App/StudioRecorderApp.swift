@@ -49,6 +49,15 @@ struct StudioRecorderApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
 
+                Button(model.snapshot.captureState == .paused ? "Resume Recording" : "Pause Recording") {
+                    model.send(.toggleRecordingPause)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(
+                    model.snapshot.captureState != .recording
+                        && model.snapshot.captureState != .paused
+                )
+
                 Button("Find Projects") {
                     model.send(.focusProjectSearch)
                 }
