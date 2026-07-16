@@ -88,6 +88,22 @@ final class StudioSceneLibraryStore: ObservableObject {
         scenes = next
     }
 
+    func move(_ id: UUID, by offset: Int) throws {
+        guard !hasUnreadableExistingLibrary else {
+            throw StudioSceneLibraryError.unreadableExistingLibrary
+        }
+        guard offset != 0,
+              let sourceIndex = scenes.firstIndex(where: { $0.id == id }) else { return }
+        let destinationIndex = min(max(sourceIndex + offset, 0), scenes.count - 1)
+        guard destinationIndex != sourceIndex else { return }
+
+        var next = scenes
+        let scene = next.remove(at: sourceIndex)
+        next.insert(scene, at: destinationIndex)
+        try persist(next)
+        scenes = next
+    }
+
     func scene(id: UUID?) -> StudioScenePreset? {
         guard let id else { return nil }
         return scenes.first { $0.id == id }

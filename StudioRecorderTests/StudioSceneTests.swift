@@ -117,6 +117,36 @@ final class StudioSceneTests: XCTestCase {
         XCTAssertEqual(reloaded.scenes.first?.name, "Interview")
     }
 
+    func testLibraryPersistsSceneOrderingForLiveSwitcherShortcuts() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "StudioSceneTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "scenes.json")
+        let store = StudioSceneLibraryStore(fileURL: url)
+
+        var widePresentation = CapturePresentationSnapshot.default
+        widePresentation.name = "Wide"
+        let wide = StudioScenePreset(presentation: widePresentation)
+        var cameraPresentation = CapturePresentationSnapshot.default
+        cameraPresentation.name = "Camera"
+        let camera = StudioScenePreset(presentation: cameraPresentation)
+        var demoPresentation = CapturePresentationSnapshot.default
+        demoPresentation.name = "Demo"
+        let demo = StudioScenePreset(presentation: demoPresentation)
+        try store.save(wide)
+        try store.save(camera)
+        try store.save(demo)
+
+        try store.move(demo.id, by: -2)
+        try store.move(wide.id, by: 20)
+
+        XCTAssertEqual(store.scenes.map(\.name), ["Demo", "Camera", "Wide"])
+        XCTAssertEqual(
+            StudioSceneLibraryStore(fileURL: url).scenes.map(\.id),
+            [demo.id, camera.id, wide.id]
+        )
+    }
+
     func testUnreadableLibraryIsPreservedInsteadOfSilentlyOverwritten() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "StudioSceneTests-\(UUID().uuidString)", directoryHint: .isDirectory)

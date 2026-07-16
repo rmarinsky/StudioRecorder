@@ -625,6 +625,8 @@ struct StudioRecorderRootView: View {
                         onCreate: createScene,
                         onRename: beginRenamingSelectedScene,
                         onDuplicate: duplicateSelectedScene,
+                        onMoveEarlier: { moveSelectedScene(by: -1) },
+                        onMoveLater: { moveSelectedScene(by: 1) },
                         onDelete: deleteSelectedScene
                     )
                     LiveProgramPreview(
@@ -1500,6 +1502,15 @@ struct StudioRecorderRootView: View {
         do {
             try sceneLibrary.remove(selectedSceneID)
             self.selectedSceneID = nil
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func moveSelectedScene(by offset: Int) {
+        guard let selectedSceneID else { return }
+        do {
+            try sceneLibrary.move(selectedSceneID, by: offset)
         } catch {
             sceneLibraryError = error.localizedDescription
         }
@@ -2852,6 +2863,8 @@ private struct SceneSwitcherBar: View {
     let onCreate: () -> Void
     let onRename: () -> Void
     let onDuplicate: () -> Void
+    let onMoveEarlier: () -> Void
+    let onMoveLater: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -2907,6 +2920,11 @@ private struct SceneSwitcherBar: View {
                         Button("Rename Scene…", systemImage: "pencil", action: onRename)
                         Button("Duplicate Scene", systemImage: "plus.square.on.square", action: onDuplicate)
                         Divider()
+                        Button("Move Earlier", systemImage: "arrow.left", action: onMoveEarlier)
+                            .disabled(selectedSceneIndex == 0)
+                        Button("Move Later", systemImage: "arrow.right", action: onMoveLater)
+                            .disabled(selectedSceneIndex == scenes.indices.last)
+                        Divider()
                         Button("Delete Scene", systemImage: "trash", role: .destructive, action: onDelete)
                     } label: {
                         Image(systemName: "ellipsis")
@@ -2932,6 +2950,10 @@ private struct SceneSwitcherBar: View {
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var selectedSceneIndex: Int? {
+        scenes.firstIndex { $0.id == selectedSceneID }
     }
 
     @ViewBuilder
