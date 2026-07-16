@@ -54,6 +54,78 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(decoded.resolvedPerformanceProfile, .performance)
     }
 
+    func testCameraBackgroundBlurSettingsRoundTripAndClamp() throws {
+        let background = CameraBackgroundSnapshot(mode: .blur, blurRadius: 120).validated()
+        let decoded = try JSONDecoder().decode(
+            CameraBackgroundSnapshot.self,
+            from: JSONEncoder().encode(background)
+        )
+
+        XCTAssertEqual(decoded.mode, .blur)
+        XCTAssertEqual(decoded.resolvedBlurRadius, 80)
+    }
+
+    func testCameraBackgroundBlurKeepsTheMaskedForegroundSharp() throws {
+        let extent = CGRect(x: 0, y: 0, width: 64, height: 64)
+        let left = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(
+            to: CGRect(x: 0, y: 0, width: 32, height: 64)
+        )
+        let right = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(
+            to: CGRect(x: 32, y: 0, width: 32, height: 64)
+        )
+        let source = right.composited(over: left).cropped(to: extent)
+        let foregroundMask = CIImage(color: .white).cropped(
+            to: CGRect(x: 28, y: 20, width: 8, height: 24)
+        ).composited(over: CIImage(color: .black).cropped(to: extent))
+        let processed = try XCTUnwrap(CameraBackgroundProcessor.blurringBackground(
+            in: source,
+            withPersonMask: foregroundMask,
+            radius: 12
+        ))
+        let cgImage = try XCTUnwrap(CIContext().createCGImage(processed, from: extent))
+
+        let maskedBlack = try rgba(in: cgImage, x: 30, y: 32)
+        let blurredBlack = try rgba(in: cgImage, x: 24, y: 32)
+        XCTAssertLessThan(maskedBlack.red, 20)
+        XCTAssertGreaterThan(blurredBlack.red, maskedBlack.red + 20)
+    }
+
+    func testCameraBackgroundBlurStrengthStaysProportionalAcrossPreviewAndOutput() {
+        let previewRadius = CameraBackgroundProcessor.scaledBlurRadius(
+            24,
+            for: CGRect(x: 0, y: 0, width: 960, height: 540)
+        )
+        let outputRadius = CameraBackgroundProcessor.scaledBlurRadius(
+            24,
+            for: CGRect(x: 0, y: 0, width: 3_840, height: 2_160)
+        )
+
+        XCTAssertEqual(previewRadius, 12, accuracy: 0.001)
+        XCTAssertEqual(outputRadius, 48, accuracy: 0.001)
+        XCTAssertEqual(previewRadius / 540, outputRadius / 2_160, accuracy: 0.0001)
+    }
+
+    func testLiveCameraBlurBoundsFourKWorkWithoutChangingOutputExtent() throws {
+        let fourKExtent = CGRect(x: 10, y: 20, width: 3_840, height: 2_160)
+        XCTAssertEqual(
+            CameraBackgroundProcessor.blurWorkingScale(for: fourKExtent, maximumDimension: 960),
+            0.25,
+            accuracy: 0.001
+        )
+
+        let extent = CGRect(x: 10, y: 20, width: 384, height: 216)
+        let source = CIImage(color: .white).cropped(to: extent)
+        let mask = CIImage(color: .black).cropped(to: extent)
+        let processed = try XCTUnwrap(CameraBackgroundProcessor.blurringBackground(
+            in: source,
+            withPersonMask: mask,
+            radius: 4.8,
+            maximumDimension: 96
+        ))
+
+        XCTAssertEqual(processed.extent, extent)
+    }
+
     func testAutoCameraBackgroundPlanDegradesBeforeCaptureStalls() {
         let normal = CameraBackgroundProcessingPlan.live(
             profile: .auto,

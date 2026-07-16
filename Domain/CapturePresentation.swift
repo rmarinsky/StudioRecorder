@@ -213,6 +213,7 @@ enum SourceAspectPreset: String, CaseIterable, Identifiable, Sendable {
 enum CameraBackgroundMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case off
     case person
+    case blur
     case greenScreen
 
     var id: String { rawValue }
@@ -221,6 +222,7 @@ enum CameraBackgroundMode: String, Codable, CaseIterable, Identifiable, Sendable
         switch self {
         case .off: "Off"
         case .person: "Person"
+        case .blur: "Blur"
         case .greenScreen: "Green Screen"
         }
     }
@@ -272,9 +274,14 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
     var softness: CGFloat
     var spillSuppression: CGFloat
     var performanceProfile: CameraBackgroundPerformanceProfile?
+    var blurRadius: CGFloat?
 
     var resolvedPerformanceProfile: CameraBackgroundPerformanceProfile {
         performanceProfile ?? .auto
+    }
+
+    var resolvedBlurRadius: CGFloat {
+        blurRadius ?? 24
     }
 
     static let off = CameraBackgroundSnapshot(mode: .off)
@@ -285,7 +292,8 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
         tolerance: CGFloat = 0.28,
         softness: CGFloat = 0.12,
         spillSuppression: CGFloat = 0.55,
-        performanceProfile: CameraBackgroundPerformanceProfile = .auto
+        performanceProfile: CameraBackgroundPerformanceProfile = .auto,
+        blurRadius: CGFloat = 24
     ) {
         self.mode = mode
         self.keyColor = keyColor
@@ -293,6 +301,7 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
         self.softness = softness
         self.spillSuppression = spillSuppression
         self.performanceProfile = performanceProfile
+        self.blurRadius = blurRadius
     }
 
     func validated() -> CameraBackgroundSnapshot {
@@ -302,7 +311,8 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
             tolerance: min(max(tolerance, 0.02), 0.8),
             softness: min(max(softness, 0.01), 0.5),
             spillSuppression: min(max(spillSuppression, 0), 1),
-            performanceProfile: resolvedPerformanceProfile
+            performanceProfile: resolvedPerformanceProfile,
+            blurRadius: min(max(resolvedBlurRadius, 4), 80)
         )
     }
 }

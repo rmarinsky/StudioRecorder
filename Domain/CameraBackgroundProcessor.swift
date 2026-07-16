@@ -78,16 +78,31 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
         case .off:
             return image
         case .person:
-            return personForeground(
+            guard let mask = personMask(
                 from: image,
                 profile: background.resolvedPerformanceProfile
+            ) else { return image }
+            return blend(image, withPersonMask: mask) ?? image
+        case .blur:
+            guard let mask = personMask(
+                from: image,
+                profile: background.resolvedPerformanceProfile
+            ) else { return image }
+            return Self.blurringBackground(
+                in: image,
+                withPersonMask: mask,
+                radius: Self.scaledBlurRadius(
+                    background.resolvedBlurRadius,
+                    for: image.extent
+                ),
+                maximumDimension: personQuality == .live ? 960 : nil
             ) ?? image
         case .greenScreen:
             return chromaKey(image, settings: background)
         }
     }
 
-    private func personForeground(
+    private func personMask(
         from image: CIImage,
         profile: CameraBackgroundPerformanceProfile
     ) -> CIImage? {
@@ -102,7 +117,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
             if personQuality == .live,
                let cachedPersonMask,
                now - cachedPersonMaskAt < livePlan.minimumMaskInterval {
-                return blend(image, withPersonMask: cachedPersonMask)
+                return cachedPersonMask
             }
             // Continuity Camera can deliver 4K frames. Vision's live segmentation
             // does not need those pixels, and processing them would stall preview
@@ -146,7 +161,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
                 updateAverageProcessingDuration(
                     ProcessInfo.processInfo.systemUptime - processingStartedAt
                 )
-                return blend(image, withPersonMask: mask)
+                return mask
             } catch {
                 updateAverageProcessingDuration(
                     ProcessInfo.processInfo.systemUptime - processingStartedAt
@@ -164,6 +179,67 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
     }
 
     private func blend(_ image: CIImage, withPersonMask mask: CIImage) -> CIImage? {
+        Self.blend(image, withPersonMask: mask, over: CIImage(color: .clear).cropped(to: image.extent))
+    }
+
+    static func blurringBackground(
+        in image: CIImage,
+        withPersonMask mask: CIImage,
+        radius: CGFloat,
+        maximumDimension: CGFloat? = nil
+    ) -> CIImage? {
+        let normalized = image.transformed(by: CGAffineTransform(
+            translationX: -image.extent.minX,
+            y: -image.extent.minY
+        ))
+        let workingScale = blurWorkingScale(
+            for: normalized.extent,
+            maximumDimension: maximumDimension
+        )
+        let workingImage = normalized.transformed(by: CGAffineTransform(
+            scaleX: workingScale,
+            y: workingScale
+        ))
+        let workingBackground = workingImage
+            .clampedToExtent()
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: min(max(radius * workingScale, 0.5), 160)]
+            )
+            .cropped(to: workingImage.extent)
+        let background = workingBackground
+            .transformed(by: CGAffineTransform(
+                scaleX: 1 / workingScale,
+                y: 1 / workingScale
+            ))
+            .transformed(by: CGAffineTransform(
+                translationX: image.extent.minX,
+                y: image.extent.minY
+            ))
+            .cropped(to: image.extent)
+        return blend(image, withPersonMask: mask, over: background)
+    }
+
+    static func scaledBlurRadius(_ referenceRadius: CGFloat, for extent: CGRect) -> CGFloat {
+        let shortEdge = min(abs(extent.width), abs(extent.height))
+        guard shortEdge.isFinite, shortEdge > 0 else { return 0.5 }
+        return min(max(referenceRadius, 4), 80) * shortEdge / 1_080
+    }
+
+    static func blurWorkingScale(for extent: CGRect, maximumDimension: CGFloat?) -> CGFloat {
+        guard let maximumDimension,
+              maximumDimension.isFinite,
+              maximumDimension > 0 else { return 1 }
+        let largestDimension = max(abs(extent.width), abs(extent.height))
+        guard largestDimension.isFinite, largestDimension > 0 else { return 1 }
+        return min(1, maximumDimension / largestDimension)
+    }
+
+    private static func blend(
+        _ image: CIImage,
+        withPersonMask mask: CIImage,
+        over background: CIImage
+    ) -> CIImage? {
         let fittedMask: CIImage
         if mask.extent == image.extent {
             fittedMask = mask
@@ -181,10 +257,7 @@ final class CameraBackgroundProcessor: @unchecked Sendable {
             .cropped(to: image.extent)
         let blend = CIFilter(name: "CIBlendWithMask")
         blend?.setValue(image, forKey: kCIInputImageKey)
-        blend?.setValue(
-            CIImage(color: .clear).cropped(to: image.extent),
-            forKey: kCIInputBackgroundImageKey
-        )
+        blend?.setValue(background, forKey: kCIInputBackgroundImageKey)
         blend?.setValue(refinedMask, forKey: kCIInputMaskImageKey)
         return blend?.outputImage?.cropped(to: image.extent)
     }

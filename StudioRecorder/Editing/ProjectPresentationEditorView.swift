@@ -99,6 +99,16 @@ struct ProjectPresentationEditorView: View {
                     Text("Person keeps the person only; use Green Screen when a foreground microphone must remain.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                } else if presentation.resolvedCameraBackground.mode == .blur {
+                    labeledSlider(
+                        "Blur strength",
+                        value: cameraBackgroundBlurBinding,
+                        range: 4...80,
+                        valueText: String(format: "%.0f", presentation.resolvedCameraBackground.resolvedBlurRadius)
+                    )
+                    Text("Blur keeps the detected person sharp and softens the room; export uses quality processing.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 } else if presentation.resolvedCameraBackground.mode == .greenScreen {
                     Picker("Key color", selection: chromaKeyColorBinding) {
                         ForEach(ChromaKeyColor.allCases) { color in
@@ -241,6 +251,13 @@ struct ProjectPresentationEditorView: View {
         Binding(
             get: { presentation.resolvedCameraBackground.keyColor },
             set: { value in updateCameraBackground { $0.keyColor = value } }
+        )
+    }
+
+    private var cameraBackgroundBlurBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.resolvedBlurRadius },
+            set: { value in updateCameraBackground { $0.blurRadius = value } }
         )
     }
 

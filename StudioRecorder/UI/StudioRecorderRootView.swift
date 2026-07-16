@@ -2050,7 +2050,7 @@ private struct StudioInspector: View {
                         Text(mode.label).tag(mode)
                     }
                 }
-                if presentation.resolvedCameraBackground.mode == .person {
+                if [.person, .blur].contains(presentation.resolvedCameraBackground.mode) {
                     Picker("Processing", selection: cameraBackgroundPerformanceBinding) {
                         ForEach(CameraBackgroundPerformanceProfile.allCases) { profile in
                             Text(profile.label).tag(profile)
@@ -2059,9 +2059,21 @@ private struct StudioInspector: View {
                     Text(presentation.resolvedCameraBackground.resolvedPerformanceProfile.detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if presentation.resolvedCameraBackground.mode == .blur {
+                        labeledSlider(
+                            "Blur strength",
+                            value: cameraBackgroundBlurBinding,
+                            range: 4...80,
+                            valueText: String(format: "%.0f", presentation.resolvedCameraBackground.resolvedBlurRadius)
+                        )
+                        Text("Blur keeps the detected person sharp and softens the room locally on this Mac.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 } else if presentation.resolvedCameraBackground.mode == .greenScreen {
                     Picker("Key color", selection: chromaKeyColorBinding) {
                         ForEach(ChromaKeyColor.allCases) { color in
@@ -2247,6 +2259,13 @@ private struct StudioInspector: View {
         Binding(
             get: { presentation.resolvedCameraBackground.keyColor },
             set: { value in updateCameraBackground { $0.keyColor = value } }
+        )
+    }
+
+    private var cameraBackgroundBlurBinding: Binding<CGFloat> {
+        Binding(
+            get: { presentation.resolvedCameraBackground.resolvedBlurRadius },
+            set: { value in updateCameraBackground { $0.blurRadius = value } }
         )
     }
 
