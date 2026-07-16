@@ -188,6 +188,60 @@ final class YouTubeStreamingTests: XCTestCase {
         await pipeline.stop()
     }
 
+    func testLivePipelineUsesOneFrameScopedSceneForStreamAndArchive() async throws {
+        let sink = InspectableStreamSink()
+        let archive = InspectableProgramArchiveSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var initial = CapturePresentationSnapshot.default
+        initial.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        initial.camera.isVisible = false
+        var switched = initial
+        switched.camera = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.5,
+            height: 0.5,
+            shape: .rectangle
+        )
+        let configuration = YouTubeStreamConfiguration(
+            serverURL: URL(string: "rtmps://example.com/live")!,
+            streamKey: "test-key",
+            canvasSize: initial.canvas.pixelSize,
+            frameRate: 30,
+            videoBitRate: 3_000_000
+        )
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: false,
+            capturesMicrophone: false,
+            microphoneDeviceID: nil,
+            excludesStudioRecorderAudio: true
+        )
+        try await pipeline.start(
+            configuration: configuration,
+            presentation: initial,
+            audioConfiguration: audio,
+            localArchive: archive
+        ) { _ in }
+        await pipeline.appendCamera(SendableSampleBuffer(value: try videoSampleBuffer(color: .red)))
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil,
+            presentation: switched
+        )
+
+        let streamedSample = await sink.latestVideo()
+        let archivedSample = await archive.latestVideo()
+        let streamed = try XCTUnwrap(streamedSample?.value.imageBuffer)
+        let archived = try XCTUnwrap(archivedSample?.value.imageBuffer)
+        let streamedCenter = try pixel(in: CIImage(cvPixelBuffer: streamed), x: 320, y: 180)
+        let archivedCenter = try pixel(in: CIImage(cvPixelBuffer: archived), x: 320, y: 180)
+        XCTAssertGreaterThan(streamedCenter.red, 180)
+        XCTAssertGreaterThan(archivedCenter.red, 180)
+        XCTAssertLessThan(streamedCenter.blue, 80)
+        XCTAssertLessThan(archivedCenter.blue, 80)
+        await pipeline.stop()
+    }
+
     func testLivePipelineRendersConfiguredCursorAndClickRing() async throws {
         let sink = InspectableStreamSink()
         let pipeline = LiveProgramPipeline(sink: sink)
@@ -720,6 +774,7 @@ private actor InspectableProgramArchiveSink: LiveProgramArchiveSink {
     }
 
     func videoCount() -> Int { videos.count }
+    func latestVideo() -> SendableSampleBuffer? { videos.last }
     func finishCount() -> Int { finishes }
 }
 

@@ -39,6 +39,7 @@ struct StudioRecorderRootView: View {
     @State private var streamPreflightReport: StreamPreflightReport?
     @State private var streamPreflightRevision = 0
     @State private var selectedSceneID: UUID?
+    @State private var pendingSceneSwitchEvent: StudioSceneSwitchEvent?
     @State private var sceneSwitchError: String?
     @State private var sceneLibraryError: String?
     @State private var sceneRenameDraft = ""
@@ -200,9 +201,26 @@ struct StudioRecorderRootView: View {
         }
         .onChange(of: snapshot.studioDraft?.presentation) { _, presentation in
             if let presentation {
-                Task { await streaming.pipeline.updatePresentation(presentation) }
+                if pendingSceneSwitchEvent?.presentation != presentation {
+                    liveScene.replaceProgramPresentationImmediately(presentation)
+                    Task { await streaming.pipeline.updatePresentation(presentation) }
+                }
             }
             updateShortcutMonitor()
+        }
+        .onChange(of: isDeliveryActive) { _, isActive in
+            guard let presentation = snapshot.studioDraft?.presentation else { return }
+            if isActive {
+                liveScene.beginProgramPresentation(presentation)
+            } else {
+                pendingSceneSwitchEvent = nil
+                liveScene.endProgramPresentation()
+            }
+        }
+        .onChange(of: liveScene.programPresentation) { _, presentation in
+            if presentation == pendingSceneSwitchEvent?.presentation {
+                pendingSceneSwitchEvent = nil
+            }
         }
     }
 
@@ -619,7 +637,7 @@ struct StudioRecorderRootView: View {
                         isRecording: snapshot.captureState == .recording,
                         isPaused: snapshot.captureState == .paused,
                         shortcutLabel: shortcutMonitor.visibleLabel,
-                        presentation: presentationBinding,
+                        presentation: programPresentationBinding,
                         selectedSource: $selectedCanvasSource,
                         isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                     )
@@ -1117,6 +1135,17 @@ struct StudioRecorderRootView: View {
         )
     }
 
+    private var programPresentationBinding: Binding<CapturePresentationSnapshot> {
+        Binding(
+            get: {
+                isDeliveryActive
+                    ? (liveScene.programPresentation ?? snapshot.studioDraft?.presentation ?? .default)
+                    : (snapshot.studioDraft?.presentation ?? .default)
+            },
+            set: { model.send(.setDraftPresentation($0)) }
+        )
+    }
+
     private var manualZoomBaseFraming: ScreenFramingSnapshot? {
         liveSceneContract?.initialPresentation.framing
     }
@@ -1388,9 +1417,14 @@ struct StudioRecorderRootView: View {
             sceneSwitchError = incompatibility.message
             return
         }
-        guard model.send(.setDraftPresentation(scene.presentation)) != .ignored else {
+        let previousPresentation = snapshot.studioDraft?.presentation ?? scene.presentation
+        guard case .sceneSwitchAccepted(let event) = model.send(.switchScene(scene.presentation)) else {
             sceneSwitchError = "Studio Recorder could not apply this scene to the current session."
             return
+        }
+        if isDeliveryActive {
+            pendingSceneSwitchEvent = event
+            liveScene.enqueueSceneSwitch(event, currentPresentation: previousPresentation)
         }
         isManualZoomActive = false
         manualZoomRestoreFraming = nil

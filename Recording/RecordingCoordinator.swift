@@ -61,7 +61,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var safeShortcutTimeline = SafeShortcutTimeline()
     private var recordingPauseTimeline = RecordingPauseTimeline()
     private var recordingStartedAt: TimeInterval?
+    private var recordingStartedHostTime: UInt64?
     private var recordingStartedAtByDisplayID: [UInt32: TimeInterval] = [:]
+    private var acceptedSceneSwitchIDs: Set<UUID> = []
     private var hasAuthoritativeRecordingStart = false
     nonisolated private let cursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
@@ -158,7 +160,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         terminalFailure = nil
         finalizationWarning = nil
         recordingStartedAt = nil
+        recordingStartedHostTime = nil
         recordingStartedAtByDisplayID = [:]
+        acceptedSceneSwitchIDs = []
         hasAuthoritativeRecordingStart = false
         recordingPauseTimeline = RecordingPauseTimeline()
         safeShortcutTimeline = SafeShortcutTimeline()
@@ -250,7 +254,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
 
             recordedDuration = 0
-            recordingStartedAt = recordingStartedAt ?? ProcessInfo.processInfo.systemUptime
+            if recordingStartedAt == nil {
+                recordingStartedAt = ProcessInfo.processInfo.systemUptime
+                recordingStartedHostTime = Self.currentHostTime
+            }
             startDurationTimer()
             state = .recording
         } catch {
@@ -439,34 +446,34 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     @discardableResult
-    func updateLivePresentation(
-        _ presentation: CapturePresentationSnapshot,
-        transitionKind: StudioSceneTransitionKind = .scene
-    ) -> Bool {
+    func acceptSceneSwitch(_ event: StudioSceneSwitchEvent) -> Bool {
         guard state == .recording || state == .paused,
               let request = activeCaptureRequest,
               let project = activeProject,
-              let recordingStartedAt else { return false }
+              let recordingStartedHostTime else { return false }
         let contract = StudioSceneLiveContract(
             initialPresentation: request.presentation,
             capturesCamera: request.camera != nil,
             recordsCursorTelemetry: needsCursorTelemetry(request)
         )
-        guard contract.incompatibility(for: presentation) == nil else { return false }
+        guard contract.incompatibility(for: event.presentation) == nil else { return false }
+        if acceptedSceneSwitchIDs.contains(event.id) { return true }
         var timeline = studioSceneTimeline
             ?? StudioSceneTimeline(initialPresentation: request.presentation)
         timeline.append(
-            presentation,
-            at: max(ProcessInfo.processInfo.systemUptime - recordingStartedAt, 0),
-            kind: transitionKind
+            event.presentation,
+            at: event.sourceTime(since: recordingStartedHostTime),
+            kind: event.kind
         )
         do {
             try projectStore.writeStudioSceneTimeline(timeline, in: project)
-            studioSceneTimeline = timeline
-            return true
         } catch {
+            finalizationWarning = "The scene was not switched because its editable timing could not be saved. \(error.localizedDescription)"
             return false
         }
+        studioSceneTimeline = timeline
+        acceptedSceneSwitchIDs.insert(event.id)
+        return true
     }
 
     private func startCursorTelemetry(request: CaptureRequest) {
@@ -675,20 +682,31 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         studioSceneTimeline = nil
         safeShortcutTimeline = SafeShortcutTimeline()
         recordingStartedAt = nil
+        recordingStartedHostTime = nil
         recordingStartedAtByDisplayID = [:]
+        acceptedSceneSwitchIDs = []
         hasAuthoritativeRecordingStart = false
         recordingPauseTimeline = RecordingPauseTimeline()
     }
 
-    private func adoptAuthoritativeRecordingStart(_ startedAt: TimeInterval, in project: RecordingProject) {
+    private func adoptAuthoritativeRecordingStart(
+        _ startedAt: TimeInterval,
+        hostTime: UInt64,
+        in project: RecordingProject
+    ) {
         guard !hasAuthoritativeRecordingStart else { return }
         let provisionalStart = recordingStartedAt
+        let provisionalHostTime = recordingStartedHostTime
         recordingStartedAt = startedAt
+        recordingStartedHostTime = hostTime
         hasAuthoritativeRecordingStart = true
 
         guard let provisionalStart,
               var timeline = studioSceneTimeline else { return }
-        timeline.offsetSceneSwitches(by: provisionalStart - startedAt)
+        let sceneOffset = provisionalHostTime.map {
+            StudioSceneSwitchEvent.hostDuration(from: hostTime, to: $0)
+        } ?? (provisionalStart - startedAt)
+        timeline.offsetSceneSwitches(by: sceneOffset)
         studioSceneTimeline = timeline
         safeShortcutTimeline.offsetEvents(by: provisionalStart - startedAt)
         do {
@@ -698,11 +716,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             finalizationWarning = "The recording is safe, but scene switch timing could not be updated. \(error.localizedDescription)"
         }
     }
+
+    nonisolated private static var currentHostTime: UInt64 {
+        CMClockConvertHostTimeToSystemUnits(CMClockGetTime(CMClockGetHostTimeClock()))
+    }
 }
 
 extension RecordingCoordinator: SCRecordingOutputDelegate {
     nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
         let outputStartedAt = ProcessInfo.processInfo.systemUptime
+        let outputStartedHostTime = Self.currentHostTime
         let outputStartedAtWallClock = Date()
         Task { @MainActor [weak self] in
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
@@ -710,7 +733,11 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             let primaryDisplayID = self.activeCaptureRequest?.primaryAudioDisplayID
                 ?? self.activeCaptureRequest?.displaySources.first?.id
             if capture.displayID == primaryDisplayID {
-                self.adoptAuthoritativeRecordingStart(outputStartedAt, in: project)
+                self.adoptAuthoritativeRecordingStart(
+                    outputStartedAt,
+                    hostTime: outputStartedHostTime,
+                    in: project
+                )
             }
             try? self.projectStore.markStarted(
                 displayID: capture.displayID,

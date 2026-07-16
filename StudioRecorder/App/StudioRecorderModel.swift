@@ -186,6 +186,7 @@ enum AppIntent: Equatable {
     case setDraftIncludeCursor(Bool)
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
+    case switchScene(CapturePresentationSnapshot)
     case setDraftPresentation(CapturePresentationSnapshot)
     case setDraftManualZoomPresentation(CapturePresentationSnapshot, isReset: Bool)
     case setDraftRetentionPolicy(MediaRetentionPolicy)
@@ -222,6 +223,7 @@ enum AppIntentResult: Equatable {
     case microphoneDisabledForDraft
     case cameraDisabledForDraft
     case draftChanged
+    case sceneSwitchAccepted(StudioSceneSwitchEvent)
     case preferenceChanged
     case preferenceChangeFailed(String)
 }
@@ -410,6 +412,7 @@ final class StudioRecorderModel: ObservableObject {
     private let preferencesStore: PreferencesStore
     private var coordinatorObservation: AnyCancellable?
     private var cameraPreviewSession: CameraSessionReference?
+    private var nextSceneSwitchSequence: UInt64 = 0
 
     convenience init() {
         self.init(
@@ -626,6 +629,11 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft?.excludeStudioRecorderAudio = excluded
             result = .draftChanged
 
+        case .switchScene(let presentation):
+            let event = makeSceneSwitchEvent(presentation: presentation, kind: .scene)
+            guard setDraftPresentation(event: event) else { return .ignored }
+            result = .sceneSwitchAccepted(event)
+
         case .setDraftPresentation(let presentation):
             guard setDraftPresentation(presentation, transitionKind: .scene) else { return .ignored }
             result = .draftChanged
@@ -751,7 +759,13 @@ final class StudioRecorderModel: ObservableObject {
         _ presentation: CapturePresentationSnapshot,
         transitionKind: StudioSceneTransitionKind
     ) -> Bool {
-        let validated = presentation.validated()
+        setDraftPresentation(
+            event: makeSceneSwitchEvent(presentation: presentation, kind: transitionKind)
+        )
+    }
+
+    private func setDraftPresentation(event: StudioSceneSwitchEvent) -> Bool {
+        let validated = event.presentation
         let canRestoreIdlePresentation = snapshot.captureState == .ready &&
             !snapshot.isCaptureCommandInFlight &&
             snapshot.studioDraft != nil
@@ -761,11 +775,23 @@ final class StudioRecorderModel: ObservableObject {
         }
         guard (snapshot.captureState == .recording || snapshot.captureState == .paused),
               !snapshot.isCaptureCommandInFlight,
-              coordinator?.updateLivePresentation(validated, transitionKind: transitionKind) == true else {
+              coordinator?.acceptSceneSwitch(event) == true else {
             return false
         }
         snapshot.studioDraft?.presentation = validated
         return true
+    }
+
+    private func makeSceneSwitchEvent(
+        presentation: CapturePresentationSnapshot,
+        kind: StudioSceneTransitionKind
+    ) -> StudioSceneSwitchEvent {
+        nextSceneSwitchSequence &+= 1
+        return StudioSceneSwitchEvent.now(
+            sequence: nextSceneSwitchSequence,
+            presentation: presentation,
+            kind: kind
+        )
     }
 
     private func currentCaptureDraft() -> StudioDraft {
@@ -829,7 +855,8 @@ final class StudioRecorderModel: ObservableObject {
             synchronizeFromCoordinator()
 
         case .ignored, .routeChanged, .projectOpened, .projectClosed, .projectSearchRequested, .displaySelectionChanged,
-             .microphoneCaptureChanged, .microphoneDisabledForDraft, .cameraDisabledForDraft, .draftChanged:
+             .microphoneCaptureChanged, .microphoneDisabledForDraft, .cameraDisabledForDraft, .draftChanged,
+             .sceneSwitchAccepted:
             break
         case .preferenceChanged, .preferenceChangeFailed:
             break

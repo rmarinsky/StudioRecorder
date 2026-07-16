@@ -284,9 +284,12 @@ actor LiveProgramPipeline {
 
     func appendScreen(
         _ sampleBuffer: SendableSampleBuffer,
-        cursor: ProgramCursorState?
+        cursor: ProgramCursorState?,
+        presentation framePresentation: CapturePresentationSnapshot? = nil
     ) async {
         guard isRunning else { return }
+        let appliedPresentation = (framePresentation ?? presentation).validated()
+        presentation = appliedPresentation
         let renderStartedAt = ProcessInfo.processInfo.systemUptime
         healthStartedAt = healthStartedAt ?? renderStartedAt
         let archive = activeArchive
@@ -303,12 +306,12 @@ actor LiveProgramPipeline {
         compositor.render(
             screen: CIImage(cvPixelBuffer: sourceBuffer),
             camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
-            presentation: presentation,
-            screenFraming: streamFraming(cursorPosition: cursor.map {
+            presentation: appliedPresentation,
+            screenFraming: streamFraming(presentation: appliedPresentation, cursorPosition: cursor.map {
                 CGPoint(x: $0.normalizedX, y: $0.normalizedY)
             }),
             cursor: rendersCursor ? cursor : nil,
-            shortcutLabel: activeShortcutLabel,
+            shortcutLabel: activeShortcutLabel(for: appliedPresentation),
             to: outputBuffer
         )
         guard let composed = makeSampleBuffer(
@@ -338,7 +341,7 @@ actor LiveProgramPipeline {
         totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
     }
 
-    private var activeShortcutLabel: String? {
+    private func activeShortcutLabel(for presentation: CapturePresentationSnapshot) -> String? {
         guard presentation.cursor.resolvedShowsShortcutKeys,
               ProcessInfo.processInfo.systemUptime < shortcutExpiresAt else { return nil }
         return shortcutLabel
@@ -537,7 +540,10 @@ actor LiveProgramPipeline {
         await stateHandler(.live)
     }
 
-    private func streamFraming(cursorPosition: CGPoint?) -> ScreenFramingSnapshot? {
+    private func streamFraming(
+        presentation: CapturePresentationSnapshot,
+        cursorPosition: CGPoint?
+    ) -> ScreenFramingSnapshot? {
         switch presentation.framing.mode {
         case .fullDisplay:
             nil

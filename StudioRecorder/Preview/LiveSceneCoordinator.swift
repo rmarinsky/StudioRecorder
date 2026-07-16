@@ -59,14 +59,75 @@ private struct CameraFrameState {
     var pixelBuffer: CVPixelBuffer?
 }
 
+struct LiveProgramPreviewFrame {
+    var image: NSImage?
+    var presentation: CapturePresentationSnapshot?
+}
+
+final class LatestAsyncTaskQueue: @unchecked Sendable {
+    typealias Operation = @Sendable () async -> Void
+
+    private let lock = NSLock()
+    private var isRunning = false
+    private var pending: Operation?
+    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enqueue(_ operation: @escaping Operation) {
+        let shouldStart = lock.withLock { () -> Bool in
+            pending = operation
+            guard !isRunning else { return false }
+            isRunning = true
+            return true
+        }
+        guard shouldStart else { return }
+        Task { await drain() }
+    }
+
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            let isIdle = lock.withLock { () -> Bool in
+                guard isRunning || pending != nil else { return true }
+                flushWaiters.append(continuation)
+                return false
+            }
+            if isIdle { continuation.resume() }
+        }
+    }
+
+    private func drain() async {
+        while let operation = nextOperation() {
+            await operation()
+        }
+    }
+
+    private func nextOperation() -> Operation? {
+        var completedWaiters: [CheckedContinuation<Void, Never>] = []
+        let operation = lock.withLock { () -> Operation? in
+            if let pending {
+                self.pending = nil
+                return pending
+            }
+            isRunning = false
+            completedWaiters = flushWaiters
+            flushWaiters.removeAll()
+            return nil
+        }
+        completedWaiters.forEach { $0.resume() }
+        return operation
+    }
+}
+
 @MainActor
 final class LiveSceneCoordinator: NSObject, ObservableObject {
-    @Published private(set) var screenImage: NSImage?
+    @Published private(set) var programPreviewFrame = LiveProgramPreviewFrame()
     @Published private(set) var selectedCameraID: String?
     @Published private(set) var cameraSession: AVCaptureSession?
     @Published private(set) var cameraImage: NSImage?
     @Published private(set) var isCameraFrameReady = false
     @Published private(set) var screenPreviewError: String?
+
+    var screenImage: NSImage? { programPreviewFrame.image }
+    var programPresentation: CapturePresentationSnapshot? { programPreviewFrame.presentation }
 
     private let screenQueue = DispatchQueue(label: "StudioRecorder.preview.screen", qos: .userInitiated)
     private let cameraQueue = DispatchQueue(label: "StudioRecorder.preview.camera", qos: .userInitiated)
@@ -84,6 +145,9 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let cameraFrameStateLock = NSLock()
     nonisolated(unsafe) private var streamPipeline: LiveProgramPipeline?
     nonisolated private let streamPipelineLock = NSLock()
+    nonisolated(unsafe) private var sceneSwitchResolver: StudioSceneSwitchResolver?
+    nonisolated private let sceneSwitchResolverLock = NSLock()
+    nonisolated private let screenPipelineIngress = LatestAsyncTaskQueue()
     nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
@@ -95,9 +159,12 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     private var cameraInput: AVCaptureDeviceInput?
     private var cameraVideoOutput: AVCaptureVideoDataOutput?
 
-    func startScreenPreview(for displayID: UInt32) async {
+    func startScreenPreview(
+        for displayID: UInt32,
+        preservingLastFrame: Bool = false
+    ) async {
         guard previewedDisplayID != displayID || screenStream == nil else { return }
-        await stopScreenPreview()
+        await stopScreenPreview(preservingLastFrame: preservingLastFrame)
         screenPreviewError = nil
 
         do {
@@ -162,12 +229,14 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         }
     }
 
-    func stopScreenPreview() async {
+    func stopScreenPreview(preservingLastFrame: Bool = false) async {
         let stream = screenStream
         screenStream = nil
         previewedDisplay = nil
         previewedDisplayID = nil
-        screenImage = nil
+        if !preservingLastFrame {
+            programPreviewFrame.image = nil
+        }
         cursorTelemetryTask?.cancel()
         cursorTelemetryTask = nil
         streamCursorSynchronizer.reset()
@@ -201,8 +270,47 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         guard streamAudioConfiguration != audio else { return }
         streamAudioConfiguration = audio
         guard let displayID = previewedDisplayID else { return }
-        await stopScreenPreview()
-        await startScreenPreview(for: displayID)
+        await stopScreenPreview(preservingLastFrame: true)
+        await startScreenPreview(for: displayID, preservingLastFrame: true)
+    }
+
+    func beginProgramPresentation(_ presentation: CapturePresentationSnapshot) {
+        let validated = presentation.validated()
+        sceneSwitchResolverLock.withLock {
+            sceneSwitchResolver = StudioSceneSwitchResolver(initialPresentation: validated)
+        }
+        programPreviewFrame.presentation = validated
+    }
+
+    func enqueueSceneSwitch(
+        _ event: StudioSceneSwitchEvent,
+        currentPresentation: CapturePresentationSnapshot
+    ) {
+        let initial = (programPresentation ?? currentPresentation).validated()
+        sceneSwitchResolverLock.withLock {
+            if sceneSwitchResolver == nil {
+                sceneSwitchResolver = StudioSceneSwitchResolver(initialPresentation: initial)
+            }
+            sceneSwitchResolver?.schedule(event)
+        }
+        if programPresentation == nil { programPreviewFrame.presentation = initial }
+    }
+
+    func replaceProgramPresentationImmediately(_ presentation: CapturePresentationSnapshot) {
+        let validated = presentation.validated()
+        sceneSwitchResolverLock.withLock {
+            if sceneSwitchResolver == nil {
+                sceneSwitchResolver = StudioSceneSwitchResolver(initialPresentation: validated)
+            } else {
+                sceneSwitchResolver?.replaceImmediately(with: validated)
+            }
+        }
+        programPreviewFrame.presentation = validated
+    }
+
+    func endProgramPresentation() {
+        sceneSwitchResolverLock.withLock { sceneSwitchResolver = nil }
+        programPreviewFrame.presentation = nil
     }
 
     func stopCameraPreview() async {
@@ -486,12 +594,16 @@ extension LiveSceneCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        let displayHostTime = outputType == .screen ? frameDisplayTime(in: sampleBuffer) : nil
+        let framePresentation = outputType == .screen
+            ? resolveProgramPresentation(forFrameHostTime: displayHostTime)
+            : nil
         let pipeline = streamPipelineLock.withLock { streamPipeline }
         if let pipeline {
             let box = SendableSampleBuffer(value: sampleBuffer)
             switch outputType {
             case .screen:
-                let cursor = frameDisplayTime(in: sampleBuffer).flatMap { displayTime -> ProgramCursorState? in
+                let cursor = displayHostTime.flatMap { displayTime -> ProgramCursorState? in
                     guard let sample = streamCursorSynchronizer.alignFrame(
                         streamID: ObjectIdentifier(stream),
                         hostTime: displayTime,
@@ -503,7 +615,13 @@ extension LiveSceneCoordinator: SCStreamOutput {
                         isPrimaryButtonDown: sample.isPrimaryButtonDown
                     )
                 }
-                Task { await pipeline.appendScreen(box, cursor: cursor) }
+                screenPipelineIngress.enqueue {
+                    await pipeline.appendScreen(
+                        box,
+                        cursor: cursor,
+                        presentation: framePresentation
+                    )
+                }
             case .audio:
                 Task { await pipeline.appendAudio(box, track: 0) }
             case .microphone:
@@ -527,8 +645,20 @@ extension LiveSceneCoordinator: SCStreamOutput {
         }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.screenImage = NSImage(cgImage: cgImage, size: .zero)
+            self.programPreviewFrame = LiveProgramPreviewFrame(
+                image: NSImage(cgImage: cgImage, size: .zero),
+                presentation: framePresentation ?? self.programPreviewFrame.presentation
+            )
             self.frameDeliveryLock.withLock { self.isFrameDeliveryPending = false }
+        }
+    }
+
+    nonisolated private func resolveProgramPresentation(
+        forFrameHostTime hostTime: UInt64?
+    ) -> CapturePresentationSnapshot? {
+        sceneSwitchResolverLock.withLock {
+            guard sceneSwitchResolver != nil else { return nil }
+            return sceneSwitchResolver?.resolve(forFrameHostTime: hostTime)
         }
     }
 

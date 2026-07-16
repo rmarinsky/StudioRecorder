@@ -1,4 +1,5 @@
 import Combine
+import CoreMedia
 import Foundation
 
 struct StudioScenePreset: Codable, Equatable, Identifiable, Sendable {
@@ -122,6 +123,93 @@ enum StudioSceneTransitionKind: String, Codable, Equatable, Sendable {
     case scene
     case manualZoomStart
     case manualZoomReset
+}
+
+struct StudioSceneSwitchEvent: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let sequence: UInt64
+    let hostTime: UInt64
+    let presentation: CapturePresentationSnapshot
+    let kind: StudioSceneTransitionKind
+
+    init(
+        id: UUID = UUID(),
+        sequence: UInt64,
+        hostTime: UInt64,
+        presentation: CapturePresentationSnapshot,
+        kind: StudioSceneTransitionKind
+    ) {
+        self.id = id
+        self.sequence = sequence
+        self.hostTime = hostTime
+        self.presentation = presentation.validated()
+        self.kind = kind
+    }
+
+    static func now(
+        sequence: UInt64,
+        presentation: CapturePresentationSnapshot,
+        kind: StudioSceneTransitionKind = .scene
+    ) -> StudioSceneSwitchEvent {
+        StudioSceneSwitchEvent(
+            sequence: sequence,
+            hostTime: CMClockConvertHostTimeToSystemUnits(
+                CMClockGetTime(CMClockGetHostTimeClock())
+            ),
+            presentation: presentation,
+            kind: kind
+        )
+    }
+
+    func sourceTime(since recordingStartedHostTime: UInt64) -> TimeInterval {
+        max(Self.hostDuration(from: recordingStartedHostTime, to: hostTime), 0)
+    }
+
+    static func hostDuration(from startHostTime: UInt64, to endHostTime: UInt64) -> TimeInterval {
+        let start = CMClockMakeHostTimeFromSystemUnits(startHostTime)
+        let end = CMClockMakeHostTimeFromSystemUnits(endHostTime)
+        let seconds = CMTimeSubtract(end, start).seconds
+        return seconds.isFinite ? seconds : 0
+    }
+}
+
+struct StudioSceneSwitchResolver: Equatable, Sendable {
+    private(set) var currentPresentation: CapturePresentationSnapshot
+    private var pending: [StudioSceneSwitchEvent] = []
+
+    init(initialPresentation: CapturePresentationSnapshot) {
+        currentPresentation = initialPresentation.validated()
+    }
+
+    mutating func schedule(_ event: StudioSceneSwitchEvent) {
+        pending.removeAll { $0.id == event.id }
+        pending.append(event)
+        pending.sort {
+            if $0.hostTime == $1.hostTime {
+                return $0.sequence < $1.sequence
+            }
+            return $0.hostTime < $1.hostTime
+        }
+    }
+
+    mutating func replaceImmediately(with presentation: CapturePresentationSnapshot) {
+        currentPresentation = presentation.validated()
+        pending.removeAll()
+    }
+
+    mutating func resolve(forFrameHostTime hostTime: UInt64?) -> CapturePresentationSnapshot {
+        guard !pending.isEmpty else { return currentPresentation }
+        let eligibleCount: Int
+        if let hostTime {
+            eligibleCount = pending.prefix { $0.hostTime <= hostTime }.count
+        } else {
+            eligibleCount = pending.count
+        }
+        guard eligibleCount > 0 else { return currentPresentation }
+        currentPresentation = pending[eligibleCount - 1].presentation
+        pending.removeFirst(eligibleCount)
+        return currentPresentation
+    }
 }
 
 struct StudioSceneTransition: Codable, Equatable, Sendable {

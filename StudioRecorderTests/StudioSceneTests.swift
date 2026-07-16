@@ -1,8 +1,91 @@
+import CoreMedia
 import XCTest
 @testable import StudioRecorder
 
 @MainActor
 final class StudioSceneTests: XCTestCase {
+    func testSceneSwitchQueueChangesPresentationOnTheFirstEligibleFrame() {
+        var wide = CapturePresentationSnapshot.default
+        wide.name = "Wide"
+        var speaker = wide
+        speaker.name = "Speaker"
+        speaker.camera.width = 0.42
+        var queue = StudioSceneSwitchResolver(initialPresentation: wide)
+        queue.schedule(StudioSceneSwitchEvent(
+            sequence: 1,
+            hostTime: 2_000,
+            presentation: speaker,
+            kind: .scene
+        ))
+
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 1_999), wide.validated())
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 2_000), speaker.validated())
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 2_001), speaker.validated())
+    }
+
+    func testSceneSwitchQueueOrdersEventsByDisplayTimeInsteadOfDeliveryOrder() {
+        var first = CapturePresentationSnapshot.default
+        first.name = "First"
+        var second = first
+        second.name = "Second"
+        var third = second
+        third.name = "Third"
+        var queue = StudioSceneSwitchResolver(initialPresentation: first)
+        queue.schedule(StudioSceneSwitchEvent(
+            sequence: 2,
+            hostTime: 300,
+            presentation: third,
+            kind: .scene
+        ))
+        queue.schedule(StudioSceneSwitchEvent(
+            sequence: 1,
+            hostTime: 200,
+            presentation: second,
+            kind: .scene
+        ))
+
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 250), second.validated())
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 300), third.validated())
+    }
+
+    func testSceneSwitchQueueUsesSequenceForEventsAtTheSameDisplayTime() {
+        var first = CapturePresentationSnapshot.default
+        first.name = "First"
+        var second = first
+        second.name = "Second"
+        var third = second
+        third.name = "Third"
+        var queue = StudioSceneSwitchResolver(initialPresentation: first)
+        queue.schedule(StudioSceneSwitchEvent(
+            sequence: 2,
+            hostTime: 300,
+            presentation: third,
+            kind: .scene
+        ))
+        queue.schedule(StudioSceneSwitchEvent(
+            sequence: 1,
+            hostTime: 300,
+            presentation: second,
+            kind: .scene
+        ))
+
+        XCTAssertEqual(queue.resolve(forFrameHostTime: 300), third.validated())
+    }
+
+    func testSceneSwitchEventMapsTheSharedBoundaryIntoRecordingSourceTime() {
+        let start = CMClockConvertHostTimeToSystemUnits(CMTime(seconds: 40, preferredTimescale: 1_000_000))
+        let end = CMClockConvertHostTimeToSystemUnits(CMTime(seconds: 42.75, preferredTimescale: 1_000_000))
+        let event = StudioSceneSwitchEvent(
+            sequence: 1,
+            hostTime: end,
+            presentation: .default,
+            kind: .scene
+        )
+
+        XCTAssertEqual(event.sourceTime(since: start), 2.75, accuracy: 0.001)
+        XCTAssertEqual(event.sourceTime(since: end + 1), 0, accuracy: 0.001)
+    }
+
     func testSceneDetectsUnsavedLayoutChangesAfterValidation() {
         let scene = StudioScenePreset(presentation: .default)
         XCTAssertFalse(scene.isModified(comparedTo: .default))

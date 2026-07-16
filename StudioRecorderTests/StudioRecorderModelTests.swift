@@ -4,6 +4,57 @@ import XCTest
 
 @MainActor
 final class StudioRecorderModelTests: XCTestCase {
+    func testLatestAsyncTaskQueueBoundsPendingScreenFrames() async {
+        let queue = LatestAsyncTaskQueue()
+        let values = LatestValueRecorder()
+        queue.enqueue {
+            await values.appendAndWaitForRelease(1)
+        }
+        while !(await values.didStartFirstValue) {
+            await Task.yield()
+        }
+        queue.enqueue {
+            await values.append(2)
+        }
+        queue.enqueue {
+            await values.append(3)
+        }
+        await values.releaseFirstValue()
+
+        await queue.flush()
+
+        let recorded = await values.values
+        XCTAssertEqual(recorded, [1, 3])
+    }
+
+    func testSavedSceneSwitchReturnsOneOrderedEventForAllDeliveryConsumers() throws {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .ready
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(
+            displays: [],
+            microphones: [],
+            cameras: []
+        )
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+        var first = CapturePresentationSnapshot.default
+        first.name = "First"
+        var second = first
+        second.name = "Second"
+
+        guard case .sceneSwitchAccepted(let firstEvent) = model.send(.switchScene(first)) else {
+            return XCTFail("The first saved scene should produce one accepted switch event.")
+        }
+        guard case .sceneSwitchAccepted(let secondEvent) = model.send(.switchScene(second)) else {
+            return XCTFail("The second saved scene should produce one accepted switch event.")
+        }
+
+        XCTAssertEqual(firstEvent.presentation, first.validated())
+        XCTAssertEqual(secondEvent.presentation, second.validated())
+        XCTAssertGreaterThan(secondEvent.sequence, firstEvent.sequence)
+        XCTAssertEqual(model.snapshot.studioDraft?.presentation, second.validated())
+    }
+
     func testLiveSceneStaysVisibleWhileRecording() {
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .ready))
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .preparing))
@@ -576,5 +627,28 @@ final class StudioRecorderModelTests: XCTestCase {
             defaultDestination: URL(filePath: "/tmp/Movies/Studio Recorder", directoryHint: .isDirectory),
             destinationIsWritable: { _ in true }
         )
+    }
+}
+
+private actor LatestValueRecorder {
+    private(set) var values: [Int] = []
+    private(set) var didStartFirstValue = false
+    private var firstValueContinuation: CheckedContinuation<Void, Never>?
+
+    func appendAndWaitForRelease(_ value: Int) async {
+        values.append(value)
+        didStartFirstValue = true
+        await withCheckedContinuation { continuation in
+            firstValueContinuation = continuation
+        }
+    }
+
+    func append(_ value: Int) {
+        values.append(value)
+    }
+
+    func releaseFirstValue() {
+        firstValueContinuation?.resume()
+        firstValueContinuation = nil
     }
 }
