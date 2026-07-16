@@ -11,6 +11,11 @@ struct StudioScenePreset: Codable, Equatable, Identifiable, Sendable {
     }
 
     var name: String { presentation.resolvedName }
+
+    func isModified(comparedTo candidate: CapturePresentationSnapshot?) -> Bool {
+        guard let candidate else { return false }
+        return presentation.validated() != candidate.validated()
+    }
 }
 
 private struct StudioSceneLibraryDocument: Codable, Equatable, Sendable {

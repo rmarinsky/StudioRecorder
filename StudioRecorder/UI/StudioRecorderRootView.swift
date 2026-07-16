@@ -594,14 +594,11 @@ struct StudioRecorderRootView: View {
                         Text("\(canvasWidth) × \(canvasHeight)  ·  30 fps")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
-                        Text("Live scene")
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(.quaternary, in: Capsule())
                     }
                     SceneSwitcherBar(
                         scenes: sceneLibrary.scenes,
                         selectedSceneID: selectedSceneID,
+                        isModified: isSelectedSceneModified,
                         isLive: isDeliveryActive,
                         canManage: !isDeliveryActive,
                         incompatibility: { liveSceneContract?.incompatibility(for: $0.presentation) },
@@ -1381,6 +1378,11 @@ struct StudioRecorderRootView: View {
         return streamingSceneContract
     }
 
+    private var isSelectedSceneModified: Bool {
+        guard let scene = sceneLibrary.scene(id: selectedSceneID) else { return false }
+        return scene.isModified(comparedTo: snapshot.studioDraft?.presentation)
+    }
+
     private func applyScene(_ scene: StudioScenePreset) {
         if let incompatibility = liveSceneContract?.incompatibility(for: scene.presentation) {
             sceneSwitchError = incompatibility.message
@@ -1638,6 +1640,27 @@ private struct StudioInspector: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                inspectorHeader("Sources")
+                sourceSettingsButton(
+                    .screens,
+                    title: "Screens",
+                    detail: "\(selectedDisplayIDs.count) selected",
+                    icon: "display.2"
+                )
+                sourceSettingsButton(
+                    .camera,
+                    title: "Camera",
+                    detail: capturesCamera ? selectedCameraName : "Off",
+                    icon: "video"
+                )
+                sourceSettingsButton(
+                    .microphone,
+                    title: "Microphone & audio",
+                    detail: audioSourceSummary,
+                    icon: "waveform"
+                )
+
+                Divider().padding(.top, 4)
                 inspectorHeader("Scene")
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("Scene name", text: sceneNameBinding)
@@ -1689,27 +1712,6 @@ private struct StudioInspector: View {
                 .disabled(isLocked)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
-
-                Divider()
-                inspectorHeader("Sources")
-                sourceSettingsButton(
-                    .screens,
-                    title: "Screens",
-                    detail: "\(selectedDisplayIDs.count) selected",
-                    icon: "display.2"
-                )
-                sourceSettingsButton(
-                    .camera,
-                    title: "Camera",
-                    detail: capturesCamera ? selectedCameraName : "Off",
-                    icon: "video"
-                )
-                sourceSettingsButton(
-                    .microphone,
-                    title: "Microphone & audio",
-                    detail: audioSourceSummary,
-                    icon: "waveform"
-                )
 
                 Divider().padding(.top, 4)
                 inspectorHeader("Capture")
@@ -1800,7 +1802,20 @@ private struct StudioInspector: View {
         detail: String,
         icon: String
     ) -> some View {
-        Button {
+        let isActive = activeSourceSettings == settings
+        let isCanvasSelected = canvasSource(for: settings).map { $0 == selectedCanvasSource } ?? false
+        let backgroundColor = isActive || isCanvasSelected
+            ? Color.accentColor.opacity(0.12)
+            : Color.primary.opacity(0.045)
+        let strokeColor = isActive
+            ? Color.accentColor.opacity(0.45)
+            : Color.primary.opacity(0.07)
+        let isPresented = Binding(
+            get: { activeSourceSettings == settings },
+            set: { if !$0 { activeSourceSettings = nil } }
+        )
+
+        return Button {
             activeSourceSettings = settings
             switch settings {
             case .screens:
@@ -1815,52 +1830,45 @@ private struct StudioInspector: View {
                 Image(systemName: icon)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 34, height: 34)
-                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
+                    .frame(width: 40, height: 40)
+                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.subheadline.weight(.semibold))
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 6)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("Configure")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.left")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 28, height: 40)
             }
             .padding(.horizontal, 12)
-            .frame(minHeight: 64)
+            .frame(minHeight: 72)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(detail)")
+        .accessibilityHint("Opens \(settingsTitle(settings))")
         .background(
-            (activeSourceSettings == settings || canvasSource(for: settings).map { $0 == selectedCanvasSource } == true)
-                ? Color.accentColor.opacity(0.12)
-                : Color.primary.opacity(0.045),
+            backgroundColor,
             in: RoundedRectangle(cornerRadius: 11, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(
-                    activeSourceSettings == settings ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.07),
-                    lineWidth: 1
-                )
+                .stroke(strokeColor, lineWidth: 1)
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 8)
         .popover(
-            isPresented: Binding(
-                get: { activeSourceSettings == settings },
-                set: { if !$0 { activeSourceSettings = nil } }
-            ),
+            isPresented: isPresented,
             arrowEdge: .trailing
         ) {
-            sourceSettingsPanel(settings)
-                .frame(width: 330)
-                .padding(18)
+            ScrollView {
+                sourceSettingsPanel(settings)
+                    .padding(18)
+            }
+            .frame(width: 360)
+            .frame(maxHeight: 620)
         }
     }
 
@@ -2801,6 +2809,7 @@ private struct LiveProgramPreview: View {
 private struct SceneSwitcherBar: View {
     let scenes: [StudioScenePreset]
     let selectedSceneID: UUID?
+    let isModified: Bool
     let isLive: Bool
     let canManage: Bool
     let incompatibility: (StudioScenePreset) -> StudioSceneLiveIncompatibility?
@@ -2839,13 +2848,18 @@ private struct SceneSwitcherBar: View {
 
             if canManage, !scenes.isEmpty {
                 Button(action: onSave) {
-                    Label("Save", systemImage: selectedSceneID == nil ? "square.and.arrow.down" : "arrow.triangle.2.circlepath")
+                    Label(
+                        selectedSceneID == nil ? "Save" : (isModified ? "Update" : "Saved"),
+                        systemImage: selectedSceneID == nil
+                            ? "square.and.arrow.down"
+                            : (isModified ? "arrow.triangle.2.circlepath" : "checkmark")
+                    )
                 }
                 .labelStyle(.titleAndIcon)
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .help(selectedSceneID == nil ? "Save current scene" : "Update selected scene")
-                .disabled(scenes.isEmpty && selectedSceneID != nil)
+                .disabled(selectedSceneID != nil && !isModified)
 
                 Button(action: onCreate) {
                     Label("New", systemImage: "plus")
@@ -2895,8 +2909,15 @@ private struct SceneSwitcherBar: View {
             HStack(spacing: 7) {
                 if scene.id == selectedSceneID, isLive {
                     Circle().fill(.red).frame(width: 7, height: 7)
+                } else if scene.id == selectedSceneID, isModified {
+                    Circle().fill(.orange).frame(width: 7, height: 7)
                 }
                 Text(scene.name).lineLimit(1)
+                if scene.id == selectedSceneID, isModified, !isLive {
+                    Text("Modified")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
                 if issue != nil {
                     Image(systemName: "lock.fill").font(.caption2)
                 }
@@ -2930,8 +2951,15 @@ private struct SceneSwitcherBar: View {
             }
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.16), value: selectedSceneID)
+        .animation(.easeOut(duration: 0.16), value: isModified)
         .help(sceneButtonHelp(scene, issue: issue, shortcutNumber: shortcutNumber))
         .accessibilityHint(issue?.message ?? "Switches to this saved scene")
+        .accessibilityValue(
+            scene.id == selectedSceneID && isModified
+                ? "Selected, modified"
+                : (scene.id == selectedSceneID ? "Selected" : "")
+        )
 
         if let shortcutNumber {
             button.keyboardShortcut(KeyEquivalent(Character(String(shortcutNumber))), modifiers: [.option])

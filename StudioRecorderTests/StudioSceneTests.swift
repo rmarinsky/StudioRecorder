@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class StudioSceneTests: XCTestCase {
+    func testSceneDetectsUnsavedLayoutChangesAfterValidation() {
+        let scene = StudioScenePreset(presentation: .default)
+        XCTAssertFalse(scene.isModified(comparedTo: .default))
+        XCTAssertFalse(scene.isModified(comparedTo: nil))
+
+        var changed = CapturePresentationSnapshot.default
+        changed.camera.width = 0.42
+        XCTAssertTrue(scene.isModified(comparedTo: changed))
+    }
+
     func testLibraryPersistsNamedScenesAndReplacesAnExistingScene() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "StudioSceneTests-\(UUID().uuidString)", directoryHint: .isDirectory)
