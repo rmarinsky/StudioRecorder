@@ -56,6 +56,16 @@ struct StudioRecorderRootView: View {
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
 
     private var snapshot: StudioRecorderSnapshot { model.snapshot }
+    private var sourceHealthSections: [LiveSourceHealthSection] {
+        var sections: [LiveSourceHealthSection] = []
+        if isLocalRecordingActive {
+            sections.append(.init(title: "Recording sources", snapshot: snapshot.sourceHealth))
+        }
+        if streaming.state.isActive {
+            sections.append(.init(title: "Streaming sources", snapshot: liveScene.sourceHealth))
+        }
+        return sections
+    }
 
     private var presentedRoot: some View {
         NavigationSplitView {
@@ -191,6 +201,7 @@ struct StudioRecorderRootView: View {
                 }
             }
             updateExternalPointerMonitor()
+            updateSourceHealthMonitoring()
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, _ in
@@ -209,6 +220,7 @@ struct StudioRecorderRootView: View {
             updateShortcutMonitor()
         }
         .onChange(of: isDeliveryActive) { _, isActive in
+            updateSourceHealthMonitoring()
             guard let presentation = snapshot.studioDraft?.presentation else { return }
             if isActive {
                 liveScene.beginProgramPresentation(presentation)
@@ -226,13 +238,17 @@ struct StudioRecorderRootView: View {
 
     private var preflightObservedRoot: some View {
         lifecycleRoot
-        .onChange(of: snapshot.studioDraft) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: snapshot.studioDraft) { _, _ in
+            invalidateStreamPreflight()
+            updateSourceHealthMonitoring()
+        }
         .onChange(of: deliveryMode) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.serverURL) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.streamKey) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.videoBitRate) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streaming.state) { _, state in
             updateExternalPointerMonitor()
+            updateSourceHealthMonitoring()
             guard !state.isActive else { return }
             if !isLocalRecordingActive { resetManualZoomIfNeeded() }
             streamingSceneContract = nil
@@ -250,6 +266,7 @@ struct StudioRecorderRootView: View {
             if !capturesCamera, selectedCanvasSource == .camera {
                 selectedCanvasSource = nil
             }
+            updateSourceHealthMonitoring()
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.availableCameras) { _, cameras in
@@ -263,6 +280,7 @@ struct StudioRecorderRootView: View {
         preflightObservedRoot
         .onDisappear {
             streaming.stop()
+            liveScene.monitorSourceHealth([])
             Task {
                 await liveScene.setStreamPipeline(nil, audio: nil)
                 await liveScene.stopCameraPreview()
@@ -618,7 +636,8 @@ struct StudioRecorderRootView: View {
                         selectedSceneID: selectedSceneID,
                         isModified: isSelectedSceneModified,
                         isLive: isDeliveryActive,
-                        canManage: !isDeliveryActive,
+                        canSwitch: canSwitchScenes,
+                        canManage: !isDeliveryActive && !isCaptureTransitioning,
                         incompatibility: { liveSceneContract?.incompatibility(for: $0.presentation) },
                         onSelect: applyScene,
                         onSave: saveCurrentScene,
@@ -752,6 +771,20 @@ struct StudioRecorderRootView: View {
                         }
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    }
+                    if isDeliveryActive {
+                        ForEach(sourceHealthSections) { section in
+                            if !section.snapshot.entries.isEmpty {
+                                LiveSourceHealthView(
+                                    title: section.title,
+                                    snapshot: section.snapshot,
+                                    displayNames: Dictionary(uniqueKeysWithValues: snapshot.availableDisplays.map {
+                                        (String($0.id), $0.title)
+                                    })
+                                )
+                            }
+                        }
+                            .frame(width: 286, alignment: .leading)
                     }
                     if deliveryMode.includesStreaming, streamConfiguration == nil {
                         Text("Add the YouTube RTMPS key in Settings → Streaming")
@@ -1092,6 +1125,14 @@ struct StudioRecorderRootView: View {
         snapshot.captureState == .recording || snapshot.captureState == .paused
     }
 
+    private var isCaptureTransitioning: Bool {
+        snapshot.captureState == .preparing || snapshot.captureState == .stopping
+    }
+
+    private var canSwitchScenes: Bool {
+        !snapshot.isCaptureCommandInFlight && !isCaptureTransitioning
+    }
+
     private var formattedRecordedDuration: String {
         let seconds = max(Int(snapshot.recordedDuration.rounded(.down)), 0)
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
@@ -1311,6 +1352,24 @@ struct StudioRecorderRootView: View {
         if health.measuredFrameRate > 0,
            health.measuredFrameRate < Double(health.targetFrameRate) * 0.80 { return .orange }
         return .secondary
+    }
+
+    private func updateSourceHealthMonitoring() {
+        guard streaming.state.isActive, let draft = snapshot.studioDraft else {
+            liveScene.monitorSourceHealth([])
+            return
+        }
+        guard let primarySelectedDisplayID else {
+            liveScene.monitorSourceHealth([])
+            return
+        }
+        var expected: Set<LiveSourceID> = [.screen(displayID: primarySelectedDisplayID)]
+        if draft.capturesCamera { expected.insert(.camera) }
+        if streaming.state.isActive {
+            if draft.capturesSystemAudio { expected.insert(.systemAudio) }
+            if draft.capturesMicrophone { expected.insert(.microphone) }
+        }
+        liveScene.monitorSourceHealth(expected)
     }
 
     private func toggleDelivery() {
@@ -1692,7 +1751,7 @@ private struct StudioInspector: View {
                     sourceSettingsButton(
                         .screens,
                         title: "Screens",
-                        detail: "\(selectedDisplayIDs.count) selected",
+                        detail: screenSourceSummary,
                         icon: "display.2"
                     )
                     sourceDivider
@@ -1707,7 +1766,8 @@ private struct StudioInspector: View {
                         .microphone,
                         title: "Microphone & audio",
                         detail: audioSourceSummary,
-                        icon: "waveform"
+                        icon: "waveform",
+                        showsWarning: microphoneSourceNeedsAttention
                     )
                 }
                 .background(Color.primary.opacity(0.035))
@@ -1856,12 +1916,12 @@ private struct StudioInspector: View {
         _ settings: SourceSettings,
         title: String,
         detail: String,
-        icon: String
+        icon: String,
+        showsWarning: Bool = false
     ) -> some View {
         let isActive = activeSourceSettings == settings
         let isCanvasSelected = canvasSource(for: settings).map { $0 == selectedCanvasSource } ?? false
-        let isHighlighted = isActive || isCanvasSelected
-        let backgroundColor = isHighlighted ? Color.accentColor.opacity(0.13) : Color.clear
+        let backgroundColor = isActive ? Color.accentColor.opacity(0.13) : Color.clear
         let isPresented = Binding(
             get: { activeSourceSettings == settings },
             set: { if !$0 { activeSourceSettings = nil } }
@@ -1881,18 +1941,26 @@ private struct StudioInspector: View {
             HStack(spacing: 11) {
                 Image(systemName: icon)
                     .font(.body.weight(.medium))
-                    .foregroundStyle(isHighlighted ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isActive ? Color.accentColor : (showsWarning ? Color.orange : Color.secondary))
                     .frame(width: 36, height: 36)
                     .background(
-                        isHighlighted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.055),
+                        isActive ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.055),
                         in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                     )
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.subheadline.weight(.semibold))
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(showsWarning ? Color.orange : Color.secondary)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 6)
-                Image(systemName: "slider.horizontal.3")
+                if isCanvasSelected {
+                    Text("Editing")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Image(systemName: isLocked ? "lock.fill" : "slider.horizontal.3")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
                     .frame(width: 32, height: 32)
@@ -1905,7 +1973,7 @@ private struct StudioInspector: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title), \(detail)")
-        .accessibilityHint("Opens \(settingsTitle(settings))")
+        .accessibilityHint(isLocked ? "View locked settings" : "Opens \(settingsTitle(settings))")
         .background(backgroundColor)
         .popover(
             isPresented: isPresented,
@@ -2012,10 +2080,33 @@ private struct StudioInspector: View {
         cameras.first { $0.id == selectedCameraID }?.name ?? "Camera enabled"
     }
 
+    private var screenSourceSummary: String {
+        let selected = displays.filter { selectedDisplayIDs.contains($0.id) }
+        return switch selected.count {
+        case 0: "Off"
+        case 1: selected[0].title
+        default: "\(selected.count) screens"
+        }
+    }
+
+    private var selectedMicrophoneName: String {
+        microphones.first { $0.id == microphoneDeviceID }?.name
+            ?? microphones.first { $0.isSystemDefault }?.name
+            ?? microphones.first?.name
+            ?? "Microphone unavailable"
+    }
+
+    private var microphoneSourceNeedsAttention: Bool {
+        guard capturesMicrophone else { return false }
+        if microphones.isEmpty { return true }
+        if case .savedDeviceMissing = microphoneFallback { return true }
+        return false
+    }
+
     private var audioSourceSummary: String {
         switch (capturesMicrophone, capturesSystemAudio) {
-        case (true, true): "Microphone + system audio"
-        case (true, false): "Microphone"
+        case (true, true): "\(selectedMicrophoneName) + system audio"
+        case (true, false): selectedMicrophoneName
         case (false, true): "System audio"
         case (false, false): "Off"
         }
@@ -2040,6 +2131,9 @@ private struct StudioInspector: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             if includesMirror {
+                Text("Appearance")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
                 Picker("Camera frame", selection: cameraAspectPresetBinding) {
                     ForEach(SourceAspectPreset.allCases) { preset in
                         Text(preset.label).tag(preset)
@@ -2050,43 +2144,55 @@ private struct StudioInspector: View {
                         Text(mode.label).tag(mode)
                     }
                 }
-                if [.person, .blur].contains(presentation.resolvedCameraBackground.mode) {
-                    Picker("Processing", selection: cameraBackgroundPerformanceBinding) {
-                        ForEach(CameraBackgroundPerformanceProfile.allCases) { profile in
-                            Text(profile.label).tag(profile)
+                if [.person, .blur, .greenScreen].contains(presentation.resolvedCameraBackground.mode) {
+                    DisclosureGroup("Background tuning") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            if [.person, .blur].contains(presentation.resolvedCameraBackground.mode) {
+                                Picker("Processing", selection: cameraBackgroundPerformanceBinding) {
+                                    ForEach(CameraBackgroundPerformanceProfile.allCases) { profile in
+                                        Text(profile.label).tag(profile)
+                                    }
+                                }
+                                Text(presentation.resolvedCameraBackground.resolvedPerformanceProfile.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                if presentation.resolvedCameraBackground.mode == .blur {
+                                    labeledSlider(
+                                        "Blur strength",
+                                        value: cameraBackgroundBlurBinding,
+                                        range: 4...80,
+                                        valueText: String(format: "%.0f", presentation.resolvedCameraBackground.resolvedBlurRadius)
+                                    )
+                                    Text("Blur keeps the detected person sharp and softens the room locally on this Mac.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Picker("Key color", selection: chromaKeyColorBinding) {
+                                    ForEach(ChromaKeyColor.allCases) { color in
+                                        Text(color.label).tag(color)
+                                    }
+                                }
+                                labeledSlider("Tolerance", value: chromaToleranceBinding, range: 0.02...0.8)
+                                labeledSlider("Edge softness", value: chromaSoftnessBinding, range: 0.01...0.5)
+                                labeledSlider("Spill suppression", value: chromaSpillBinding, range: 0...1)
+                                Text("Green Screen preserves foreground objects such as a microphone when they are not the key color.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.top, 6)
                     }
-                    Text(presentation.resolvedCameraBackground.resolvedPerformanceProfile.detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if presentation.resolvedCameraBackground.mode == .blur {
-                        labeledSlider(
-                            "Blur strength",
-                            value: cameraBackgroundBlurBinding,
-                            range: 4...80,
-                            valueText: String(format: "%.0f", presentation.resolvedCameraBackground.resolvedBlurRadius)
-                        )
-                        Text("Blur keeps the detected person sharp and softens the room locally on this Mac.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Person is private and local, but it keeps the person—not a separate microphone or stand.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if presentation.resolvedCameraBackground.mode == .greenScreen {
-                    Picker("Key color", selection: chromaKeyColorBinding) {
-                        ForEach(ChromaKeyColor.allCases) { color in
-                            Text(color.label).tag(color)
-                        }
-                    }
-                    labeledSlider("Tolerance", value: chromaToleranceBinding, range: 0.02...0.8)
-                    labeledSlider("Edge softness", value: chromaSoftnessBinding, range: 0.01...0.5)
-                    labeledSlider("Spill suppression", value: chromaSpillBinding, range: 0...1)
-                    Text("Green Screen preserves foreground objects such as a microphone when they are not the key color.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    .font(.subheadline)
                 }
+                Divider().padding(.vertical, 2)
+                Text("Placement")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
             Picker("Shape", selection: shapeBinding(for: placement)) {
                 ForEach(SourceShape.allCases) { shape in
@@ -2875,6 +2981,7 @@ private struct SceneSwitcherBar: View {
     let selectedSceneID: UUID?
     let isModified: Bool
     let isLive: Bool
+    let canSwitch: Bool
     let canManage: Bool
     let incompatibility: (StudioScenePreset) -> StudioSceneLiveIncompatibility?
     let onSelect: (StudioScenePreset) -> Void
@@ -3027,8 +3134,9 @@ private struct SceneSwitcherBar: View {
         .buttonStyle(.plain)
         .animation(.easeOut(duration: 0.16), value: selectedSceneID)
         .animation(.easeOut(duration: 0.16), value: isModified)
+        .disabled(issue != nil || !canSwitch)
         .help(sceneButtonHelp(scene, issue: issue, shortcutNumber: shortcutNumber))
-        .accessibilityHint(issue?.message ?? "Switches to this saved scene")
+        .accessibilityHint(sceneButtonHelp(scene, issue: issue, shortcutNumber: shortcutNumber))
         .accessibilityValue(
             scene.id == selectedSceneID && isModified
                 ? "Selected, modified"
@@ -3047,9 +3155,97 @@ private struct SceneSwitcherBar: View {
         issue: StudioSceneLiveIncompatibility?,
         shortcutNumber: Int?
     ) -> String {
+        guard canSwitch else { return "Scene switching will be available when capture finishes starting." }
         if let issue { return issue.message }
         guard let shortcutNumber else { return "Switch to \(scene.name)" }
         return "Switch to \(scene.name) (⌥\(shortcutNumber))"
+    }
+}
+
+private struct LiveSourceHealthSection: Identifiable {
+    let title: String
+    let snapshot: LiveSourceHealthSnapshot
+
+    var id: String { title }
+}
+
+private struct LiveSourceHealthView: View {
+    let title: String
+    let snapshot: LiveSourceHealthSnapshot
+    let displayNames: [String: String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 4)
+                Text(snapshot.hasStalledSources ? "Needs attention" : statusLabel)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(snapshot.hasStalledSources ? Color.orange : Color.secondary)
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 86), spacing: 6)],
+                alignment: .leading,
+                spacing: 4
+            ) {
+                ForEach(snapshot.entries) { entry in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(color(for: entry.state))
+                            .frame(width: 6, height: 6)
+                        Image(systemName: entry.source.systemImage)
+                        Text(
+                            entry.state == .recovered
+                                ? "\(sourceLabel(entry.source)) recovered"
+                                : sourceLabel(entry.source)
+                        )
+                            .lineLimit(1)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(entry.state == .stalled ? Color.orange : Color.secondary)
+                    .accessibilityLabel("\(sourceLabel(entry.source)), \(label(for: entry.state))")
+                }
+            }
+            if snapshot.hasStalledSources {
+                Text("No new samples from \(snapshot.stalledSources.map(sourceLabel).joined(separator: ", ")). Check the source while capture continues.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 9)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var statusLabel: String {
+        if snapshot.entries.contains(where: { $0.state == .recovered }) { return "Recovered" }
+        return snapshot.entries.contains { $0.state == .waiting } ? "Starting…" : "Receiving"
+    }
+
+    private func sourceLabel(_ source: LiveSourceID) -> String {
+        guard source.category == .screen,
+              let discriminator = source.discriminator else { return source.label }
+        return displayNames[discriminator] ?? source.label
+    }
+
+    private func color(for state: LiveSourceHealthState) -> Color {
+        switch state {
+        case .waiting: .secondary
+        case .active: .green
+        case .stalled: .orange
+        case .recovered: .green
+        }
+    }
+
+    private func label(for state: LiveSourceHealthState) -> String {
+        switch state {
+        case .waiting: "starting"
+        case .active: "receiving"
+        case .stalled: "stalled"
+        case .recovered: "recovered"
+        }
     }
 }
 

@@ -253,6 +253,7 @@ struct StudioRecorderSnapshot: Equatable {
     var activeCaptureRequest: CaptureRequest?
     var recordedDuration: TimeInterval = 0
     var finalizationWarning: String?
+    var sourceHealth = LiveSourceHealthSnapshot.empty
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
@@ -874,6 +875,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
         snapshot.recordedDuration = coordinator.recordedDuration
+        snapshot.sourceHealth = coordinator.sourceHealth
 
         if snapshot.studioDraft != nil {
             snapshot.studioDraft?.reconcile(

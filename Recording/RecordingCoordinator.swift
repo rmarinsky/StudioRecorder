@@ -120,6 +120,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
     @Published private(set) var finalizationWarning: String?
+    @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
 
     private struct Capture {
         let displayID: UInt32
@@ -135,6 +136,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     nonisolated private let audioStemSession = RecordingAudioStemSessionState()
     private var audioStemFailureReported = false
     private var durationTask: Task<Void, Never>?
+    private var sourceHealthTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var studioSceneTimeline: StudioSceneTimeline?
     private var safeShortcutTimeline = SafeShortcutTimeline()
@@ -147,6 +149,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     nonisolated private let cursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
+    nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
+    nonisolated(unsafe) private var healthSourceByStreamID: [ObjectIdentifier: LiveSourceID] = [:]
+    nonisolated private let healthSourceLock = NSLock()
     nonisolated private let cursorTelemetryQueue = DispatchQueue(
         label: "ua.com.rmarinsky.studiorecorder.cursor-frames",
         qos: .userInteractive
@@ -157,6 +162,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var isTearingDown = false
     private var terminalFailure: String?
     private var configuredProjectDirectories: Set<URL> = []
+    private var lastCameraHealthDuration: TimeInterval = 0
 
     override init() {
         super.init()
@@ -259,6 +265,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 state = .failed("A selected display is no longer available. Refresh sources before recording.")
                 return
             }
+            var expectedSources = Set(selected.map { LiveSourceID.screen(displayID: $0.displayID) })
+            if request.camera != nil { expectedSources.insert(.camera) }
+            if request.audio.capturesSystemAudio { expectedSources.insert(.systemAudio) }
+            if request.audio.capturesMicrophone { expectedSources.insert(.microphone) }
+            sourceHealthMonitor.configure(
+                expected: expectedSources,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            sourceHealth = sourceHealthMonitor.snapshot(at: ProcessInfo.processInfo.systemUptime)
+            lastCameraHealthDuration = 0
 
             let project = try projectStore.createProject(request: request)
             activeProject = project
@@ -300,13 +316,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
                 try stream.addRecordingOutput(output)
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
+                healthSourceLock.withLock {
+                    healthSourceByStreamID[ObjectIdentifier(stream)] = .screen(displayID: display.displayID)
+                }
                 let capturesAudioStems = isPrimaryAudioDisplay
                     && audioStemSession.hasWriter(projectID: project.id)
                 if capturesAudioStems {
                     audioStemSession.bind(streamID: ObjectIdentifier(stream), projectID: project.id)
-                }
-                if needsCursorTelemetry(request) || capturesAudioStems {
-                    try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
                 }
                 if capturesAudioStems && request.audio.capturesSystemAudio {
                     try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: cursorTelemetryQueue)
@@ -362,6 +379,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 recordingStartedHostTime = Self.currentHostTime
             }
             startDurationTimer()
+            startSourceHealthTimer()
             state = .recording
         } catch {
             await beginInterruptedTeardown(reason: error.localizedDescription)
@@ -544,6 +562,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     recordingStartedAt: recordingStartedAt,
                     at: ProcessInfo.processInfo.systemUptime
                 )
+            }
+        }
+    }
+
+    private func startSourceHealthTimer() {
+        sourceHealthTask?.cancel()
+        sourceHealthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if let cameraDuration = await cameraRecorder?.recordedDuration(),
+                   cameraDuration > lastCameraHealthDuration + 0.001 {
+                    lastCameraHealthDuration = cameraDuration
+                    sourceHealthMonitor.record(.camera, at: now)
+                }
+                sourceHealth = sourceHealthMonitor.snapshot(at: now)
             }
         }
     }
@@ -820,6 +855,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func clearCaptureState() {
+        sourceHealthTask?.cancel()
+        sourceHealthTask = nil
+        sourceHealthMonitor.configure(expected: [], at: ProcessInfo.processInfo.systemUptime)
+        sourceHealth = .empty
+        healthSourceLock.withLock { healthSourceByStreamID.removeAll() }
+        lastCameraHealthDuration = 0
         stopCursorTelemetry()
         cursorSynchronizer.reset()
         captures.removeAll()
@@ -930,29 +971,43 @@ extension RecordingCoordinator: SCStreamOutput {
         do {
             switch outputType {
             case .screen:
-                guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                guard CMSampleBufferIsValid(sampleBuffer),
+                      CMSampleBufferDataIsReady(sampleBuffer),
+                      let attachments = CMSampleBufferGetSampleAttachmentsArray(
                     sampleBuffer,
                     createIfNecessary: false
                 ) as? [[SCStreamFrameInfo: Any]],
                 let frameInfo = attachments.first,
-                let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value else {
+                let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value,
+                let statusRawValue = (frameInfo[.status] as? NSNumber)?.intValue,
+                let status = SCFrameStatus(rawValue: statusRawValue),
+                status == .complete || status == .idle else {
                     return
                 }
+                if let source = healthSourceLock.withLock({ healthSourceByStreamID[streamID] }) {
+                    sourceHealthMonitor.record(source, at: ProcessInfo.processInfo.systemUptime)
+                }
                 if let writer = audioStemSession.writer(for: streamID) {
-                    guard let statusRawValue = (frameInfo[.status] as? NSNumber)?.intValue,
-                          SCFrameStatus(rawValue: statusRawValue) == .complete else {
-                        return
+                    if status == .complete {
+                        _ = try writer.establishTimeline(at: sampleBuffer.presentationTimeStamp)
                     }
-                    _ = try writer.establishTimeline(at: sampleBuffer.presentationTimeStamp)
                 }
                 cursorSynchronizer.alignFrame(
                     streamID: ObjectIdentifier(stream),
                     hostTime: displayTime
                 )
             case .audio:
-                try audioStemSession.writer(for: streamID)?.append(sampleBuffer, source: .systemAudio)
+                guard CMSampleBufferIsValid(sampleBuffer),
+                      CMSampleBufferDataIsReady(sampleBuffer),
+                      let writer = audioStemSession.writer(for: streamID) else { return }
+                try writer.append(sampleBuffer, source: .systemAudio)
+                sourceHealthMonitor.record(.systemAudio, at: ProcessInfo.processInfo.systemUptime)
             case .microphone:
-                try audioStemSession.writer(for: streamID)?.append(sampleBuffer, source: .microphone)
+                guard CMSampleBufferIsValid(sampleBuffer),
+                      CMSampleBufferDataIsReady(sampleBuffer),
+                      let writer = audioStemSession.writer(for: streamID) else { return }
+                try writer.append(sampleBuffer, source: .microphone)
+                sourceHealthMonitor.record(.microphone, at: ProcessInfo.processInfo.systemUptime)
             @unknown default:
                 break
             }

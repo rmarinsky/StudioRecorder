@@ -125,6 +125,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var cameraImage: NSImage?
     @Published private(set) var isCameraFrameReady = false
     @Published private(set) var screenPreviewError: String?
+    @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
 
     var screenImage: NSImage? { programPreviewFrame.image }
     var programPresentation: CapturePresentationSnapshot? { programPreviewFrame.presentation }
@@ -148,11 +149,16 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated(unsafe) private var sceneSwitchResolver: StudioSceneSwitchResolver?
     nonisolated private let sceneSwitchResolverLock = NSLock()
     nonisolated private let screenPipelineIngress = LatestAsyncTaskQueue()
+    nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
+    nonisolated(unsafe) private var screenHealthSourceByStreamID: [ObjectIdentifier: LiveSourceID] = [:]
+    nonisolated private let screenHealthSourceLock = NSLock()
     nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
     private var streamAudioConfiguration: LiveStreamAudioConfiguration?
     private var cursorTelemetryTask: Task<Void, Never>?
+    private var sourceHealthTask: Task<Void, Never>?
+    private var expectedHealthSources: Set<LiveSourceID> = []
     private var screenStream: SCStream?
     private var previewedDisplay: SCDisplay?
     private var previewedDisplayID: UInt32?
@@ -216,6 +222,9 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 streamID: ObjectIdentifier(stream),
                 space: CursorCaptureSpace(displayID: display.displayID, visibleFrame: display.frame)
             )
+            screenHealthSourceLock.withLock {
+                screenHealthSourceByStreamID[ObjectIdentifier(stream)] = .screen(displayID: display.displayID)
+            }
             startCursorTelemetry()
             try await stream.startCapture()
             screenStream = stream
@@ -231,6 +240,11 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
 
     func stopScreenPreview(preservingLastFrame: Bool = false) async {
         let stream = screenStream
+        if let stream {
+            screenHealthSourceLock.withLock {
+                screenHealthSourceByStreamID[ObjectIdentifier(stream)] = nil
+            }
+        }
         screenStream = nil
         previewedDisplay = nil
         previewedDisplayID = nil
@@ -272,6 +286,28 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         guard let displayID = previewedDisplayID else { return }
         await stopScreenPreview(preservingLastFrame: true)
         await startScreenPreview(for: displayID, preservingLastFrame: true)
+    }
+
+    func monitorSourceHealth(_ expectedSources: Set<LiveSourceID>) {
+        guard expectedHealthSources != expectedSources else { return }
+        expectedHealthSources = expectedSources
+        sourceHealthTask?.cancel()
+        sourceHealthTask = nil
+        sourceHealthMonitor.configure(
+            expected: expectedSources,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        sourceHealth = sourceHealthMonitor.snapshot(at: ProcessInfo.processInfo.systemUptime)
+        guard !expectedSources.isEmpty else { return }
+        sourceHealthTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled else { return }
+                self.sourceHealth = self.sourceHealthMonitor.snapshot(
+                    at: ProcessInfo.processInfo.systemUptime
+                )
+            }
+        }
     }
 
     func beginProgramPresentation(_ presentation: CapturePresentationSnapshot) {
@@ -546,6 +582,7 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
             return true
         }
         guard acceptedFrame else { return }
+        sourceHealthMonitor.record(.camera, at: ProcessInfo.processInfo.systemUptime)
         Task { @MainActor [weak self] in self?.markCameraFrameReady(for: outputID) }
         if let pipeline = streamPipelineLock.withLock({ streamPipeline }) {
             let box = SendableSampleBuffer(value: sampleBuffer)
@@ -594,6 +631,26 @@ extension LiveSceneCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        let healthSource: LiveSourceID? = switch outputType {
+        case .screen: screenHealthSourceLock.withLock {
+            screenHealthSourceByStreamID[ObjectIdentifier(stream)]
+        }
+        case .audio: .systemAudio
+        case .microphone: .microphone
+        @unknown default: nil
+        }
+        let screenFrameStatus = outputType == .screen ? frameStatus(in: sampleBuffer) : nil
+        let isAcceptedHealthSample = switch outputType {
+        case .screen: screenFrameStatus == .complete || screenFrameStatus == .idle
+        case .audio, .microphone: true
+        @unknown default: false
+        }
+        if let healthSource,
+           isAcceptedHealthSample,
+           CMSampleBufferIsValid(sampleBuffer),
+           CMSampleBufferDataIsReady(sampleBuffer) {
+            sourceHealthMonitor.record(healthSource, at: ProcessInfo.processInfo.systemUptime)
+        }
         let displayHostTime = outputType == .screen ? frameDisplayTime(in: sampleBuffer) : nil
         let framePresentation = outputType == .screen
             ? resolveProgramPresentation(forFrameHostTime: displayHostTime)
@@ -669,6 +726,16 @@ extension LiveSceneCoordinator: SCStreamOutput {
         ) as? [[SCStreamFrameInfo: Any]],
         let frameInfo = attachments.first else { return nil }
         return (frameInfo[.displayTime] as? NSNumber)?.uint64Value
+    }
+
+    nonisolated private func frameStatus(in sampleBuffer: CMSampleBuffer) -> SCFrameStatus? {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+        let frameInfo = attachments.first,
+        let rawValue = (frameInfo[.status] as? NSNumber)?.intValue else { return nil }
+        return SCFrameStatus(rawValue: rawValue)
     }
 }
 

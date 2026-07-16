@@ -81,6 +81,19 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
         }
     }
 
+    func recordedDuration() async -> TimeInterval? {
+        await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let output = self?.output, output.isRecording else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let seconds = output.recordedDuration.seconds
+                continuation.resume(returning: seconds.isFinite ? max(seconds, 0) : nil)
+            }
+        }
+    }
+
     private func prepareAndStart(
         deviceID: String,
         outputURL: URL,
