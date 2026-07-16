@@ -1677,31 +1677,40 @@ private struct StudioInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 inspectorHeader("Sources")
-                sourceSettingsButton(
-                    .screens,
-                    title: "Screens",
-                    detail: "\(selectedDisplayIDs.count) selected",
-                    icon: "display.2"
-                )
-                sourceSettingsButton(
-                    .camera,
-                    title: "Camera",
-                    detail: capturesCamera ? selectedCameraName : "Off",
-                    icon: "video"
-                )
-                sourceSettingsButton(
-                    .microphone,
-                    title: "Microphone & audio",
-                    detail: audioSourceSummary,
-                    icon: "waveform"
-                )
+                VStack(spacing: 0) {
+                    sourceSettingsButton(
+                        .screens,
+                        title: "Screens",
+                        detail: "\(selectedDisplayIDs.count) selected",
+                        icon: "display.2"
+                    )
+                    sourceDivider
+                    sourceSettingsButton(
+                        .camera,
+                        title: "Camera",
+                        detail: capturesCamera ? selectedCameraName : "Off",
+                        icon: "video"
+                    )
+                    sourceDivider
+                    sourceSettingsButton(
+                        .microphone,
+                        title: "Microphone & audio",
+                        detail: audioSourceSummary,
+                        icon: "waveform"
+                    )
+                }
+                .background(Color.primary.opacity(0.035))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.primary.opacity(0.075), lineWidth: 1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
 
                 Divider().padding(.top, 4)
-                inspectorHeader("Scene")
+                inspectorHeader("Canvas & Framing")
                 VStack(alignment: .leading, spacing: 10) {
-                    TextField("Scene name", text: sceneNameBinding)
-                        .textFieldStyle(.roundedBorder)
-
                     Picker("Output", selection: canvasPresetBinding) {
                         ForEach(CaptureCanvasPreset.allCases) { preset in
                             Text(preset.label).tag(Optional(preset))
@@ -1741,7 +1750,7 @@ private struct StudioInspector: View {
                         }
                     }
 
-                    Text("Canvas and source placement are saved with the take; screen and camera raw tracks remain independent.")
+                    Text("Canvas and framing are saved in every scene; source placement stays independently editable.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -1840,12 +1849,8 @@ private struct StudioInspector: View {
     ) -> some View {
         let isActive = activeSourceSettings == settings
         let isCanvasSelected = canvasSource(for: settings).map { $0 == selectedCanvasSource } ?? false
-        let backgroundColor = isActive || isCanvasSelected
-            ? Color.accentColor.opacity(0.12)
-            : Color.primary.opacity(0.045)
-        let strokeColor = isActive
-            ? Color.accentColor.opacity(0.45)
-            : Color.primary.opacity(0.07)
+        let isHighlighted = isActive || isCanvasSelected
+        let backgroundColor = isHighlighted ? Color.accentColor.opacity(0.13) : Color.clear
         let isPresented = Binding(
             get: { activeSourceSettings == settings },
             set: { if !$0 { activeSourceSettings = nil } }
@@ -1865,36 +1870,32 @@ private struct StudioInspector: View {
             HStack(spacing: 11) {
                 Image(systemName: icon)
                     .font(.body.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 40, height: 40)
-                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
+                    .foregroundStyle(isHighlighted ? Color.accentColor : Color.secondary)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        isHighlighted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.055),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.subheadline.weight(.semibold))
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 6)
-                Image(systemName: "chevron.left")
+                Image(systemName: "slider.horizontal.3")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 28, height: 40)
+                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
             }
             .padding(.horizontal, 12)
-            .frame(minHeight: 72)
+            .frame(minHeight: 68)
+            .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title), \(detail)")
         .accessibilityHint("Opens \(settingsTitle(settings))")
-        .background(
-            backgroundColor,
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(strokeColor, lineWidth: 1)
-        }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8)
+        .background(backgroundColor)
         .popover(
             isPresented: isPresented,
             arrowEdge: .trailing
@@ -1906,6 +1907,10 @@ private struct StudioInspector: View {
             .frame(width: 360)
             .frame(maxHeight: 620)
         }
+    }
+
+    private var sourceDivider: some View {
+        Divider().padding(.leading, 59)
     }
 
     private func canvasSource(for settings: SourceSettings) -> StudioCanvasSource? {
@@ -2144,13 +2149,6 @@ private struct StudioInspector: View {
                     )
                 }
             }
-        )
-    }
-
-    private var sceneNameBinding: Binding<String> {
-        Binding(
-            get: { presentation.name ?? presentation.resolvedName },
-            set: { presentation.name = String($0.prefix(80)) }
         )
     }
 
@@ -2858,11 +2856,10 @@ private struct SceneSwitcherBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "rectangle.3.group.fill")
-                .font(.body.weight(.medium))
+            Label("Scenes", systemImage: "rectangle.3.group.fill")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 28, height: 28)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                .labelStyle(.titleAndIcon)
                 .accessibilityLabel("Scenes")
 
             if scenes.isEmpty {
@@ -2919,7 +2916,7 @@ private struct SceneSwitcherBar: View {
                     .controlSize(.regular)
                 }
             } else {
-                Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
+                Label("ON AIR", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.red)
                     .padding(.horizontal, 9)
