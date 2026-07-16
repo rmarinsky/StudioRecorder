@@ -189,7 +189,99 @@ final class LiveProgramArchiveTests: XCTestCase {
         }
     }
 
-    func testMovieWriterKeepsSystemAndMonoMicrophoneAsSeparateAudioTracks() async throws {
+    func testMovieWriterFlattensSystemAndMonoMicrophoneIntoOnePlayableTrack() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "LiveProgramArchiveTests-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appending(path: "program.mov")
+        let writer = try LiveProgramMovieWriter(configuration: .init(
+            outputURL: outputURL,
+            canvasSize: CGSize(width: 320, height: 180),
+            frameRate: 30,
+            videoBitRate: 1_000_000,
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        ))
+
+        let liveStart = CMTime(seconds: 10, preferredTimescale: 600)
+        for frame in 0..<7 {
+            try await writer.appendVideo(SendableSampleBuffer(
+                value: try videoSampleBuffer(frame: frame, presentationTimeOffset: liveStart)
+            ))
+        }
+        try await writer.appendAudio(
+            SendableSampleBuffer(value: try audioSampleBuffer(
+                sampleRate: 48_000,
+                channels: 2,
+                frameCount: 9_600,
+                presentationTime: liveStart,
+                toneFrequency: 440,
+                activeChannels: [0]
+            )),
+            track: 0
+        )
+        try await writer.appendAudio(
+            SendableSampleBuffer(value: try audioSampleBuffer(
+                sampleRate: 44_100,
+                channels: 1,
+                frameCount: 4_410,
+                presentationTime: CMTimeAdd(
+                    liveStart,
+                    CMTime(seconds: 0.1, preferredTimescale: 44_100)
+                ),
+                toneFrequency: 880,
+                activeChannels: [0]
+            )),
+            track: 1
+        )
+        _ = try await writer.finish()
+
+        let asset = AVURLAsset(url: outputURL)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 1)
+        let formatDescriptions = try await audioTracks[0].load(.formatDescriptions)
+        let description = try XCTUnwrap(formatDescriptions.first)
+        let streamDescription = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(description))
+        XCTAssertEqual(streamDescription.pointee.mSampleRate, 48_000)
+        XCTAssertEqual(streamDescription.pointee.mChannelsPerFrame, 2)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertLessThan(duration, 1)
+
+        let decoded = try decodedAudio(at: outputURL)
+        XCTAssertEqual(decoded.channels.count, 2)
+        XCTAssertGreaterThan(spectralMagnitude(decoded.channels[0], sampleRate: decoded.sampleRate, frequency: 440), 0.01)
+        XCTAssertGreaterThan(spectralMagnitude(decoded.channels[0], sampleRate: decoded.sampleRate, frequency: 880), 0.01)
+        XCTAssertGreaterThan(spectralMagnitude(decoded.channels[1], sampleRate: decoded.sampleRate, frequency: 880), 0.01)
+        let windowLength = min(Int(decoded.sampleRate * 0.06), decoded.channels[1].count / 3)
+        let earlyMicrophone = Array(decoded.channels[1].prefix(windowLength))
+        let lateMicrophone = Array(decoded.channels[1].suffix(windowLength))
+        XCTAssertLessThan(
+            spectralMagnitude(earlyMicrophone, sampleRate: decoded.sampleRate, frequency: 880),
+            0.005
+        )
+        XCTAssertGreaterThan(
+            spectralMagnitude(lateMicrophone, sampleRate: decoded.sampleRate, frequency: 880),
+            0.01
+        )
+
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let videoTrack = try XCTUnwrap(videoTracks.first)
+        let videoDescriptions = try await videoTrack.load(.formatDescriptions)
+        XCTAssertEqual(
+            videoDescriptions.first.map(CMFormatDescriptionGetMediaSubType),
+            kCMVideoCodecType_H264
+        )
+        let samples = try compressedVideoSamples(asset: asset, track: videoTrack)
+        XCTAssertGreaterThanOrEqual(samples.count, 7)
+        XCTAssertEqual(samples.first?.presentationTimeStamp.seconds ?? -1, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(samples.last?.presentationTimeStamp.seconds ?? -1, 0)
+        XCTAssertLessThanOrEqual(samples.last?.presentationTimeStamp.seconds ?? .infinity, duration)
+    }
+
+    func testMovieWriterPreservesAPlayableSilentTrackWhenRequestedAudioIsQuiet() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(
             path: "LiveProgramArchiveTests-\(UUID().uuidString)",
             directoryHint: .isDirectory
@@ -207,20 +299,11 @@ final class LiveProgramArchiveTests: XCTestCase {
         ))
 
         try await writer.appendVideo(SendableSampleBuffer(value: try videoSampleBuffer(frame: 0)))
-        try await writer.appendAudio(
-            SendableSampleBuffer(value: try audioSampleBuffer(sampleRate: 48_000, channels: 2)),
-            track: 0
-        )
-        try await writer.appendAudio(
-            SendableSampleBuffer(value: try audioSampleBuffer(sampleRate: 44_100, channels: 1)),
-            track: 1
-        )
         try await writer.appendVideo(SendableSampleBuffer(value: try videoSampleBuffer(frame: 1)))
         _ = try await writer.finish()
 
-        let asset = AVURLAsset(url: outputURL)
-        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        XCTAssertEqual(audioTracks.count, 2)
+        let audioTracks = try await AVURLAsset(url: outputURL).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 1)
     }
 
     func testArchiveSessionFinalizesWriterAndCompletionExactlyOnce() async {
@@ -261,7 +344,8 @@ final class LiveProgramArchiveTests: XCTestCase {
 
     private func videoSampleBuffer(
         frame: Int,
-        size: CGSize = CGSize(width: 320, height: 180)
+        size: CGSize = CGSize(width: 320, height: 180),
+        presentationTimeOffset: CMTime = .zero
     ) throws -> CMSampleBuffer {
         var pixelBuffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
@@ -292,7 +376,10 @@ final class LiveProgramArchiveTests: XCTestCase {
         }
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: 30),
-            presentationTimeStamp: CMTime(value: CMTimeValue(frame), timescale: 30),
+            presentationTimeStamp: CMTimeAdd(
+                presentationTimeOffset,
+                CMTime(value: CMTimeValue(frame), timescale: 30)
+            ),
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -313,7 +400,10 @@ final class LiveProgramArchiveTests: XCTestCase {
         sampleRate: Double,
         channels: AVAudioChannelCount,
         frameCount: AVAudioFrameCount = 1_024,
-        presentationTime: CMTime = .zero
+        presentationTime: CMTime = .zero,
+        toneFrequency: Double? = nil,
+        toneAmplitude: Float = 0.2,
+        activeChannels: Set<Int> = []
     ) throws -> CMSampleBuffer {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -325,6 +415,15 @@ final class LiveProgramArchiveTests: XCTestCase {
             throw NSError(domain: "LiveProgramArchiveTests", code: 4)
         }
         pcmBuffer.frameLength = frameCount
+        if let toneFrequency, let channelData = pcmBuffer.floatChannelData {
+            for channel in 0..<Int(channels) where activeChannels.isEmpty || activeChannels.contains(channel) {
+                for frame in 0..<Int(frameCount) {
+                    channelData[channel][frame] = toneAmplitude * Float(
+                        sin(2 * Double.pi * toneFrequency * Double(frame) / sampleRate)
+                    )
+                }
+            }
+        }
 
         var formatDescription: CMAudioFormatDescription?
         guard CMAudioFormatDescriptionCreate(
@@ -373,6 +472,60 @@ final class LiveProgramArchiveTests: XCTestCase {
             throw NSError(domain: "LiveProgramArchiveTests", code: 7)
         }
         return sampleBuffer
+    }
+
+    private func decodedAudio(at url: URL) throws -> (sampleRate: Double, channels: [[Float]]) {
+        let file = try AVAudioFile(
+            forReading: url,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        let frameCapacity = AVAudioFrameCount(max(file.length, 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: frameCapacity
+        ))
+        try file.read(into: buffer)
+        let data = try XCTUnwrap(buffer.floatChannelData)
+        let frameLength = Int(buffer.frameLength)
+        let channels = (0..<Int(buffer.format.channelCount)).map { channel in
+            Array(UnsafeBufferPointer(start: data[channel], count: frameLength))
+        }
+        return (buffer.format.sampleRate, channels)
+    }
+
+    private func spectralMagnitude(
+        _ samples: [Float],
+        sampleRate: Double,
+        frequency: Double
+    ) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        var real = 0.0
+        var imaginary = 0.0
+        for (index, sample) in samples.enumerated() {
+            let phase = 2 * Double.pi * frequency * Double(index) / sampleRate
+            real += Double(sample) * cos(phase)
+            imaginary -= Double(sample) * sin(phase)
+        }
+        return 2 * hypot(real, imaginary) / Double(samples.count)
+    }
+
+    private func compressedVideoSamples(
+        asset: AVAsset,
+        track: AVAssetTrack
+    ) throws -> [CMSampleBuffer] {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        output.alwaysCopiesSampleData = false
+        try XCTSkipUnless(reader.canAdd(output), "Compressed video passthrough is unavailable.")
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var samples: [CMSampleBuffer] = []
+        while let sample = output.copyNextSampleBuffer() {
+            samples.append(sample)
+        }
+        XCTAssertEqual(reader.status, .completed)
+        return samples
     }
 }
 
