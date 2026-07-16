@@ -143,6 +143,11 @@ struct ProjectQuickEditorView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } else if !session.availableAudioSources.isEmpty {
+                    ForEach(session.availableAudioSources) { source in
+                        sourceAudioEditor(source, timeline: timeline)
+                        if source != session.availableAudioSources.last { Divider() }
+                    }
                 } else if let waveform = session.audioWaveform {
                     ProjectAudioWaveformView(
                         waveform: waveform,
@@ -155,6 +160,9 @@ struct ProjectQuickEditorView: View {
                 }
 
                 HStack(spacing: 10) {
+                    Text(session.availableAudioSources.isEmpty ? "Program" : "Master")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 72, alignment: .leading)
                     Button {
                         var next = session.audioAdjustment
                         next.isMuted.toggle()
@@ -167,7 +175,12 @@ struct ProjectQuickEditorView: View {
                     }
                     .buttonStyle(.bordered)
 
-                    Slider(value: audioGainBinding, in: 0...1, step: 0.05)
+                    Slider(
+                        value: audioGainBinding,
+                        in: 0...1,
+                        step: 0.05,
+                        onEditingChanged: audioEditingChanged
+                    )
                         .disabled(session.audioAdjustment.isMuted)
                         .accessibilityLabel("Program volume")
                     Text("\(Int((session.audioAdjustment.gain * 100).rounded()))%")
@@ -194,7 +207,12 @@ struct ProjectQuickEditorView: View {
                         .buttonStyle(.bordered)
                         .accessibilityLabel(adjustment.isMuted ? "Unmute selected segment" : "Mute selected segment")
 
-                        Slider(value: segmentAudioGainBinding(selectedSegmentID), in: 0...1, step: 0.05)
+                        Slider(
+                            value: segmentAudioGainBinding(selectedSegmentID),
+                            in: 0...1,
+                            step: 0.05,
+                            onEditingChanged: audioEditingChanged
+                        )
                             .disabled(adjustment.isMuted)
                             .accessibilityLabel("Selected segment volume")
                         Text("\(Int((adjustment.gain * 100).rounded()))%")
@@ -241,6 +259,70 @@ struct ProjectQuickEditorView: View {
                 session.updateAudioAdjustment(next)
             }
         )
+    }
+
+    private func sourceAudioEditor(
+        _ source: ProjectAudioSource,
+        timeline: ProjectEditTimeline
+    ) -> some View {
+        let adjustment = session.sourceAudioAdjustment(for: source)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Label(source.label, systemImage: source.icon)
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 112, alignment: .leading)
+                Button {
+                    var next = adjustment
+                    next.isMuted.toggle()
+                    session.updateSourceAudioAdjustment(next)
+                } label: {
+                    Image(systemName: adjustment.isMuted ? "speaker.slash.fill" : "speaker.wave.1.fill")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(adjustment.isMuted ? "Unmute \(source.label)" : "Mute \(source.label)")
+
+                Slider(
+                    value: sourceAudioGainBinding(source),
+                    in: 0...1,
+                    step: 0.05,
+                    onEditingChanged: audioEditingChanged
+                )
+                    .disabled(adjustment.isMuted)
+                    .accessibilityLabel("\(source.label) volume")
+                Text("\(Int((adjustment.gain * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .trailing)
+            }
+
+            if let waveform = session.sourceAudioWaveforms[source] {
+                ProjectAudioWaveformView(
+                    waveform: waveform,
+                    sourcePlayhead: timeline.sourceTime(at: session.playhead)
+                )
+            } else if let error = session.sourceAudioWaveformErrors[source] {
+                Text(error).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func sourceAudioGainBinding(_ source: ProjectAudioSource) -> Binding<Double> {
+        Binding(
+            get: { session.sourceAudioAdjustment(for: source).gain },
+            set: { gain in
+                var next = session.sourceAudioAdjustment(for: source)
+                next.gain = gain
+                session.updateSourceAudioAdjustment(next)
+            }
+        )
+    }
+
+    private func audioEditingChanged(_ isEditing: Bool) {
+        if isEditing {
+            session.beginAudioAdjustmentGesture()
+        } else {
+            session.endAudioAdjustmentGesture()
+        }
     }
 
     private func segmentAudioGainBinding(_ segmentID: UUID) -> Binding<Double> {

@@ -277,6 +277,30 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(reloaded.segmentAudioAdjustment(for: secondID).effectiveGain, 0)
     }
 
+    func testCurrentEditPersistsIndependentSourceAudioAdjustments() async throws {
+        let projectID = UUID()
+        var document = ProjectEditDocument(projectID: projectID, timelines: [])
+        document.replaceSourceAudioAdjustment(
+            ProjectAudioSourceAdjustment(source: .systemAudio, gain: 0.4)
+        )
+        document.replaceSourceAudioAdjustment(
+            ProjectAudioSourceAdjustment(source: .microphone, isMuted: true)
+        )
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(projectID.uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let store = ProjectEditStore()
+        try await store.save(document, in: rootURL)
+        let stored = try await store.load(from: rootURL, expectedProjectID: projectID)
+        let loaded = try XCTUnwrap(stored)
+
+        XCTAssertEqual(loaded.schemaVersion, 7)
+        XCTAssertEqual(loaded.sourceAudioAdjustment(for: .systemAudio).gain, 0.4, accuracy: 0.001)
+        XCTAssertEqual(loaded.sourceAudioAdjustment(for: .microphone).effectiveGain, 0)
+    }
+
     func testEditStoreRejectsDuplicateSegmentIDsAcrossTimelines() async throws {
         let projectID = UUID()
         let duplicateID = UUID()

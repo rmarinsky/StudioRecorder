@@ -113,6 +113,8 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let primaryAudioDisplayID: UInt32?
     var includesCursor = true
     var usesCompositedCursor = false
+    var capturesSystemAudio = false
+    var capturesMicrophone = false
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -299,6 +301,7 @@ enum RecordingProjectStoreError: LocalizedError {
     case missingMoviesDirectory
     case missingCaptureDestination
     case missingTrackDescriptor(displayID: UInt32)
+    case invalidAudioStemIndex
 
     var errorDescription: String? {
         switch self {
@@ -308,6 +311,8 @@ enum RecordingProjectStoreError: LocalizedError {
             "Studio Recorder could not resolve the project destination."
         case .missingTrackDescriptor(let displayID):
             "Studio Recorder could not prepare a raw track for display \(displayID)."
+        case .invalidAudioStemIndex:
+            "Studio Recorder could not persist the audio stem identity index."
         }
     }
 }
@@ -623,6 +628,13 @@ final class RecordingProjectStore {
         try write(timeline, to: sceneURL.appending(path: "layout.json"))
     }
 
+    func writeAudioStemIndex(_ index: ProjectAudioStemIndex, in project: RecordingProject) throws {
+        guard index.isValid else { throw RecordingProjectStoreError.invalidAudioStemIndex }
+        let url = project.rootURL.appending(path: ProjectAudioStemIndex.filename)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try write(index, to: url)
+    }
+
     func studioSceneTimeline(in project: RecordingProject) -> StudioSceneTimeline? {
         let url = project.rootURL.appending(path: "scene/layout.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
@@ -805,7 +817,9 @@ final class RecordingProjectStore {
                 primaryAudioDisplayID: manifest.captureRequest?.audio.primaryAudioDisplayID
                     ?? manifest.primaryAudioDisplayID,
                 includesCursor: manifest.captureRequest?.profile.includeCursor ?? true,
-                usesCompositedCursor: manifest.captureRequest?.profile.resolvedCursorRendering == .composited
+                usesCompositedCursor: manifest.captureRequest?.profile.resolvedCursorRendering == .composited,
+                capturesSystemAudio: manifest.captureRequest?.audio.capturesSystemAudio ?? false,
+                capturesMicrophone: manifest.captureRequest?.audio.capturesMicrophone ?? false
             )
         }
     }

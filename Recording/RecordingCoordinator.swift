@@ -733,7 +733,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             return
         }
         do {
-            _ = try await writer.finish()
+            let result = try await writer.finish()
+            let identities = result.persistentTrackIDs.map { source, trackID in
+                ProjectAudioStemTrackIdentity(
+                    source: source == .systemAudio ? .systemAudio : .microphone,
+                    persistentTrackID: trackID
+                )
+            }.sorted { $0.source.rawValue < $1.source.rawValue }
+            try projectStore.writeAudioStemIndex(ProjectAudioStemIndex(tracks: identities), in: project)
             try projectStore.markStarted(trackID: trackID, in: project)
             try projectStore.markFinished(trackID: trackID, in: project)
         } catch {

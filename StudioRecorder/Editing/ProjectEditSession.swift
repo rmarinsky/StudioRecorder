@@ -17,6 +17,7 @@ final class ProjectEditSession: ObservableObject {
     private struct EditHistoryState: Equatable {
         let timeline: ProjectEditTimeline
         let audioAdjustment: ProjectAudioAdjustment
+        let sourceAudioAdjustments: [ProjectAudioSourceAdjustment]
         let segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
     }
 
@@ -27,8 +28,11 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var privacyOverlays: [ProjectPrivacyOverlay] = []
     @Published private(set) var sceneTimeline: StudioSceneTimeline?
     @Published private(set) var audioAdjustment = ProjectAudioAdjustment.unchanged
+    @Published private(set) var sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = []
     @Published private(set) var segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     @Published private(set) var audioWaveform: ProjectAudioWaveform?
+    @Published private(set) var sourceAudioWaveforms: [ProjectAudioSource: ProjectAudioWaveform] = [:]
+    @Published private(set) var sourceAudioWaveformErrors: [ProjectAudioSource: String] = [:]
     @Published private(set) var isLoadingAudioWaveform = false
     @Published private(set) var audioWaveformError: String?
     @Published var selectedSegmentID: UUID?
@@ -48,6 +52,7 @@ final class ProjectEditSession: ObservableObject {
     private var programSources: ProjectProgramSources?
     private var undoStack: [EditHistoryState] = []
     private var redoStack: [EditHistoryState] = []
+    private var audioAdjustmentGestureStart: EditHistoryState?
     private var documentSaveTask: Task<Void, Never>?
     private var presentationRenderTask: Task<Void, Never>?
     private var audioWaveformTask: Task<Void, Never>?
@@ -78,10 +83,12 @@ final class ProjectEditSession: ObservableObject {
             !privacyOverlays.isEmpty ||
             sceneTimeline != programSources?.sceneTimeline ||
             !audioAdjustment.isUnchanged ||
+            !sourceAudioAdjustments.isEmpty ||
             !segmentAudioAdjustments.isEmpty
     }
     var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
     var canEditManualZoom: Bool { canPersistEdits && timeline != nil && sceneTimeline != nil }
+    var availableAudioSources: [ProjectAudioSource] { programSources?.audioSourceOrder ?? [] }
     var manualZoomMarkers: [StudioManualZoomMarker] {
         guard let sceneTimeline, let timeline else { return [] }
         return sceneTimeline.manualZoomMarkers(sourceDuration: timeline.sourceDuration)
@@ -129,8 +136,11 @@ final class ProjectEditSession: ObservableObject {
         privacyOverlays = []
         sceneTimeline = nil
         audioAdjustment = .unchanged
+        sourceAudioAdjustments = []
         segmentAudioAdjustments = []
         audioWaveform = nil
+        sourceAudioWaveforms = [:]
+        sourceAudioWaveformErrors = [:]
         isLoadingAudioWaveform = false
         audioWaveformError = nil
         document = nil
@@ -139,6 +149,7 @@ final class ProjectEditSession: ObservableObject {
         selectedManualZoomTransitionIndex = nil
         undoStack = []
         redoStack = []
+        audioAdjustmentGestureStart = nil
         errorMessage = nil
         self.projectRootURL = projectRootURL
         self.sourceURL = sourceURL
@@ -176,6 +187,9 @@ final class ProjectEditSession: ObservableObject {
             }
             sceneTimeline = loadedSceneTimeline
             audioAdjustment = editDocument.audioAdjustment
+            sourceAudioAdjustments = editDocument.sourceAudioAdjustments.filter {
+                programSources?.audioSourceOrder.contains($0.source) == true
+            }
             let editSegmentIDs = Set(editTimeline.segments.map(\.id))
             segmentAudioAdjustments = editDocument.segmentAudioAdjustments.filter {
                 editSegmentIDs.contains($0.segmentID)
@@ -200,6 +214,8 @@ final class ProjectEditSession: ObservableObject {
             player.replaceCurrentItem(with: item)
             loadAudioWaveform(
                 from: programSources?.audioURL ?? sourceURL,
+                sourceOrder: programSources?.audioSourceOrder ?? [],
+                sourceTrackIDs: programSources?.audioSourceTrackIDs ?? [:],
                 projectRootURL: projectRootURL,
                 requestID: requestID
             )
@@ -289,6 +305,9 @@ final class ProjectEditSession: ObservableObject {
             if errorMessage == nil, !audioAdjustment.isUnchanged {
                 updateAudioAdjustment(.unchanged)
             }
+            if errorMessage == nil, !sourceAudioAdjustments.isEmpty {
+                clearSourceAudioAdjustments()
+            }
             if errorMessage == nil, !segmentAudioAdjustments.isEmpty {
                 clearCurrentTimelineSegmentAudioAdjustments()
             }
@@ -328,6 +347,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: audioAdjustment,
+                sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: segmentAudioAdjustments,
                 to: destinationURL
             )
@@ -346,9 +366,45 @@ final class ProjectEditSession: ObservableObject {
         guard !isWorking, var nextDocument = document, let projectRootURL else { return }
         let validated = ProjectAudioAdjustment(gain: next.gain, isMuted: next.isMuted)
         guard validated != audioAdjustment else { return }
-        pushCurrentHistoryState()
+        pushAudioHistoryUnlessDragging()
         audioAdjustment = validated
         nextDocument.replaceAudioAdjustment(validated)
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
+    func sourceAudioAdjustment(for source: ProjectAudioSource) -> ProjectAudioSourceAdjustment {
+        sourceAudioAdjustments.first { $0.source == source }
+            ?? ProjectAudioSourceAdjustment(source: source)
+    }
+
+    func updateSourceAudioAdjustment(_ next: ProjectAudioSourceAdjustment) {
+        guard !isWorking,
+              availableAudioSources.contains(next.source),
+              var nextDocument = document,
+              let projectRootURL else { return }
+        let validated = ProjectAudioSourceAdjustment(
+            source: next.source,
+            gain: next.gain,
+            isMuted: next.isMuted
+        )
+        guard validated != sourceAudioAdjustment(for: next.source) else { return }
+        pushAudioHistoryUnlessDragging()
+        nextDocument.replaceSourceAudioAdjustment(validated)
+        sourceAudioAdjustments.removeAll { $0.source == validated.source }
+        if !validated.isUnchanged { sourceAudioAdjustments.append(validated) }
+        document = nextDocument
+        scheduleDocumentSave(in: projectRootURL)
+        scheduleProgramRefresh(force: true)
+    }
+
+    private func clearSourceAudioAdjustments() {
+        guard var nextDocument = document, let projectRootURL else { return }
+        pushAudioHistoryUnlessDragging()
+        nextDocument.sourceAudioAdjustments = []
+        nextDocument.updatedAt = Date()
+        sourceAudioAdjustments = []
         document = nextDocument
         scheduleDocumentSave(in: projectRootURL)
         scheduleProgramRefresh(force: true)
@@ -370,7 +426,7 @@ final class ProjectEditSession: ObservableObject {
             isMuted: next.isMuted
         )
         guard validated != segmentAudioAdjustment(for: next.segmentID) else { return }
-        pushCurrentHistoryState()
+        pushAudioHistoryUnlessDragging()
         nextDocument.replaceSegmentAudioAdjustment(validated)
         segmentAudioAdjustments.removeAll { $0.segmentID == validated.segmentID }
         if !validated.isUnchanged { segmentAudioAdjustments.append(validated) }
@@ -389,6 +445,20 @@ final class ProjectEditSession: ObservableObject {
         document = nextDocument
         scheduleDocumentSave(in: projectRootURL)
         scheduleProgramRefresh(force: true)
+    }
+
+    func beginAudioAdjustmentGesture() {
+        guard audioAdjustmentGestureStart == nil else { return }
+        audioAdjustmentGestureStart = currentHistoryState
+    }
+
+    func endAudioAdjustmentGesture() {
+        guard let start = audioAdjustmentGestureStart else { return }
+        audioAdjustmentGestureStart = nil
+        guard currentHistoryState != start else { return }
+        objectWillChange.send()
+        undoStack.append(start)
+        redoStack = []
     }
 
     func updatePresentation(_ next: CapturePresentationSnapshot) {
@@ -469,7 +539,8 @@ final class ProjectEditSession: ObservableObject {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         guard !timeline.isIdentity || programSources != nil || !privacyOverlays.isEmpty
-                || !audioAdjustment.isUnchanged || !segmentAudioAdjustments.isEmpty else {
+                || !audioAdjustment.isUnchanged || !sourceAudioAdjustments.isEmpty
+                || !segmentAudioAdjustments.isEmpty else {
             return PreparedProjectMedia(url: sourceURL, isTemporary: false)
         }
         let directory = FileManager.default.temporaryDirectory
@@ -483,6 +554,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: renderPresentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: audioAdjustment,
+                sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: segmentAudioAdjustments,
                 to: outputURL
             )
@@ -506,6 +578,7 @@ final class ProjectEditSession: ObservableObject {
         presentationRenderTask?.cancel()
         audioWaveformTask?.cancel()
         isLoadingAudioWaveform = false
+        audioAdjustmentGestureStart = nil
         if let document, let projectRootURL {
             documentSaveTask = Task { [store] in
                 try? await store.save(document, in: projectRootURL)
@@ -524,6 +597,7 @@ final class ProjectEditSession: ObservableObject {
             EditHistoryState(
                 timeline: next,
                 audioAdjustment: audioAdjustment,
+                sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: nextSegmentAudioAdjustments ?? segmentAudioAdjustments
             ),
             selectedSegmentID: selectedSegmentID,
@@ -560,6 +634,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: presentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: next.audioAdjustment,
+                sourceAudioAdjustments: next.sourceAudioAdjustments,
                 segmentAudioAdjustments: next.segmentAudioAdjustments
             )
             guard loadID == operationID, var nextDocument = document else { return }
@@ -568,6 +643,7 @@ final class ProjectEditSession: ObservableObject {
             )
             nextDocument.replaceTimeline(next.timeline)
             nextDocument.replaceAudioAdjustment(next.audioAdjustment)
+            nextDocument.sourceAudioAdjustments = next.sourceAudioAdjustments
             nextDocument.segmentAudioAdjustments.removeAll {
                 previousSegmentIDs.contains($0.segmentID)
             }
@@ -579,6 +655,7 @@ final class ProjectEditSession: ObservableObject {
             document = nextDocument
             timeline = next.timeline
             audioAdjustment = next.audioAdjustment
+            sourceAudioAdjustments = next.sourceAudioAdjustments
             let nextSegmentIDs = Set(next.timeline.segments.map(\.id))
             segmentAudioAdjustments = next.segmentAudioAdjustments.filter {
                 nextSegmentIDs.contains($0.segmentID)
@@ -600,9 +677,11 @@ final class ProjectEditSession: ObservableObject {
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay],
         audioAdjustment: ProjectAudioAdjustment? = nil,
+        sourceAudioAdjustments: [ProjectAudioSourceAdjustment]? = nil,
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]? = nil
     ) async throws -> AVPlayerItem {
         let audioAdjustment = audioAdjustment ?? self.audioAdjustment
+        let sourceAudioAdjustments = sourceAudioAdjustments ?? self.sourceAudioAdjustments
         let segmentAudioAdjustments = segmentAudioAdjustments ?? self.segmentAudioAdjustments
         if let renderSources = renderSources(for: sourceURL, privacyOverlays: privacyOverlays) {
             return try await programRenderer.makePlayerItem(
@@ -611,6 +690,7 @@ final class ProjectEditSession: ObservableObject {
                 presentation: programSources == nil ? bakedProgramPresentation(from: presentation) : presentation,
                 privacyOverlays: privacyOverlays,
                 audioAdjustment: audioAdjustment,
+                sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: segmentAudioAdjustments
             )
         }
@@ -627,6 +707,7 @@ final class ProjectEditSession: ObservableObject {
             EditHistoryState(
                 timeline: $0,
                 audioAdjustment: audioAdjustment,
+                sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: segmentAudioAdjustments
             )
         }
@@ -636,6 +717,11 @@ final class ProjectEditSession: ObservableObject {
         guard let currentHistoryState else { return }
         undoStack.append(currentHistoryState)
         redoStack = []
+    }
+
+    private func pushAudioHistoryUnlessDragging() {
+        guard audioAdjustmentGestureStart == nil else { return }
+        pushCurrentHistoryState()
     }
 
     private func scheduleProgramRefresh(force: Bool = false) {
@@ -672,26 +758,53 @@ final class ProjectEditSession: ObservableObject {
 
     private func loadAudioWaveform(
         from audioURL: URL,
+        sourceOrder: [ProjectAudioSource],
+        sourceTrackIDs: [CMPersistentTrackID: ProjectAudioSource],
         projectRootURL: URL,
         requestID: UUID
     ) {
         audioWaveformTask?.cancel()
         audioWaveform = nil
+        sourceAudioWaveforms = [:]
+        sourceAudioWaveformErrors = [:]
         audioWaveformError = nil
         isLoadingAudioWaveform = true
-        let cacheURL = projectRootURL
-            .appending(path: "analysis", directoryHint: .isDirectory)
-            .appending(path: "audio-waveform.json")
         audioWaveformTask = Task { [weak self, audioWaveformAnalyzer] in
             do {
-                let waveform = try await audioWaveformAnalyzer.waveform(
-                    for: audioURL,
-                    cacheURL: cacheURL
-                )
-                try Task.checkCancellation()
-                guard let self, self.loadID == requestID else { return }
-                self.audioWaveform = waveform
-                self.isLoadingAudioWaveform = false
+                let analysisDirectory = projectRootURL
+                    .appending(path: "analysis", directoryHint: .isDirectory)
+                if sourceOrder.isEmpty {
+                    let waveform = try await audioWaveformAnalyzer.waveform(
+                        for: audioURL,
+                        cacheURL: analysisDirectory.appending(path: "audio-waveform.json")
+                    )
+                    try Task.checkCancellation()
+                    guard let self, self.loadID == requestID else { return }
+                    self.audioWaveform = waveform
+                } else {
+                    var waveforms: [ProjectAudioSource: ProjectAudioWaveform] = [:]
+                    var errors: [ProjectAudioSource: String] = [:]
+                    for (index, source) in sourceOrder.enumerated() {
+                        let persistentTrackID = sourceTrackIDs.first { $0.value == source }?.key
+                        do {
+                            waveforms[source] = try await audioWaveformAnalyzer.waveform(
+                                for: audioURL,
+                                cacheURL: analysisDirectory.appending(path: "audio-waveform-\(source.rawValue).json"),
+                                trackIndex: persistentTrackID == nil ? index : nil,
+                                persistentTrackID: persistentTrackID
+                            )
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            errors[source] = error.localizedDescription
+                        }
+                    }
+                    try Task.checkCancellation()
+                    guard let self, self.loadID == requestID else { return }
+                    self.sourceAudioWaveforms = waveforms
+                    self.sourceAudioWaveformErrors = errors
+                }
+                self?.isLoadingAudioWaveform = false
             } catch is CancellationError {
                 return
             } catch {

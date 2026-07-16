@@ -44,6 +44,23 @@ final class LiveProgramArchiveTests: XCTestCase {
         let asset = AVURLAsset(url: outputURL)
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         XCTAssertEqual(tracks.count, 2)
+        XCTAssertEqual(
+            Set(result.persistentTrackIDs.values),
+            Set(tracks.map(\.trackID))
+        )
+        for track in tracks {
+            let metadata = try await track.load(.metadata)
+            let marker = try await AVMetadataItem.metadataItems(
+                from: metadata,
+                filteredByIdentifier: .quickTimeMetadataDisplayName
+            ).first?.load(.stringValue)
+            let markerValue = try XCTUnwrap(marker)
+            let source = try XCTUnwrap(RecordingAudioStemSource(
+                rawValue: String(markerValue.dropFirst(RecordingAudioStemWriter.sourceMetadataPrefix.count))
+            ))
+            XCTAssertTrue(markerValue.hasPrefix(RecordingAudioStemWriter.sourceMetadataPrefix))
+            XCTAssertEqual(result.persistentTrackIDs[source], track.trackID)
+        }
         var durations: [TimeInterval] = []
         for track in tracks {
             durations.append(try await track.load(.timeRange).duration.seconds)

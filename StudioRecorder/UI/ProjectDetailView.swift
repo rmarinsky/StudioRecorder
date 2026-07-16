@@ -390,10 +390,32 @@ struct ProjectDetailView: View {
             }
         } ?? screen
         let audioTrack = audioStemTrack ?? legacyAudioTrack
+        let indexedTracks = audioStemTrack == nil ? [] : (audioStemIndex?.tracks ?? [])
+        let audioSourceTrackIDs = Dictionary(uniqueKeysWithValues: indexedTracks.map {
+            ($0.persistentTrackID, $0.source)
+        })
+        let stemState = audioStemTrack.flatMap { stem in
+            project.recoveryReport.tracks.first(where: { $0.id == stem.id })?.state
+        }
+        let legacyFinalizedOrder: [ProjectAudioSource] = indexedTracks.isEmpty
+            && !audioStemIndexFileExists
+            && stemState == .finalized
+            ? ProjectAudioSource.allCases.filter {
+                switch $0 {
+                case .systemAudio: project.capturesSystemAudio
+                case .microphone: project.capturesMicrophone
+                }
+            }
+            : []
+        let audioSourceOrder = indexedTracks.isEmpty
+            ? legacyFinalizedOrder
+            : ProjectAudioSource.allCases.filter { source in indexedTracks.contains { $0.source == source } }
         return ProjectProgramSources(
             screenURL: project.rootURL.appending(path: screen.relativePath),
             cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
             audioURL: project.rootURL.appending(path: audioTrack.relativePath),
+            audioSourceOrder: audioSourceOrder,
+            audioSourceTrackIDs: audioSourceTrackIDs,
             screenDisplayID: screen.displayID,
             cursorTimeline: cursorTimeline,
             shortcutTimeline: shortcutTimeline,
@@ -407,6 +429,20 @@ struct ProjectDetailView: View {
                 )
             } ?? 0,
             rendersCursor: project.includesCursor && project.usesCompositedCursor
+        )
+    }
+
+    private var audioStemIndex: ProjectAudioStemIndex? {
+        let url = project.rootURL.appending(path: ProjectAudioStemIndex.filename)
+        guard let data = try? Data(contentsOf: url),
+              let index = try? JSONDecoder().decode(ProjectAudioStemIndex.self, from: data),
+              index.isValid else { return nil }
+        return index
+    }
+
+    private var audioStemIndexFileExists: Bool {
+        FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: ProjectAudioStemIndex.filename).path
         )
     }
 

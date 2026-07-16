@@ -1,9 +1,46 @@
 @preconcurrency import AVFoundation
+import Combine
 import ImageIO
 import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditRendererTests: XCTestCase {
+    func testAudioMixAppliesIndependentSourceGainByPersistentTrackIdentity() throws {
+        let composition = AVMutableComposition()
+        _ = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: 11))
+        _ = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: 12))
+        let tracks = composition.tracks(withMediaType: .audio)
+
+        let mix = ProjectAudioMixFactory.make(
+            for: tracks,
+            adjustment: ProjectAudioAdjustment(gain: 0.5),
+            sourceAdjustments: [
+                ProjectAudioSourceAdjustment(source: .systemAudio, gain: 0.4),
+                ProjectAudioSourceAdjustment(source: .microphone, isMuted: true),
+            ],
+            sourceOrder: [.systemAudio, .microphone],
+            sourceByTrackID: [tracks[0].trackID: .microphone, tracks[1].trackID: .systemAudio]
+        )
+
+        let parameters = try XCTUnwrap(mix?.inputParameters)
+        XCTAssertEqual(parameters.count, 2)
+        var volumes: [Float] = []
+        for parameter in parameters {
+            var start: Float = -1
+            var end: Float = -1
+            var range = CMTimeRange.invalid
+            XCTAssertTrue(parameter.getVolumeRamp(
+                for: .zero,
+                startVolume: &start,
+                endVolume: &end,
+                timeRange: &range
+            ))
+            volumes.append(start)
+        }
+        XCTAssertEqual(volumes[0], 0, accuracy: 0.001)
+        XCTAssertEqual(volumes[1], 0.2, accuracy: 0.001)
+    }
+
     @MainActor
     func testQuickEditResetPersistsUnchangedAudio() async throws {
         let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -57,6 +94,51 @@ final class ProjectEditRendererTests: XCTestCase {
         let reloaded = try XCTUnwrap(loaded)
         XCTAssertEqual(reloaded.audioAdjustment, .unchanged)
         XCTAssertTrue(reloaded.segmentAudioAdjustments.isEmpty)
+    }
+
+    @MainActor
+    func testAudioSliderGestureCreatesOneUndoStep() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let track = RecordingTrackDescriptor(
+            id: "program",
+            kind: .program,
+            displayID: nil,
+            relativePath: sourceURL.lastPathComponent
+        )
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID,
+            projectRootURL: rootURL,
+            track: track,
+            sourceURL: sourceURL,
+            programSources: nil,
+            initialPresentation: .default
+        )
+
+        session.beginAudioAdjustmentGesture()
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.8))
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.6))
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.4))
+        var publishedUndoAvailability = false
+        let cancellable = session.objectWillChange.sink {
+            publishedUndoAvailability = true
+        }
+        session.endAudioAdjustmentGesture()
+
+        XCTAssertEqual(session.audioAdjustment.gain, 0.4, accuracy: 0.001)
+        XCTAssertTrue(publishedUndoAvailability)
+        XCTAssertTrue(session.canUndo)
+        await session.undo()
+        XCTAssertEqual(session.audioAdjustment.gain, 1, accuracy: 0.001)
+        XCTAssertFalse(session.canUndo)
+        cancellable.cancel()
+        session.stop()
     }
 
     @MainActor
@@ -341,6 +423,37 @@ final class ProjectEditRendererTests: XCTestCase {
             timeRange: &timeRange
         ))
         XCTAssertEqual(startVolume, 0.2, accuracy: 0.001)
+    }
+
+    func testProgramRendererRejectsAStaleIndexedAudioTrackInsteadOfFallingBackByPosition() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let audioURL = directory.appending(path: "audio.caf")
+        try await writeReadableMovie(to: screenURL)
+        try writeAudioFile(to: audioURL)
+
+        do {
+            _ = try await ProjectProgramRenderer().makePlayerItem(
+                sources: ProjectProgramSources(
+                    screenURL: screenURL,
+                    cameraURL: nil,
+                    audioURL: audioURL,
+                    audioSourceOrder: [.microphone],
+                    audioSourceTrackIDs: [9_999: .microphone]
+                ),
+                timeline: try ProjectEditTimeline(trackID: "screen", sourceDuration: 0.1),
+                presentation: .default,
+                sourceAudioAdjustments: [
+                    ProjectAudioSourceAdjustment(source: .microphone, isMuted: true),
+                ]
+            )
+            XCTFail("Expected the stale audio source index to fail closed")
+        } catch {
+            XCTAssertEqual(error as? ProjectEditRendererError, .invalidAudioStemIndex)
+        }
     }
 
     func testProgramRendererReplaysSafeShortcutTelemetryWithoutChangingRawMedia() async throws {

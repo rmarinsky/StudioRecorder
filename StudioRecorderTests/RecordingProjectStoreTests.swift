@@ -338,10 +338,21 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)))
         try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: "camera", in: project)))
+        let audioStemURL = try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project))
         try await writeReadableAudioStems(
-            to: try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project)),
+            to: audioStemURL,
             capturesSystemAudio: false,
             capturesMicrophone: true
+        )
+        let audioTracks = try await AVURLAsset(url: audioStemURL).loadTracks(withMediaType: .audio)
+        try store.writeAudioStemIndex(
+            ProjectAudioStemIndex(tracks: [
+                ProjectAudioStemTrackIdentity(
+                    source: .microphone,
+                    persistentTrackID: try XCTUnwrap(audioTracks.first).trackID
+                ),
+            ]),
+            in: project
         )
         try store.markStarted(displayID: 9, in: project)
         try store.markStarted(trackID: project.trackID(for: .camera), in: project)
@@ -355,6 +366,11 @@ final class RecordingProjectStoreTests: XCTestCase {
         let snapshot = try XCTUnwrap(snapshots.single)
         XCTAssertEqual(snapshot.lifecycle, .finalized)
         XCTAssertEqual(snapshot.recoveryReport.tracks.map(\.state), [.finalized, .finalized, .finalized])
+        XCTAssertFalse(snapshot.capturesSystemAudio)
+        XCTAssertTrue(snapshot.capturesMicrophone)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: ProjectAudioStemIndex.filename).path
+        ))
     }
 
     func testDiscoveryOrdersProjectsNewestFirstDeterministically() async throws {

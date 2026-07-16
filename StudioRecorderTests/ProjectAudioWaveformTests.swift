@@ -97,6 +97,38 @@ final class ProjectAudioWaveformTests: XCTestCase {
         XCTAssertEqual(waveform.clippedRegionCount, 1)
     }
 
+    func testAnalyzerBuildsIndependentWaveformsForEachStemTrack() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let quietURL = directory.appending(path: "quiet.caf")
+        let loudURL = directory.appending(path: "loud.caf")
+        let stemsURL = directory.appending(path: "stems.mov")
+        try writeConstantAudioFile(to: quietURL, amplitude: 0.1)
+        try writeConstantAudioFile(to: loudURL, amplitude: 0.8)
+        try await combineAudioTracks([quietURL, loudURL], to: stemsURL)
+        let analyzer = ProjectAudioWaveformAnalyzer()
+        let stemTracks = try await AVURLAsset(url: stemsURL).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(stemTracks.count, 2)
+
+        let quiet = try await analyzer.waveform(
+            for: stemsURL,
+            cacheURL: directory.appending(path: "quiet.json"),
+            bucketCount: 2,
+            persistentTrackID: stemTracks[0].trackID
+        )
+        let loud = try await analyzer.waveform(
+            for: stemsURL,
+            cacheURL: directory.appending(path: "loud.json"),
+            bucketCount: 2,
+            persistentTrackID: stemTracks[1].trackID
+        )
+
+        XCTAssertLessThan(quiet.buckets[0].peak, 0.2)
+        XCTAssertGreaterThan(loud.buckets[0].peak, 0.7)
+    }
+
     private func writeAudioFile(to url: URL) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
@@ -110,5 +142,36 @@ final class ProjectAudioWaveformTests: XCTestCase {
         }
         samples[36_000] = 1
         try file.write(from: buffer)
+    }
+
+    private func writeConstantAudioFile(to url: URL, amplitude: Float) throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+        buffer.frameLength = 4_800
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for frame in 0..<4_800 { samples[frame] = sin(Float(frame) * 0.04) * amplitude }
+        try file.write(from: buffer)
+    }
+
+    private func combineAudioTracks(_ sources: [URL], to destination: URL) async throws {
+        let composition = AVMutableComposition()
+        for source in sources {
+            let asset = AVURLAsset(url: source)
+            let sourceTracks = try await asset.loadTracks(withMediaType: .audio)
+            let sourceTrack = try XCTUnwrap(sourceTracks.first)
+            let track = try XCTUnwrap(
+                composition.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                )
+            )
+            let range = try await sourceTrack.load(.timeRange)
+            try track.insertTimeRange(range, of: sourceTrack, at: .zero)
+        }
+        let export = try XCTUnwrap(
+            AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality)
+        )
+        try await export.export(to: destination, as: .mov)
     }
 }

@@ -1,7 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-enum RecordingAudioStemSource: UInt8, CaseIterable, Hashable, Sendable {
+enum RecordingAudioStemSource: String, CaseIterable, Hashable, Sendable {
     case systemAudio
     case microphone
 }
@@ -15,6 +15,7 @@ struct RecordingAudioStemWriterConfiguration: Sendable {
 struct RecordingAudioStemWriterResult: Sendable {
     let outputURL: URL
     let sampleCounts: [RecordingAudioStemSource: Int]
+    let persistentTrackIDs: [RecordingAudioStemSource: CMPersistentTrackID]
 }
 
 enum RecordingAudioStemWriterError: LocalizedError, Equatable {
@@ -61,10 +62,13 @@ extension RecordingAudioStemSource {
 /// Thread-safe writer for the primary ScreenCaptureKit stream. Both inputs share
 /// the first screen sample's source time, so their original PTS preserves sync.
 final class RecordingAudioStemWriter: @unchecked Sendable {
+    static let sourceMetadataPrefix = "ua.com.rmarinsky.studiorecorder.audio-source."
+
     private let lock = NSLock()
     private let writer: AVAssetWriter
     private let inputs: [RecordingAudioStemSource: AVAssetWriterInput]
     private let expectedSources: Set<RecordingAudioStemSource>
+    private let sourceOrder: [RecordingAudioStemSource]
     private let outputURL: URL
     private var pendingBeforeAnchor: [RecordingAudioStemSource: [CMSampleBuffer]] = [:]
     private var startedAt: CMTime?
@@ -87,6 +91,7 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
         if configuration.capturesSystemAudio { expectedSources.insert(.systemAudio) }
         if configuration.capturesMicrophone { expectedSources.insert(.microphone) }
         self.expectedSources = expectedSources
+        sourceOrder = RecordingAudioStemSource.allCases.filter(expectedSources.contains)
 
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -95,9 +100,13 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
             AVEncoderBitRateKey: 128_000,
         ]
         var inputs: [RecordingAudioStemSource: AVAssetWriterInput] = [:]
-        for source in RecordingAudioStemSource.allCases where expectedSources.contains(source) {
+        for source in sourceOrder {
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
             input.expectsMediaDataInRealTime = true
+            let sourceMarker = AVMutableMetadataItem()
+            sourceMarker.identifier = .quickTimeMetadataDisplayName
+            sourceMarker.value = "\(Self.sourceMetadataPrefix)\(source.rawValue)" as NSString
+            input.metadata = [sourceMarker]
             guard writer.canAdd(input) else { throw RecordingAudioStemWriterError.cannotAddInput }
             writer.add(input)
             inputs[source] = input
@@ -195,7 +204,37 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
               duration > .zero else {
             throw RecordingAudioStemWriterError.unreadableMovie
         }
-        return RecordingAudioStemWriterResult(outputURL: outputURL, sampleCounts: counts)
+        var persistentTrackIDs: [RecordingAudioStemSource: CMPersistentTrackID] = [:]
+        for track in tracks {
+            let metadata = try await track.load(.metadata)
+            let markers = AVMetadataItem.metadataItems(
+                from: metadata,
+                filteredByIdentifier: .quickTimeMetadataDisplayName
+            )
+            var resolvedSource: RecordingAudioStemSource?
+            for marker in markers {
+                guard let value = try await marker.load(.stringValue),
+                      value.hasPrefix(Self.sourceMetadataPrefix) else { continue }
+                resolvedSource = RecordingAudioStemSource(
+                    rawValue: String(value.dropFirst(Self.sourceMetadataPrefix.count))
+                )
+                if resolvedSource != nil { break }
+            }
+            guard let resolvedSource,
+                  expectedSources.contains(resolvedSource),
+                  persistentTrackIDs[resolvedSource] == nil else {
+                throw RecordingAudioStemWriterError.unreadableMovie
+            }
+            persistentTrackIDs[resolvedSource] = track.trackID
+        }
+        guard Set(persistentTrackIDs.keys) == expectedSources else {
+            throw RecordingAudioStemWriterError.unreadableMovie
+        }
+        return RecordingAudioStemWriterResult(
+            outputURL: outputURL,
+            sampleCounts: counts,
+            persistentTrackIDs: persistentTrackIDs
+        )
     }
 
     func abort() {

@@ -6,6 +6,7 @@ enum ProjectEditRendererError: LocalizedError, Equatable {
     case noMediaTracks
     case exportUnavailable
     case unsafeDestination
+    case invalidAudioStemIndex
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum ProjectEditRendererError: LocalizedError, Equatable {
             "A compatible movie export is unavailable for this edit."
         case .unsafeDestination:
             "Choose a destination outside the project's immutable raw tracks."
+        case .invalidAudioStemIndex:
+            "The separate audio source index does not match the recorded audio stems."
         }
     }
 }
@@ -127,25 +130,34 @@ enum ProjectAudioMixFactory {
     static func make(
         for tracks: [AVAssetTrack],
         adjustment: ProjectAudioAdjustment,
+        sourceAdjustments: [ProjectAudioSourceAdjustment] = [],
+        sourceOrder: [ProjectAudioSource] = [],
+        sourceByTrackID: [CMPersistentTrackID: ProjectAudioSource] = [:],
         timeline: ProjectEditTimeline? = nil,
         segmentAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) -> AVAudioMix? {
         guard !tracks.isEmpty,
-              !adjustment.isUnchanged || segmentAdjustments.contains(where: { !$0.isUnchanged }) else { return nil }
+              !adjustment.isUnchanged
+                || sourceAdjustments.contains(where: { !$0.isUnchanged })
+                || segmentAdjustments.contains(where: { !$0.isUnchanged }) else { return nil }
+        let sourceAdjustments = Dictionary(uniqueKeysWithValues: sourceAdjustments.map { ($0.source, $0) })
         let segmentAdjustments = segmentAdjustments.reduce(into: [UUID: ProjectSegmentAudioAdjustment]()) {
             $0[$1.segmentID] = $1
         }
         let mix = AVMutableAudioMix()
-        mix.inputParameters = tracks.map { track in
+        mix.inputParameters = tracks.enumerated().map { index, track in
             let parameters = AVMutableAudioMixInputParameters(track: track)
+            let source = sourceByTrackID[track.trackID]
+                ?? (sourceOrder.indices.contains(index) ? sourceOrder[index] : nil)
+            let sourceGain = source.flatMap { sourceAdjustments[$0]?.effectiveGain } ?? 1
             guard let timeline else {
-                parameters.setVolume(adjustment.effectiveGain, at: .zero)
+                parameters.setVolume(adjustment.effectiveGain * sourceGain, at: .zero)
                 return parameters
             }
             var outputTime = CMTime.zero
             for segment in timeline.segments {
                 let segmentGain = segmentAdjustments[segment.id]?.effectiveGain ?? 1
-                parameters.setVolume(adjustment.effectiveGain * segmentGain, at: outputTime)
+                parameters.setVolume(adjustment.effectiveGain * sourceGain * segmentGain, at: outputTime)
                 outputTime = outputTime + CMTime(seconds: segment.duration, preferredTimescale: 600)
             }
             return parameters

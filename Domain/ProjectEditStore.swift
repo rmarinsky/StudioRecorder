@@ -1,4 +1,40 @@
+import CoreMedia
 import Foundation
+
+enum ProjectAudioSource: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case systemAudio
+    case microphone
+
+    var id: String { rawValue }
+    var label: String { self == .systemAudio ? "System Audio" : "Microphone" }
+    var icon: String { self == .systemAudio ? "desktopcomputer" : "mic.fill" }
+}
+
+struct ProjectAudioStemTrackIdentity: Codable, Equatable, Sendable {
+    let source: ProjectAudioSource
+    let persistentTrackID: Int32
+}
+
+struct ProjectAudioStemIndex: Codable, Equatable, Sendable {
+    static let filename = "scene/audio-stems.json"
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let tracks: [ProjectAudioStemTrackIdentity]
+
+    init(tracks: [ProjectAudioStemTrackIdentity]) {
+        schemaVersion = Self.currentSchemaVersion
+        self.tracks = tracks
+    }
+
+    var isValid: Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && !tracks.isEmpty
+            && Set(tracks.map(\.source)).count == tracks.count
+            && Set(tracks.map(\.persistentTrackID)).count == tracks.count
+            && tracks.allSatisfy { $0.persistentTrackID != kCMPersistentTrackID_Invalid }
+    }
+}
 
 struct ProjectAudioAdjustment: Codable, Equatable, Sendable {
     static let unchanged = Self(gain: 1, isMuted: false)
@@ -19,6 +55,32 @@ struct ProjectAudioAdjustment: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        gain = try container.decodeIfPresent(Double.self, forKey: .gain) ?? 1
+        isMuted = try container.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+    }
+}
+
+struct ProjectAudioSourceAdjustment: Codable, Equatable, Identifiable, Sendable {
+    let source: ProjectAudioSource
+    var gain: Double
+    var isMuted: Bool
+
+    var id: ProjectAudioSource { source }
+    var effectiveGain: Float { isMuted ? 0 : Float(gain) }
+    var isUnchanged: Bool { !isMuted && abs(gain - 1) < 0.001 }
+    var isPersistable: Bool { gain.isFinite && (0...1).contains(gain) }
+
+    init(source: ProjectAudioSource, gain: Double = 1, isMuted: Bool = false) {
+        self.source = source
+        self.gain = min(max(gain.isFinite ? gain : 1, 0), 1)
+        self.isMuted = isMuted
+    }
+
+    private enum CodingKeys: String, CodingKey { case source, gain, isMuted }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(ProjectAudioSource.self, forKey: .source)
         gain = try container.decodeIfPresent(Double.self, forKey: .gain) ?? 1
         isMuted = try container.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
     }
@@ -57,6 +119,7 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
     case invalidPrivacyOverlay
     case invalidSceneTimeline
     case invalidAudioAdjustment
+    case invalidSourceAudioAdjustment
     case invalidSegmentAudioAdjustment
 
     var errorDescription: String? {
@@ -73,6 +136,8 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
             "The saved Scene timeline is invalid."
         case .invalidAudioAdjustment:
             "The saved audio adjustment is invalid."
+        case .invalidSourceAudioAdjustment:
+            "A saved source audio adjustment is invalid."
         case .invalidSegmentAudioAdjustment:
             "A saved segment audio adjustment is invalid."
         }
@@ -80,7 +145,7 @@ enum ProjectEditStoreError: LocalizedError, Equatable {
 }
 
 struct ProjectEditDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 7
 
     let schemaVersion: Int
     let projectID: UUID
@@ -90,6 +155,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
     var privacyOverlays: [ProjectPrivacyOverlay]
     var sceneTimeline: StudioSceneTimeline?
     var audioAdjustment: ProjectAudioAdjustment
+    var sourceAudioAdjustments: [ProjectAudioSourceAdjustment]
     var segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
 
     init(
@@ -100,6 +166,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         sceneTimeline: StudioSceneTimeline? = nil,
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -110,6 +177,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.privacyOverlays = privacyOverlays
         self.sceneTimeline = sceneTimeline
         self.audioAdjustment = audioAdjustment
+        self.sourceAudioAdjustments = sourceAudioAdjustments
         self.segmentAudioAdjustments = segmentAudioAdjustments
     }
 
@@ -161,6 +229,20 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    mutating func replaceSourceAudioAdjustment(
+        _ adjustment: ProjectAudioSourceAdjustment,
+        updatedAt: Date = Date()
+    ) {
+        sourceAudioAdjustments.removeAll { $0.source == adjustment.source }
+        if !adjustment.isUnchanged { sourceAudioAdjustments.append(adjustment) }
+        self.updatedAt = updatedAt
+    }
+
+    func sourceAudioAdjustment(for source: ProjectAudioSource) -> ProjectAudioSourceAdjustment {
+        sourceAudioAdjustments.first { $0.source == source }
+            ?? ProjectAudioSourceAdjustment(source: source)
+    }
+
     mutating func replaceSegmentAudioAdjustment(
         _ adjustment: ProjectSegmentAudioAdjustment,
         updatedAt: Date = Date()
@@ -182,7 +264,7 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, projectID, updatedAt, timelines, presentation, privacyOverlays, sceneTimeline,
-             audioAdjustment, segmentAudioAdjustments
+             audioAdjustment, sourceAudioAdjustments, segmentAudioAdjustments
     }
 
     init(from decoder: Decoder) throws {
@@ -198,6 +280,10 @@ struct ProjectEditDocument: Codable, Equatable, Sendable {
             ProjectAudioAdjustment.self,
             forKey: .audioAdjustment
         ) ?? .unchanged
+        sourceAudioAdjustments = try container.decodeIfPresent(
+            [ProjectAudioSourceAdjustment].self,
+            forKey: .sourceAudioAdjustments
+        ) ?? []
         segmentAudioAdjustments = try container.decodeIfPresent(
             [ProjectSegmentAudioAdjustment].self,
             forKey: .segmentAudioAdjustments
@@ -235,6 +321,7 @@ actor ProjectEditStore {
             privacyOverlays: document.privacyOverlays,
             sceneTimeline: document.sceneTimeline,
             audioAdjustment: document.audioAdjustment,
+            sourceAudioAdjustments: document.sourceAudioAdjustments,
             segmentAudioAdjustments: document.segmentAudioAdjustments
         )
     }
@@ -254,7 +341,7 @@ actor ProjectEditStore {
         allowsLegacy: Bool
     ) throws {
         guard document.schemaVersion == ProjectEditDocument.currentSchemaVersion
-                || (allowsLegacy && (1...5).contains(document.schemaVersion)) else {
+                || (allowsLegacy && (1...6).contains(document.schemaVersion)) else {
             throw ProjectEditStoreError.unsupportedSchema(document.schemaVersion)
         }
         guard document.projectID == expectedProjectID else {
@@ -289,6 +376,10 @@ actor ProjectEditStore {
         }
         guard document.audioAdjustment.isPersistable else {
             throw ProjectEditStoreError.invalidAudioAdjustment
+        }
+        guard document.sourceAudioAdjustments.allSatisfy({ $0.isPersistable && !$0.isUnchanged }),
+              Set(document.sourceAudioAdjustments.map(\.source)).count == document.sourceAudioAdjustments.count else {
+            throw ProjectEditStoreError.invalidSourceAudioAdjustment
         }
         let segmentIDs = Set(allSegmentIDs)
         guard document.segmentAudioAdjustments.allSatisfy({

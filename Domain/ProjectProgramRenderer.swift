@@ -7,6 +7,8 @@ struct ProjectProgramSources: Sendable {
     let screenURL: URL
     let cameraURL: URL?
     let audioURL: URL?
+    let audioSourceOrder: [ProjectAudioSource]
+    let audioSourceTrackIDs: [CMPersistentTrackID: ProjectAudioSource]
     let screenDisplayID: UInt32?
     let cursorTimeline: CursorSceneTimeline?
     let shortcutTimeline: SafeShortcutTimeline?
@@ -19,6 +21,8 @@ struct ProjectProgramSources: Sendable {
         screenURL: URL,
         cameraURL: URL?,
         audioURL: URL? = nil,
+        audioSourceOrder: [ProjectAudioSource] = [],
+        audioSourceTrackIDs: [CMPersistentTrackID: ProjectAudioSource] = [:],
         screenDisplayID: UInt32? = nil,
         cursorTimeline: CursorSceneTimeline? = nil,
         shortcutTimeline: SafeShortcutTimeline? = nil,
@@ -30,6 +34,8 @@ struct ProjectProgramSources: Sendable {
         self.screenURL = screenURL
         self.cameraURL = cameraURL
         self.audioURL = audioURL
+        self.audioSourceOrder = audioSourceOrder
+        self.audioSourceTrackIDs = audioSourceTrackIDs
         self.screenDisplayID = screenDisplayID
         self.cursorTimeline = cursorTimeline
         self.shortcutTimeline = shortcutTimeline
@@ -44,6 +50,8 @@ struct ProjectProgramSources: Sendable {
             screenURL: screenURL,
             cameraURL: cameraURL,
             audioURL: audioURL,
+            audioSourceOrder: audioSourceOrder,
+            audioSourceTrackIDs: audioSourceTrackIDs,
             screenDisplayID: screenDisplayID,
             cursorTimeline: cursorTimeline,
             shortcutTimeline: shortcutTimeline,
@@ -57,12 +65,19 @@ struct ProjectProgramSources: Sendable {
 
 @MainActor
 final class ProjectProgramRenderer {
+    private struct CompositionResult {
+        let asset: AVMutableComposition
+        let videoComposition: AVMutableVideoComposition
+        let audioSourceByTrackID: [CMPersistentTrackID: ProjectAudioSource]
+    }
+
     func makePlayerItem(
         sources: ProjectProgramSources,
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
     ) async throws -> AVPlayerItem {
         let rendered = try await makeComposition(
@@ -76,6 +91,9 @@ final class ProjectProgramRenderer {
         item.audioMix = ProjectAudioMixFactory.make(
             for: rendered.asset.tracks(withMediaType: .audio),
             adjustment: audioAdjustment,
+            sourceAdjustments: sourceAudioAdjustments,
+            sourceOrder: sources.audioSourceOrder,
+            sourceByTrackID: rendered.audioSourceByTrackID,
             timeline: timeline,
             segmentAdjustments: segmentAudioAdjustments
         )
@@ -88,6 +106,7 @@ final class ProjectProgramRenderer {
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
         to destinationURL: URL
     ) async throws {
@@ -105,6 +124,9 @@ final class ProjectProgramRenderer {
         session.audioMix = ProjectAudioMixFactory.make(
             for: rendered.asset.tracks(withMediaType: .audio),
             adjustment: audioAdjustment,
+            sourceAdjustments: sourceAudioAdjustments,
+            sourceOrder: sources.audioSourceOrder,
+            sourceByTrackID: rendered.audioSourceByTrackID,
             timeline: timeline,
             segmentAdjustments: segmentAudioAdjustments
         )
@@ -137,7 +159,7 @@ final class ProjectProgramRenderer {
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay]
-    ) async throws -> (asset: AVMutableComposition, videoComposition: AVMutableVideoComposition) {
+    ) async throws -> CompositionResult {
         let composition = AVMutableComposition()
         let screenAsset = AVURLAsset(url: sources.screenURL)
         guard let sourceScreenTrack = try await screenAsset.loadTracks(withMediaType: .video).first,
@@ -147,22 +169,39 @@ final class ProjectProgramRenderer {
         try await insert(timeline: timeline, from: sourceScreenTrack, into: screenTrack)
 
         let audioAsset = sources.audioURL.map(AVURLAsset.init(url:)) ?? screenAsset
+        var audioSourceByTrackID: [CMPersistentTrackID: ProjectAudioSource] = [:]
         do {
-            for sourceAudioTrack in try await audioAsset.loadTracks(withMediaType: .audio) {
+            let sourceAudioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+            let hasIndexedAudioSources = !sources.audioSourceTrackIDs.isEmpty
+            if hasIndexedAudioSources,
+               Set(sourceAudioTracks.map(\.trackID)) != Set(sources.audioSourceTrackIDs.keys) {
+                throw ProjectEditRendererError.invalidAudioStemIndex
+            }
+            for (index, sourceAudioTrack) in sourceAudioTracks.enumerated() {
                 guard let audioTrack = composition.addMutableTrack(
                     withMediaType: .audio,
                     preferredTrackID: kCMPersistentTrackID_Invalid
                 ) else { continue }
                 do {
                     try await insertAudio(timeline: timeline, from: sourceAudioTrack, into: audioTrack)
+                    let source = hasIndexedAudioSources
+                        ? sources.audioSourceTrackIDs[sourceAudioTrack.trackID]
+                        : (sources.audioSourceOrder.indices.contains(index) ? sources.audioSourceOrder[index] : nil)
+                    if let source {
+                        audioSourceByTrackID[audioTrack.trackID] = source
+                    }
                 } catch is CancellationError {
                     throw CancellationError()
+                } catch ProjectEditRendererError.invalidAudioStemIndex {
+                    throw ProjectEditRendererError.invalidAudioStemIndex
                 } catch {
                     composition.removeTrack(audioTrack)
                 }
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch ProjectEditRendererError.invalidAudioStemIndex {
+            throw ProjectEditRendererError.invalidAudioStemIndex
         } catch {
             // Audio is optional for program playback. A healthy visual program remains useful when it is unavailable.
         }
@@ -219,7 +258,11 @@ final class ProjectProgramRenderer {
         videoComposition.instructions = [instruction]
         videoComposition.renderSize = validated.canvas.pixelSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-        return (composition, videoComposition)
+        return CompositionResult(
+            asset: composition,
+            videoComposition: videoComposition,
+            audioSourceByTrackID: audioSourceByTrackID
+        )
     }
 
     private func insert(

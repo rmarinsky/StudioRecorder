@@ -40,13 +40,15 @@ enum ProjectAudioWaveformError: LocalizedError, Equatable {
 
 actor ProjectAudioWaveformAnalyzer {
     private struct Cache: Codable {
-        static let schemaVersion = 1
+        static let schemaVersion = 2
 
         let schemaVersion: Int
         let sourceFilename: String
         let sourceFileSize: Int64
         let sourceModificationTime: TimeInterval
         let bucketCount: Int
+        let trackIndex: Int?
+        let persistentTrackID: Int32?
         let waveform: ProjectAudioWaveform
     }
 
@@ -65,7 +67,9 @@ actor ProjectAudioWaveformAnalyzer {
     func waveform(
         for sourceURL: URL,
         cacheURL: URL,
-        bucketCount: Int = 180
+        bucketCount: Int = 180,
+        trackIndex: Int? = nil,
+        persistentTrackID: Int32? = nil
     ) async throws -> ProjectAudioWaveform {
         let bucketCount = min(max(bucketCount, 2), 512)
         let metadata = try sourceMetadata(at: sourceURL)
@@ -73,17 +77,26 @@ actor ProjectAudioWaveformAnalyzer {
             at: cacheURL,
             sourceFilename: sourceURL.lastPathComponent,
             metadata: metadata,
-            bucketCount: bucketCount
+            bucketCount: bucketCount,
+            trackIndex: trackIndex,
+            persistentTrackID: persistentTrackID
         ) {
             return cached
         }
-        let waveform = try await analyze(sourceURL, bucketCount: bucketCount)
+        let waveform = try await analyze(
+            sourceURL,
+            bucketCount: bucketCount,
+            trackIndex: trackIndex,
+            persistentTrackID: persistentTrackID
+        )
         let cache = Cache(
             schemaVersion: Cache.schemaVersion,
             sourceFilename: sourceURL.lastPathComponent,
             sourceFileSize: metadata.fileSize,
             sourceModificationTime: metadata.modificationTime,
             bucketCount: bucketCount,
+            trackIndex: trackIndex,
+            persistentTrackID: persistentTrackID,
             waveform: waveform
         )
         do {
@@ -102,18 +115,32 @@ actor ProjectAudioWaveformAnalyzer {
 
     private func analyze(
         _ sourceURL: URL,
-        bucketCount: Int
+        bucketCount: Int,
+        trackIndex: Int?,
+        persistentTrackID: Int32?
     ) async throws -> ProjectAudioWaveform {
         let asset = AVURLAsset(url: sourceURL)
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         guard !tracks.isEmpty else { throw ProjectAudioWaveformError.noAudioTrack }
+        let selectedTracks: [AVAssetTrack]
+        if let persistentTrackID {
+            guard let track = tracks.first(where: { $0.trackID == persistentTrackID }) else {
+                throw ProjectAudioWaveformError.noAudioTrack
+            }
+            selectedTracks = [track]
+        } else if let trackIndex {
+            guard tracks.indices.contains(trackIndex) else { throw ProjectAudioWaveformError.noAudioTrack }
+            selectedTracks = [tracks[trackIndex]]
+        } else {
+            selectedTracks = tracks
+        }
         let duration = try await asset.load(.duration).seconds
         guard duration.isFinite, duration > 0 else {
             throw ProjectAudioWaveformError.unreadableAudio
         }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(
-            audioTracks: tracks,
+            audioTracks: selectedTracks,
             audioSettings: [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVLinearPCMIsFloatKey: true,
@@ -270,7 +297,9 @@ actor ProjectAudioWaveformAnalyzer {
         at url: URL,
         sourceFilename: String,
         metadata: (fileSize: Int64, modificationTime: TimeInterval),
-        bucketCount: Int
+        bucketCount: Int,
+        trackIndex: Int?,
+        persistentTrackID: Int32?
     ) -> ProjectAudioWaveform? {
         guard let data = try? Data(contentsOf: url),
               let cache = try? JSONDecoder().decode(Cache.self, from: data),
@@ -278,7 +307,9 @@ actor ProjectAudioWaveformAnalyzer {
               cache.sourceFilename == sourceFilename,
               cache.sourceFileSize == metadata.fileSize,
               abs(cache.sourceModificationTime - metadata.modificationTime) < 0.001,
-              cache.bucketCount == bucketCount else { return nil }
+              cache.bucketCount == bucketCount,
+              cache.trackIndex == trackIndex,
+              cache.persistentTrackID == persistentTrackID else { return nil }
         return cache.waveform
     }
 }
