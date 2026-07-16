@@ -57,6 +57,14 @@ enum LiveSceneSnapshotCaptureError: LocalizedError, Equatable {
 private struct CameraFrameState {
     var outputID: ObjectIdentifier?
     var pixelBuffer: CVPixelBuffer?
+    var generation: UInt64 = 0
+}
+
+private struct LiveScreenStreamContext: Sendable {
+    let displayID: UInt32
+    let generation: UInt64
+
+    var source: LiveSourceID { .screen(displayID: displayID) }
 }
 
 struct LiveProgramPreviewFrame {
@@ -126,6 +134,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     @Published private(set) var isCameraFrameReady = false
     @Published private(set) var screenPreviewError: String?
     @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
+    @Published private(set) var sourceRecoveryState = LiveSourceRecoveryState.idle
 
     var screenImage: NSImage? { programPreviewFrame.image }
     var programPresentation: CapturePresentationSnapshot? { programPreviewFrame.presentation }
@@ -150,7 +159,9 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let sceneSwitchResolverLock = NSLock()
     nonisolated private let screenPipelineIngress = LatestAsyncTaskQueue()
     nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
-    nonisolated(unsafe) private var screenHealthSourceByStreamID: [ObjectIdentifier: LiveSourceID] = [:]
+    nonisolated private let programReadinessTracker = LiveProgramReadinessTracker()
+    nonisolated(unsafe) private var screenContextByStreamID: [ObjectIdentifier: LiveScreenStreamContext] = [:]
+    nonisolated(unsafe) private var nextScreenStreamGeneration: UInt64 = 0
     nonisolated private let screenHealthSourceLock = NSLock()
     nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
@@ -158,12 +169,17 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     private var streamAudioConfiguration: LiveStreamAudioConfiguration?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var sourceHealthTask: Task<Void, Never>?
+    private var sourceRecoveryTask: Task<Void, Never>?
+    private var sourceRecoveryPolicy = LiveSourceRecoveryPolicy()
+    private var sourceRecoveryGeneration: UInt64 = 0
     private var expectedHealthSources: Set<LiveSourceID> = []
     private var screenStream: SCStream?
     private var previewedDisplay: SCDisplay?
     private var previewedDisplayID: UInt32?
+    private var previewedScreenStreamGeneration: UInt64?
     private var cameraInput: AVCaptureDeviceInput?
     private var cameraVideoOutput: AVCaptureVideoDataOutput?
+    private var activeCameraOutputGeneration: UInt64?
 
     func startScreenPreview(
         for displayID: UInt32,
@@ -222,14 +238,20 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 streamID: ObjectIdentifier(stream),
                 space: CursorCaptureSpace(displayID: display.displayID, visibleFrame: display.frame)
             )
-            screenHealthSourceLock.withLock {
-                screenHealthSourceByStreamID[ObjectIdentifier(stream)] = .screen(displayID: display.displayID)
-            }
+            let streamContext = registerScreenContext(stream, displayID: display.displayID)
             startCursorTelemetry()
-            try await stream.startCapture()
+            do {
+                try await stream.startCapture()
+            } catch {
+                screenHealthSourceLock.withLock {
+                    screenContextByStreamID[ObjectIdentifier(stream)] = nil
+                }
+                throw error
+            }
             screenStream = stream
             previewedDisplay = display
             previewedDisplayID = displayID
+            previewedScreenStreamGeneration = streamContext.generation
         } catch {
             cursorTelemetryTask?.cancel()
             cursorTelemetryTask = nil
@@ -242,12 +264,14 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         let stream = screenStream
         if let stream {
             screenHealthSourceLock.withLock {
-                screenHealthSourceByStreamID[ObjectIdentifier(stream)] = nil
+                screenContextByStreamID[ObjectIdentifier(stream)] = nil
             }
         }
+        programReadinessTracker.cancel()
         screenStream = nil
         previewedDisplay = nil
         previewedDisplayID = nil
+        previewedScreenStreamGeneration = nil
         if !preservingLastFrame {
             programPreviewFrame.image = nil
         }
@@ -281,6 +305,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         audio: LiveStreamAudioConfiguration?
     ) async {
         streamPipelineLock.withLock { streamPipeline = pipeline }
+        if pipeline == nil { programReadinessTracker.cancel() }
         guard streamAudioConfiguration != audio else { return }
         streamAudioConfiguration = audio
         guard let displayID = previewedDisplayID else { return }
@@ -288,11 +313,55 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         await startScreenPreview(for: displayID, preservingLastFrame: true)
     }
 
+    func awaitProgramReady(
+        displayID: UInt32,
+        presentation: CapturePresentationSnapshot,
+        requiresCamera: Bool,
+        timeout: Duration = .seconds(5)
+    ) async throws {
+        guard previewedDisplayID == displayID,
+              let screenStreamGeneration = previewedScreenStreamGeneration else {
+            throw LiveProgramReadinessError.screenUnavailable
+        }
+        guard !requiresCamera || activeCameraOutputGeneration != nil else {
+            throw LiveProgramReadinessError.cameraUnavailable
+        }
+        let attempt = programReadinessTracker.begin(
+            displayID: displayID,
+            presentation: presentation,
+            requiresCamera: requiresCamera,
+            screenStreamGeneration: screenStreamGeneration,
+            cameraOutputGeneration: activeCameraOutputGeneration,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            guard let blockers = programReadinessTracker.blockers(for: attempt.id) else {
+                throw CancellationError()
+            }
+            if blockers.isEmpty { return }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let blockers = programReadinessTracker.blockers(for: attempt.id) ?? [.screen]
+        throw LiveProgramReadinessError(blockers: blockers)
+    }
+
+    func cancelProgramPreparation() {
+        programReadinessTracker.cancel()
+    }
+
     func monitorSourceHealth(_ expectedSources: Set<LiveSourceID>) {
         guard expectedHealthSources != expectedSources else { return }
         expectedHealthSources = expectedSources
         sourceHealthTask?.cancel()
         sourceHealthTask = nil
+        sourceRecoveryTask?.cancel()
+        sourceRecoveryTask = nil
+        sourceRecoveryGeneration &+= 1
+        sourceRecoveryPolicy.reset()
+        sourceRecoveryState = .idle
         sourceHealthMonitor.configure(
             expected: expectedSources,
             at: ProcessInfo.processInfo.systemUptime
@@ -303,10 +372,132 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self, !Task.isCancelled else { return }
-                self.sourceHealth = self.sourceHealthMonitor.snapshot(
+                let snapshot = self.sourceHealthMonitor.snapshot(
                     at: ProcessInfo.processInfo.systemUptime
                 )
+                self.sourceHealth = snapshot
+                self.considerSourceRecovery(snapshot)
             }
+        }
+    }
+
+    private func considerSourceRecovery(_ snapshot: LiveSourceHealthSnapshot) {
+        if snapshot.entries.contains(where: {
+            $0.source.category == .screen && $0.state == .recovered
+        }) {
+            sourceRecoveryState = .idle
+        }
+        guard sourceRecoveryTask == nil else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let decision = sourceRecoveryPolicy.decision(for: snapshot, at: now) else {
+            if let exhausted = sourceRecoveryPolicy.exhaustedSource(at: now),
+               snapshot[exhausted]?.state == .stalled {
+                sourceRecoveryState = .failed(
+                    source: exhausted,
+                    message: "Automatic screen recovery was unable to restore live frames. Stop and review the selected display."
+                )
+            }
+            return
+        }
+        guard case let .restartScreen(source, attempt, maximumAttempts) = decision else { return }
+        sourceRecoveryState = .restarting(
+            source: source,
+            attempt: attempt,
+            maximumAttempts: maximumAttempts
+        )
+        let recoveryGeneration = sourceRecoveryGeneration
+        sourceRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var restartFailure: String?
+            do {
+                try await self.restartScreenIngress()
+            } catch {
+                guard !Task.isCancelled,
+                      self.sourceRecoveryGeneration == recoveryGeneration else { return }
+                restartFailure = error.localizedDescription
+                self.screenPreviewError = restartFailure
+            }
+            guard !Task.isCancelled,
+                  self.sourceRecoveryGeneration == recoveryGeneration else { return }
+            self.sourceRecoveryPolicy.complete(
+                source: source,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            if let restartFailure {
+                let retryDetail = attempt < maximumAttempts
+                    ? " Another attempt will run if the source remains stalled."
+                    : " Stop and review the selected display."
+                self.sourceRecoveryState = .failed(
+                    source: source,
+                    message: "Screen restart attempt \(attempt) of \(maximumAttempts) failed. \(restartFailure)\(retryDetail)"
+                )
+            } else {
+                self.sourceRecoveryState = .waitingForSamples(
+                    source: source,
+                    attempt: attempt,
+                    maximumAttempts: maximumAttempts
+                )
+            }
+            self.sourceRecoveryTask = nil
+        }
+    }
+
+    private func restartScreenIngress() async throws {
+        guard let stream = screenStream,
+              let display = previewedDisplay,
+              let displayID = previewedDisplayID else {
+            throw LiveScreenIngressRestartError(
+                detail: "The selected display is no longer available for recovery."
+            )
+        }
+        programReadinessTracker.cancel()
+        try await LiveScreenIngressRestartExecutor().restart(
+            resumeExisting: {
+                self.screenHealthSourceLock.withLock {
+                    self.screenContextByStreamID[ObjectIdentifier(stream)] = nil
+                }
+                try await stream.stopCapture()
+                await self.drainScreenOutputQueue()
+                self.streamCursorSynchronizer.reset()
+                self.streamCursorSynchronizer.register(
+                    streamID: ObjectIdentifier(stream),
+                    space: CursorCaptureSpace(displayID: display.displayID, visibleFrame: display.frame)
+                )
+                let context = self.registerScreenContext(stream, displayID: displayID)
+                try await stream.startCapture()
+                self.previewedScreenStreamGeneration = context.generation
+                self.screenPreviewError = nil
+            },
+            rebuild: {
+                await self.stopScreenPreview(preservingLastFrame: true)
+                await self.startScreenPreview(for: displayID, preservingLastFrame: true)
+                guard self.screenStream != nil else {
+                    throw LiveScreenIngressRestartError(
+                        detail: self.screenPreviewError ?? "The selected display did not restart."
+                    )
+                }
+            }
+        )
+    }
+
+    private func drainScreenOutputQueue() async {
+        await withCheckedContinuation { continuation in
+            screenQueue.async { continuation.resume() }
+        }
+    }
+
+    private func registerScreenContext(
+        _ stream: SCStream,
+        displayID: UInt32
+    ) -> LiveScreenStreamContext {
+        screenHealthSourceLock.withLock {
+            nextScreenStreamGeneration &+= 1
+            let context = LiveScreenStreamContext(
+                displayID: displayID,
+                generation: nextScreenStreamGeneration
+            )
+            screenContextByStreamID[ObjectIdentifier(stream)] = context
+            return context
         }
     }
 
@@ -345,6 +536,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     }
 
     func endProgramPresentation() {
+        programReadinessTracker.cancel()
         sceneSwitchResolverLock.withLock { sceneSwitchResolver = nil }
         programPreviewFrame.presentation = nil
     }
@@ -551,12 +743,17 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     }
 
     private func setActiveCameraOutput(_ output: AVCaptureVideoDataOutput?) {
-        cameraFrameStateLock.withLock {
+        programReadinessTracker.cancel()
+        let generation = cameraFrameStateLock.withLock { () -> UInt64 in
+            let generation = cameraFrameState.generation &+ 1
             cameraFrameState = CameraFrameState(
                 outputID: output.map(ObjectIdentifier.init),
-                pixelBuffer: nil
+                pixelBuffer: nil,
+                generation: generation
             )
+            return generation
         }
+        activeCameraOutputGeneration = output == nil ? nil : generation
         isCameraFrameReady = false
     }
 
@@ -574,19 +771,26 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        let sampleReceivedAt = ProcessInfo.processInfo.systemUptime
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
         let outputID = ObjectIdentifier(output)
-        let acceptedFrame = cameraFrameStateLock.withLock { () -> Bool in
-            guard cameraFrameState.outputID == outputID else { return false }
+        let acceptedGeneration = cameraFrameStateLock.withLock { () -> UInt64? in
+            guard cameraFrameState.outputID == outputID else { return nil }
             cameraFrameState.pixelBuffer = pixelBuffer
-            return true
+            return cameraFrameState.generation
         }
-        guard acceptedFrame else { return }
-        sourceHealthMonitor.record(.camera, at: ProcessInfo.processInfo.systemUptime)
+        guard let acceptedGeneration else { return }
+        sourceHealthMonitor.record(.camera, at: sampleReceivedAt)
         Task { @MainActor [weak self] in self?.markCameraFrameReady(for: outputID) }
         if let pipeline = streamPipelineLock.withLock({ streamPipeline }) {
             let box = SendableSampleBuffer(value: sampleBuffer)
-            Task { await pipeline.appendCamera(box) }
+            Task { [programReadinessTracker] in
+                guard await pipeline.appendCamera(box) else { return }
+                programReadinessTracker.recordCamera(
+                    outputGeneration: acceptedGeneration,
+                    at: sampleReceivedAt
+                )
+            }
         }
         let background = cameraBackgroundLock.withLock { cameraBackground }
         guard background.mode != .off else { return }
@@ -631,10 +835,12 @@ extension LiveSceneCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        let sampleReceivedAt = ProcessInfo.processInfo.systemUptime
+        let screenContext = outputType == .screen ? screenHealthSourceLock.withLock {
+            screenContextByStreamID[ObjectIdentifier(stream)]
+        } : nil
         let healthSource: LiveSourceID? = switch outputType {
-        case .screen: screenHealthSourceLock.withLock {
-            screenHealthSourceByStreamID[ObjectIdentifier(stream)]
-        }
+        case .screen: screenContext?.source
         case .audio: .systemAudio
         case .microphone: .microphone
         @unknown default: nil
@@ -649,7 +855,7 @@ extension LiveSceneCoordinator: SCStreamOutput {
            isAcceptedHealthSample,
            CMSampleBufferIsValid(sampleBuffer),
            CMSampleBufferDataIsReady(sampleBuffer) {
-            sourceHealthMonitor.record(healthSource, at: ProcessInfo.processInfo.systemUptime)
+            sourceHealthMonitor.record(healthSource, at: sampleReceivedAt)
         }
         let displayHostTime = outputType == .screen ? frameDisplayTime(in: sampleBuffer) : nil
         let framePresentation = outputType == .screen
@@ -672,11 +878,25 @@ extension LiveSceneCoordinator: SCStreamOutput {
                         isPrimaryButtonDown: sample.isPrimaryButtonDown
                     )
                 }
-                screenPipelineIngress.enqueue {
-                    await pipeline.appendScreen(
+                let isReadinessCandidate = isAcceptedHealthSample
+                    && CMSampleBufferIsValid(sampleBuffer)
+                    && CMSampleBufferDataIsReady(sampleBuffer)
+                    && sampleBuffer.imageBuffer != nil
+                screenPipelineIngress.enqueue { [programReadinessTracker] in
+                    let didPrepare = await pipeline.appendScreen(
                         box,
                         cursor: cursor,
                         presentation: framePresentation
+                    )
+                    guard didPrepare,
+                          isReadinessCandidate,
+                          let screenContext,
+                          let framePresentation else { return }
+                    programReadinessTracker.recordScreen(
+                        displayID: screenContext.displayID,
+                        streamGeneration: screenContext.generation,
+                        presentation: framePresentation,
+                        at: sampleReceivedAt
                     )
                 }
             case .audio:

@@ -36,6 +36,7 @@ struct StudioRecorderRootView: View {
     @State private var lastSnapshotURL: URL?
     @State private var snapshotError: String?
     @State private var isRunningStreamPreflight = false
+    @State private var isPreparingProgram = false
     @State private var streamPreflightReport: StreamPreflightReport?
     @State private var streamPreflightRevision = 0
     @State private var selectedSceneID: UUID?
@@ -59,10 +60,18 @@ struct StudioRecorderRootView: View {
     private var sourceHealthSections: [LiveSourceHealthSection] {
         var sections: [LiveSourceHealthSection] = []
         if isLocalRecordingActive {
-            sections.append(.init(title: "Recording sources", snapshot: snapshot.sourceHealth))
+            sections.append(.init(
+                title: "Recording sources",
+                snapshot: snapshot.sourceHealth,
+                recoveryState: .idle
+            ))
         }
         if streaming.state.isActive {
-            sections.append(.init(title: "Streaming sources", snapshot: liveScene.sourceHealth))
+            sections.append(.init(
+                title: "Streaming sources",
+                snapshot: liveScene.sourceHealth,
+                recoveryState: liveScene.sourceRecoveryState
+            ))
         }
         return sections
     }
@@ -636,8 +645,8 @@ struct StudioRecorderRootView: View {
                         selectedSceneID: selectedSceneID,
                         isModified: isSelectedSceneModified,
                         isLive: isDeliveryActive,
-                        canSwitch: canSwitchScenes,
-                        canManage: !isDeliveryActive && !isCaptureTransitioning,
+                        canSwitch: canSwitchScenes && !isPreparingProgram,
+                        canManage: !isDeliveryActive && !isCaptureTransitioning && !isPreparingProgram,
                         incompatibility: { liveSceneContract?.incompatibility(for: $0.presentation) },
                         onSelect: applyScene,
                         onSave: saveCurrentScene,
@@ -661,6 +670,7 @@ struct StudioRecorderRootView: View {
                         presentation: programPresentationBinding,
                         selectedSource: $selectedCanvasSource,
                         isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
+                            || isPreparingProgram
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .task(id: primarySelectedDisplayID) {
@@ -722,6 +732,7 @@ struct StudioRecorderRootView: View {
                     hasShortcutMonitoringAccess: shortcutMonitor.hasGlobalAccess,
                     onRequestShortcutMonitoringAccess: shortcutMonitor.requestGlobalAccess,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
+                        || isPreparingProgram
                 )
                 .frame(width: 304)
                 .background(.bar)
@@ -738,7 +749,7 @@ struct StudioRecorderRootView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 286)
-                    .disabled(isLocalRecordingActive || streaming.state.isActive)
+                    .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram)
                     Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                         .font(.caption)
                         .foregroundStyle(streaming.state == .live ? .red : .secondary)
@@ -778,6 +789,7 @@ struct StudioRecorderRootView: View {
                                 LiveSourceHealthView(
                                     title: section.title,
                                     snapshot: section.snapshot,
+                                    recoveryState: section.recoveryState,
                                     displayNames: Dictionary(uniqueKeysWithValues: snapshot.availableDisplays.map {
                                         (String($0.id), $0.title)
                                     })
@@ -795,6 +807,7 @@ struct StudioRecorderRootView: View {
                         StreamPreflightSummaryView(
                             report: streamPreflightReport,
                             isRunning: isRunningStreamPreflight,
+                            activityLabel: isPreparingProgram ? "Rendering current scene…" : nil,
                             onRun: { Task { await runStreamPreflight() } }
                         )
                         .frame(width: 286, alignment: .leading)
@@ -1110,7 +1123,8 @@ struct StudioRecorderRootView: View {
 
     private var canToggleDelivery: Bool {
         guard !snapshot.isCaptureCommandInFlight,
-              !isRunningStreamPreflight else { return false }
+              !isRunningStreamPreflight,
+              !isPreparingProgram else { return false }
         if isDeliveryActive { return true }
         guard snapshot.captureState == .ready,
               snapshot.draftValidationIssues.isEmpty else { return false }
@@ -1145,6 +1159,7 @@ struct StudioRecorderRootView: View {
     }
 
     private var deliveryButtonTitle: String {
+        if isPreparingProgram, !isDeliveryActive { return "Preparing scene…" }
         if isRunningStreamPreflight, !isDeliveryActive { return "Checking…" }
         return isDeliveryActive ? "Stop" : deliveryMode.label
     }
@@ -1396,11 +1411,53 @@ struct StudioRecorderRootView: View {
                   report.canStart,
                   snapshot.route == .studio,
                   let streamConfiguration else { return }
+            isPreparingProgram = true
+            defer { isPreparingProgram = false }
             let audio = LiveStreamAudioConfiguration(
                 capturesSystemAudio: draft.capturesSystemAudio,
                 capturesMicrophone: draft.capturesMicrophone,
                 microphoneDeviceID: draft.microphoneDeviceID,
                 excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
+            )
+            let requiresCamera = draft.capturesCamera && draft.presentation.camera.isVisible
+            liveScene.beginProgramPresentation(draft.presentation)
+            await streaming.pipeline.prepare(
+                configuration: streamConfiguration,
+                presentation: draft.presentation,
+                includesCursor: draft.includeCursor,
+                requiresCamera: requiresCamera
+            )
+            await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
+            do {
+                guard let primarySelectedDisplayID else {
+                    throw LiveProgramReadinessError.screenUnavailable
+                }
+                try await liveScene.awaitProgramReady(
+                    displayID: primarySelectedDisplayID,
+                    presentation: draft.presentation,
+                    requiresCamera: requiresCamera
+                )
+            } catch {
+                await cancelPreparedStream()
+                streamPreflightReport = report.replacingProgramReadiness(
+                    state: .blocked,
+                    detail: error.localizedDescription
+                )
+                return
+            }
+            guard snapshot.route == .studio,
+                  snapshot.studioDraft == draft,
+                  deliveryMode.includesStreaming else {
+                await cancelPreparedStream()
+                streamPreflightReport = report.replacingProgramReadiness(
+                    state: .blocked,
+                    detail: "The scene changed during preparation. Review it and start again."
+                )
+                return
+            }
+            streamPreflightReport = report.replacingProgramReadiness(
+                state: .passed,
+                detail: "A current screen frame and every visible camera source rendered with this scene before publishing."
             )
             let localArchive: LiveProgramArchiveSession?
             if deliveryMode == .stream {
@@ -1409,12 +1466,14 @@ struct StudioRecorderRootView: View {
                         request: request,
                         streamConfiguration: streamConfiguration,
                         audioConfiguration: audio
-                      ) else { return }
+                      ) else {
+                    await cancelPreparedStream()
+                    return
+                }
                 localArchive = archive
             } else {
                 localArchive = nil
             }
-            await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
             streamingSceneContract = StudioSceneLiveContract(
                 initialPresentation: draft.presentation,
                 capturesCamera: draft.capturesCamera,
@@ -1433,6 +1492,22 @@ struct StudioRecorderRootView: View {
             shortcutMonitor.clearVisibleShortcut()
             model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
             model.send(.toggleRecording)
+        }
+    }
+
+    @MainActor
+    private func cancelPreparedStream() async {
+        liveScene.cancelProgramPreparation()
+        await streaming.pipeline.cancelPreparation()
+        await liveScene.setStreamPipeline(nil, audio: nil)
+        if let primarySelectedDisplayID {
+            await liveScene.startScreenPreview(
+                for: primarySelectedDisplayID,
+                preservingLastFrame: true
+            )
+        }
+        if !isLocalRecordingActive {
+            liveScene.endProgramPresentation()
         }
     }
 
@@ -3165,6 +3240,7 @@ private struct SceneSwitcherBar: View {
 private struct LiveSourceHealthSection: Identifiable {
     let title: String
     let snapshot: LiveSourceHealthSnapshot
+    let recoveryState: LiveSourceRecoveryState
 
     var id: String { title }
 }
@@ -3172,6 +3248,7 @@ private struct LiveSourceHealthSection: Identifiable {
 private struct LiveSourceHealthView: View {
     let title: String
     let snapshot: LiveSourceHealthSnapshot
+    let recoveryState: LiveSourceRecoveryState
     let displayNames: [String: String]
 
     var body: some View {
@@ -3213,6 +3290,12 @@ private struct LiveSourceHealthView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let recoveryPresentation {
+                Label(recoveryPresentation.message, systemImage: recoveryPresentation.icon)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(recoveryPresentation.isFailure ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 9)
@@ -3222,6 +3305,19 @@ private struct LiveSourceHealthView: View {
     private var statusLabel: String {
         if snapshot.entries.contains(where: { $0.state == .recovered }) { return "Recovered" }
         return snapshot.entries.contains { $0.state == .waiting } ? "Starting…" : "Receiving"
+    }
+
+    private var recoveryPresentation: (message: String, icon: String, isFailure: Bool)? {
+        switch recoveryState {
+        case .idle:
+            nil
+        case .restarting(_, let attempt, let maximumAttempts):
+            ("Restarting live screen · attempt \(attempt)/\(maximumAttempts)", "arrow.clockwise", false)
+        case .waitingForSamples(_, let attempt, let maximumAttempts):
+            ("Screen restarted · verifying frames (\(attempt)/\(maximumAttempts))", "hourglass", false)
+        case .failed(_, let message):
+            (message, "exclamationmark.triangle.fill", true)
+        }
     }
 
     private func sourceLabel(_ source: LiveSourceID) -> String {
@@ -3252,6 +3348,7 @@ private struct LiveSourceHealthView: View {
 private struct StreamPreflightSummaryView: View {
     let report: StreamPreflightReport?
     let isRunning: Bool
+    let activityLabel: String?
     let onRun: () -> Void
 
     @State private var isExpanded = false
@@ -3273,7 +3370,7 @@ private struct StreamPreflightSummaryView: View {
                 Button(report == nil ? "Run" : "Rerun", action: onRun)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(isRunning)
+                    .disabled(isRunning || activityLabel != nil)
             }
             .frame(minHeight: 34)
             .contentShape(Rectangle())
@@ -3321,7 +3418,7 @@ private struct StreamPreflightSummaryView: View {
 
     @ViewBuilder
     private var statusIcon: some View {
-        if isRunning {
+        if isRunning || activityLabel != nil {
             ProgressView().controlSize(.small)
         } else if let report {
             Image(systemName: report.canStart ? "checkmark.circle.fill" : "xmark.octagon.fill")
@@ -3333,6 +3430,7 @@ private struct StreamPreflightSummaryView: View {
     }
 
     private var summary: String {
+        if let activityLabel { return activityLabel }
         if isRunning { return "Checking configuration…" }
         guard let report else { return "Required before streaming" }
         if !report.blockers.isEmpty {

@@ -157,6 +157,9 @@ actor LiveProgramPipeline {
     private var shortcutExpiresAt: TimeInterval = 0
     private var latestCamera: SendableSampleBuffer?
     private var pixelBufferPool: CVPixelBufferPool?
+    private var isPrepared = false
+    private var preparedConfiguration: YouTubeStreamConfiguration?
+    private var preparedRequiresCamera = false
     private var isRunning = false
     private var isTransportLive = false
     private var hasSubmittedVideo = false
@@ -182,6 +185,29 @@ actor LiveProgramPipeline {
         self.reconnectPolicy = reconnectPolicy
     }
 
+    func prepare(
+        configuration: YouTubeStreamConfiguration,
+        presentation: CapturePresentationSnapshot,
+        includesCursor: Bool,
+        requiresCamera: Bool
+    ) {
+        guard !isRunning else { return }
+        self.presentation = presentation.validated()
+        rendersCursor = includesCursor
+        latestCamera = nil
+        pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
+        preparedConfiguration = configuration
+        preparedRequiresCamera = requiresCamera
+        isPrepared = true
+    }
+
+    func cancelPreparation() {
+        guard !isRunning else { return }
+        clearPreparation()
+        latestCamera = nil
+        pixelBufferPool = nil
+    }
+
     func start(
         configuration: YouTubeStreamConfiguration,
         presentation: CapturePresentationSnapshot,
@@ -191,9 +217,15 @@ actor LiveProgramPipeline {
         stateHandler: @escaping StateHandler
     ) async throws {
         guard !isRunning else { return }
+        let validatedPresentation = presentation.validated()
+        let canReusePreparation = isPrepared
+            && preparedConfiguration == configuration
+            && self.presentation == validatedPresentation
+        if !canReusePreparation { latestCamera = nil }
+        clearPreparation()
         streamGeneration += 1
         let generation = streamGeneration
-        self.presentation = presentation.validated()
+        self.presentation = validatedPresentation
         rendersCursor = includesCursor
         shortcutLabel = nil
         shortcutExpiresAt = 0
@@ -230,6 +262,7 @@ actor LiveProgramPipeline {
             isTransportLive = false
             resetTransportEvidence()
             latestCamera = nil
+            clearPreparation()
             pixelBufferPool = nil
             activeConfiguration = nil
             activeAudioConfiguration = nil
@@ -254,6 +287,7 @@ actor LiveProgramPipeline {
         let archive = activeArchive
         activeArchive = nil
         latestCamera = nil
+        clearPreparation()
         shortcutLabel = nil
         shortcutExpiresAt = 0
         pixelBufferPool = nil
@@ -278,16 +312,26 @@ actor LiveProgramPipeline {
         shortcutExpiresAt = ProcessInfo.processInfo.systemUptime + min(max(duration, 0.2), 5)
     }
 
-    func appendCamera(_ sampleBuffer: SendableSampleBuffer) {
+    @discardableResult
+    func appendCamera(_ sampleBuffer: SendableSampleBuffer) -> Bool {
+        guard isPrepared || isRunning else { return false }
         latestCamera = sampleBuffer
+        return true
     }
 
+    @discardableResult
     func appendScreen(
         _ sampleBuffer: SendableSampleBuffer,
         cursor: ProgramCursorState?,
         presentation framePresentation: CapturePresentationSnapshot? = nil
-    ) async {
-        guard isRunning else { return }
+    ) async -> Bool {
+        guard isRunning else {
+            return renderPreparedScreen(
+                sampleBuffer,
+                cursor: cursor,
+                presentation: framePresentation
+            )
+        }
         let appliedPresentation = (framePresentation ?? presentation).validated()
         presentation = appliedPresentation
         let renderStartedAt = ProcessInfo.processInfo.systemUptime
@@ -295,12 +339,12 @@ actor LiveProgramPipeline {
         let archive = activeArchive
         guard isTransportLive || archive != nil else {
             droppedVideoFrames += 1
-            return
+            return false
         }
         guard let sourceBuffer = sampleBuffer.value.imageBuffer,
               let outputBuffer = makePixelBuffer() else {
             droppedVideoFrames += 1
-            return
+            return false
         }
         let cameraBuffer = latestCamera?.value.imageBuffer
         compositor.render(
@@ -319,7 +363,7 @@ actor LiveProgramPipeline {
             timingSource: sampleBuffer.value
         ) else {
             droppedVideoFrames += 1
-            return
+            return false
         }
         let composedBuffer = SendableSampleBuffer(value: composed)
         if isTransportLive {
@@ -339,6 +383,39 @@ actor LiveProgramPipeline {
         }
         composedVideoFrames += 1
         totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
+        return true
+    }
+
+    private func renderPreparedScreen(
+        _ sampleBuffer: SendableSampleBuffer,
+        cursor: ProgramCursorState?,
+        presentation framePresentation: CapturePresentationSnapshot?
+    ) -> Bool {
+        guard isPrepared else { return false }
+        let appliedPresentation = (framePresentation ?? presentation).validated()
+        guard appliedPresentation == presentation,
+              let sourceBuffer = sampleBuffer.value.imageBuffer,
+              let outputBuffer = makePixelBuffer() else { return false }
+        let cameraBuffer = latestCamera?.value.imageBuffer
+        guard !preparedRequiresCamera || cameraBuffer != nil else { return false }
+        compositor.render(
+            screen: CIImage(cvPixelBuffer: sourceBuffer),
+            camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
+            presentation: appliedPresentation,
+            screenFraming: streamFraming(presentation: appliedPresentation, cursorPosition: cursor.map {
+                CGPoint(x: $0.normalizedX, y: $0.normalizedY)
+            }),
+            cursor: rendersCursor ? cursor : nil,
+            shortcutLabel: activeShortcutLabel(for: appliedPresentation),
+            to: outputBuffer
+        )
+        return true
+    }
+
+    private func clearPreparation() {
+        isPrepared = false
+        preparedConfiguration = nil
+        preparedRequiresCamera = false
     }
 
     private func activeShortcutLabel(for presentation: CapturePresentationSnapshot) -> String? {

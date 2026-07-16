@@ -24,6 +24,51 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(retryWindow, 60)
     }
 
+    func testPreparedPipelineRendersTheExactStageBeforeTransportStarts() async throws {
+        let pipeline = LiveProgramPipeline(sink: InspectableStreamSink())
+        var presentation = CapturePresentationSnapshot.default
+        presentation.name = "Prepared stage"
+        presentation.camera.isVisible = false
+        await pipeline.prepare(
+            configuration: streamConfiguration(),
+            presentation: presentation,
+            includesCursor: true,
+            requiresCamera: false
+        )
+
+        let prepared = await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil,
+            presentation: presentation
+        )
+
+        XCTAssertTrue(prepared)
+        await pipeline.cancelPreparation()
+    }
+
+    func testPreparedPipelineRequiresAFreshCameraWhenTheStageShowsIt() async throws {
+        let pipeline = LiveProgramPipeline(sink: InspectableStreamSink())
+        var presentation = CapturePresentationSnapshot.default
+        presentation.camera.isVisible = true
+        await pipeline.prepare(
+            configuration: streamConfiguration(),
+            presentation: presentation,
+            includesCursor: true,
+            requiresCamera: true
+        )
+        let screen = SendableSampleBuffer(value: try videoSampleBuffer(color: .blue))
+
+        let screenBeforeCamera = await pipeline.appendScreen(screen, cursor: nil, presentation: presentation)
+        let cameraPrepared = await pipeline.appendCamera(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .red))
+        )
+        let screenAfterCamera = await pipeline.appendScreen(screen, cursor: nil, presentation: presentation)
+        XCTAssertFalse(screenBeforeCamera)
+        XCTAssertTrue(cameraPrepared)
+        XCTAssertTrue(screenAfterCamera)
+        await pipeline.cancelPreparation()
+    }
+
     func testTransportBecomesSendingOnlyAfterTheFirstConfiguredVideoAndAudioPackets() async throws {
         let sink = InspectableStreamSink()
         let pipeline = LiveProgramPipeline(sink: sink)

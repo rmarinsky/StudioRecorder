@@ -22,6 +22,8 @@ enum StreamPreflightCheckID: String, Equatable, Hashable, Sendable {
     case bitrateBelowGuidance
     case fourKCameraLoad
     case uploadHeadroomUnverified
+    case programReady
+    case programUnavailable
 }
 
 enum StreamPreflightCheckState: Equatable, Sendable {
@@ -110,6 +112,25 @@ struct StreamPreflightReport: Equatable, Sendable {
     var blockers: [StreamPreflightCheck] { checks.filter { $0.state == .blocked } }
     var warnings: [StreamPreflightCheck] { checks.filter { $0.state == .warning } }
     var canStart: Bool { blockers.isEmpty }
+
+    func replacingProgramReadiness(
+        state: StreamPreflightCheckState,
+        detail: String
+    ) -> Self {
+        var next = checks.filter { ![.programReady, .programUnavailable].contains($0.id) }
+        let isReady = state == .passed
+        next.append(StreamPreflightCheck(
+            id: isReady ? .programReady : .programUnavailable,
+            state: isReady ? .passed : .blocked,
+            title: isReady ? "Prepared scene" : "Prepared scene unavailable",
+            detail: detail
+        ))
+        return Self(
+            checks: next,
+            requiredStartupStorageBytes: requiredStartupStorageBytes,
+            recommendedSessionStorageBytes: recommendedSessionStorageBytes
+        )
+    }
 }
 
 struct StreamPreflightEvaluator: Sendable {

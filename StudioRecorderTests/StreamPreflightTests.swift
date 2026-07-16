@@ -3,6 +3,28 @@ import XCTest
 @testable import StudioRecorder
 
 final class StreamPreflightTests: XCTestCase {
+    func testPreparedSceneRuntimeCheckCanBlockAndThenReplaceItselfWithPass() {
+        let base = StreamPreflightReport(
+            checks: [],
+            requiredStartupStorageBytes: 0,
+            recommendedSessionStorageBytes: 0
+        )
+
+        let blocked = base.replacingProgramReadiness(
+            state: .blocked,
+            detail: "The camera did not produce a current frame."
+        )
+        XCTAssertFalse(blocked.canStart)
+        XCTAssertEqual(blocked.blockers.map(\.id), [.programUnavailable])
+
+        let passed = blocked.replacingProgramReadiness(
+            state: .passed,
+            detail: "The current scene produced a composed frame."
+        )
+        XCTAssertTrue(passed.canStart)
+        XCTAssertEqual(passed.checks.map(\.id), [.programReady])
+    }
+
     func testPreflightBlocksInvalidCredentialsEndpointStorageAndCapacityTogether() {
         let request = StreamPreflightRequest(
             deliveryMode: .stream,
