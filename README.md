@@ -9,7 +9,7 @@ public brand.
 - discovers all ScreenCaptureKit displays after macOS grants Screen Recording access;
 - records each selected display as a native raw movie in parallel by default;
 - records the selected camera as a separate fragmented raw movie, preserving it for later layout changes when Editable tracks is selected;
-- requests system audio and microphone capture through ScreenCaptureKit;
+- captures system audio and microphone through ScreenCaptureKit and preserves them as two synchronized independent tracks in `raw-tracks/audio-stems.mov`; legacy projects still fall back to their embedded mixed screen audio;
 - uses HEVC when available, with H.264 fallback;
 - writes a `.recordingproject` package to `~/Movies/Studio Recorder/` with a manifest and append-only journal;
 - provides a native Projects/Studio shell, exact live display and camera preview, actionable per-track recovery review, and `⌘R` start/stop shortcut;
@@ -35,7 +35,7 @@ public brand.
 
 ## Deliberately not claimed as complete
 
-A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing and the custom cursor/click renderer. Editable tracks keeps the full display recoverable; Program movie only deliberately trades later layout changes for one share-ready file. Quick Edit builds a cached source-time audio overview with peak/RMS levels and clipping markers, plus master and selected-segment mute/volume, without rewriting retained media. Source-separated waveforms, segment speed, true system/microphone stems, and local transcripts remain future slices.
+A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing and the custom cursor/click renderer. Editable tracks keeps the full display and synchronized system/microphone stems recoverable; Program movie only verifies the expected audio tracks before trading later layout changes for one share-ready file. Quick Edit builds a cached source-time audio overview with peak/RMS levels and clipping markers, plus master and selected-segment mute/volume, without rewriting retained media. Source-separated waveform controls, segment speed, and local transcripts remain future slices.
 YouTube streaming now retries an interrupted established connection for at least one minute (ten attempts with bounded backoff), with an honest reconnect state and cancellable Stop behavior. Record + Stream keeps its independent editable recording alive while YouTube reconnects. Stream-only automatically writes the exact composed program to a fragmented local MOV, keeps it running through reconnects, and exposes archive failure separately from RTMPS state; system and microphone inputs are mixed into the single AAC stream expected by YouTube. The current preflight verifies local configuration and basic host reachability, not viewer-visible broadcast state or sustained upload capacity. YouTube OAuth/API broadcast health, a timed exact-scene warm-up, exact flattened archive audio mixing, and long horizontal/vertical/4K ingest soak tests remain before streaming is release-ready. Cloud hosting and arbitrary source/device changes during a live session remain out of scope.
 
 ## Build and run

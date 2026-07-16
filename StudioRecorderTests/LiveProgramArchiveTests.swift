@@ -4,6 +4,109 @@ import XCTest
 
 @MainActor
 final class LiveProgramArchiveTests: XCTestCase {
+    func testRecordingAudioStemWriterKeepsTwoSourcesOnTheScreenTimeline() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "RecordingAudioStemWriterTests-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appending(path: "audio-stems.mov")
+        let writer = try RecordingAudioStemWriter(configuration: .init(
+            outputURL: outputURL,
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        ))
+
+        XCTAssertTrue(try writer.establishTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000)))
+        try writer.append(
+            try audioSampleBuffer(
+                sampleRate: 48_000,
+                channels: 2,
+                presentationTime: CMTime(seconds: 10.1, preferredTimescale: 48_000)
+            ),
+            source: .systemAudio
+        )
+        try writer.append(
+            try audioSampleBuffer(
+                sampleRate: 44_100,
+                channels: 1,
+                presentationTime: CMTime(seconds: 10.35, preferredTimescale: 44_100)
+            ),
+            source: .microphone
+        )
+
+        let result = try await writer.finish()
+
+        XCTAssertEqual(result.outputURL, outputURL)
+        XCTAssertEqual(result.sampleCounts[.systemAudio], 1)
+        XCTAssertEqual(result.sampleCounts[.microphone], 1)
+        let asset = AVURLAsset(url: outputURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 2)
+        var durations: [TimeInterval] = []
+        for track in tracks {
+            durations.append(try await track.load(.timeRange).duration.seconds)
+        }
+        durations.sort()
+        XCTAssertEqual(durations[1] - durations[0], 0.25, accuracy: 0.03)
+    }
+
+    func testRecordingAudioStemWriterPreservesQuietRequestedSources() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "RecordingAudioStemWriterTests-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appending(path: "audio-stems.mov")
+        let writer = try RecordingAudioStemWriter(configuration: .init(
+            outputURL: outputURL,
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        ))
+
+        XCTAssertTrue(try writer.establishTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000)))
+        let result = try await writer.finish()
+
+        XCTAssertEqual(result.sampleCounts[.systemAudio], 0)
+        XCTAssertEqual(result.sampleCounts[.microphone], 0)
+        let tracks = try await AVURLAsset(url: outputURL).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 2)
+    }
+
+    func testRecordingAudioStemWriterAcceptsFirstAudioAfterThirtySeconds() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "RecordingAudioStemWriterTests-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appending(path: "audio-stems.mov")
+        let writer = try RecordingAudioStemWriter(configuration: .init(
+            outputURL: outputURL,
+            capturesSystemAudio: true,
+            capturesMicrophone: false
+        ))
+
+        XCTAssertTrue(try writer.establishTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000)))
+        try writer.append(
+            try audioSampleBuffer(
+                sampleRate: 48_000,
+                channels: 2,
+                presentationTime: CMTime(seconds: 50.5, preferredTimescale: 48_000)
+            ),
+            source: .systemAudio
+        )
+        let result = try await writer.finish()
+
+        XCTAssertEqual(result.sampleCounts[.systemAudio], 1)
+        let tracks = try await AVURLAsset(url: outputURL).loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
+        let timeRange = try await track.load(.timeRange)
+        XCTAssertGreaterThan(timeRange.duration.seconds, 40)
+    }
+
     func testMovieWriterFinalizesPlayableFragmentedComposedVideo() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "LiveProgramArchiveTests-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -192,7 +295,8 @@ final class LiveProgramArchiveTests: XCTestCase {
     private func audioSampleBuffer(
         sampleRate: Double,
         channels: AVAudioChannelCount,
-        frameCount: AVAudioFrameCount = 1_024
+        frameCount: AVAudioFrameCount = 1_024,
+        presentationTime: CMTime = .zero
     ) throws -> CMSampleBuffer {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -221,7 +325,7 @@ final class LiveProgramArchiveTests: XCTestCase {
         }
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?

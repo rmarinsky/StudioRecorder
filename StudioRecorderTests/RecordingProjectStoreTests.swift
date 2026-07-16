@@ -79,6 +79,139 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(ProjectTrackTiming.offset(from: "missing", to: "camera", in: events), 0)
     }
 
+    func testProgramOnlyFinalizationUsesAndVerifiesBothIndependentAudioStems() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+        let request = CaptureRequest(
+            id: UUID(),
+            createdAt: Date(timeIntervalSinceReferenceDate: 43),
+            displaySources: [
+                DisplaySourceSnapshot(
+                    id: 9,
+                    name: "Studio Display",
+                    pixelWidth: 64,
+                    pixelHeight: 64,
+                    metadataState: .known
+                ),
+            ],
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: true,
+                capturesMicrophone: true,
+                microphone: MicrophoneSourceSnapshot(id: "mic", name: "Microphone"),
+                primaryAudioDisplayID: 9,
+                excludesStudioRecorderAudio: true
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .h264,
+                includeCursor: false,
+                excludeStudioRecorder: true,
+                programResolutionTarget: "64x64"
+            ),
+            presentation: presentation,
+            storage: StorageCaptureSnapshot(
+                destinationURL: destination,
+                destinationBookmarkID: "audio-stems",
+                fallbackPath: destination.path,
+                retentionPolicy: .programOnly
+            )
+        )
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(
+            to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)),
+            frameCount: 31
+        )
+        try await writeReadableAudioStems(
+            to: try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project)),
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        )
+        try store.markStarted(displayID: 9, in: project)
+        try store.markFinished(displayID: 9, in: project)
+        try store.markStarted(trackID: project.trackID(for: .audio), in: project)
+        try store.markFinished(trackID: project.trackID(for: .audio), in: project)
+
+        try await RecordingRetentionFinalizer().finalize(
+            project: project,
+            request: request,
+            projectStore: store,
+            cursorTimeline: nil
+        )
+
+        let programURL = project.rootURL.appending(path: RecordingTrackDescriptor.program.relativePath)
+        let audioTracks = try await AVURLAsset(url: programURL).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: "raw-tracks").path
+        ))
+        XCTAssertEqual(try decodeManifest(at: project.rootURL).tracks, [.program])
+    }
+
+    func testProgramOnlyFinalizationRetainsRawTracksWhenExpectedAudioStemsAreMissing() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let request = archiveCaptureRequest(destination: destination)
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)))
+
+        do {
+            try await RecordingRetentionFinalizer().finalize(
+                project: project,
+                request: request,
+                projectStore: store,
+                cursorTimeline: nil
+            )
+            XCTFail("Expected missing independent audio stems to stop destructive finalization.")
+        } catch RecordingRetentionFinalizerError.missingAudioStems {
+            // Expected: raw safety media remains the source of truth.
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: "raw-tracks").path
+        ))
+        XCTAssertEqual(try decodeManifest(at: project.rootURL).tracks?.map(\.kind), [.screen, .audio])
+    }
+
+    func testProgramOnlyFinalizationRetainsRawTracksWhenReadableAudioStemsFailed() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let request = archiveCaptureRequest(destination: destination)
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)))
+        try await writeReadableAudioStems(
+            to: try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project)),
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        )
+        try store.markFailure(
+            trackID: project.trackID(for: .audio),
+            detail: "Synthetic late backpressure",
+            in: project
+        )
+
+        do {
+            try await RecordingRetentionFinalizer().finalize(
+                project: project,
+                request: request,
+                projectStore: store,
+                cursorTimeline: nil
+            )
+            XCTFail("Expected a failed stem track to stop destructive finalization.")
+        } catch RecordingRetentionFinalizerError.missingAudioStems {
+            // Expected even though the fragmented audio movie remains readable.
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: project.rootURL.appending(path: "raw-tracks").path
+        ))
+    }
+
     func testV1PackageDiscoveryPreservesThePackageAndNormalizesUnknownState() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -96,7 +229,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: manifestURL), manifestData)
     }
 
-    func testV2PackageDiscoveryReturnsFinalizedSnapshot() async throws {
+    func testV3PackageDiscoveryReturnsFinalizedSnapshot() async throws {
         let rootURL = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: rootURL) }
         let store = RecordingProjectStore(baseDirectory: rootURL)
@@ -113,7 +246,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         let snapshots = await store.discoverProjects()
         let manifest = try decodeManifest(at: project.rootURL)
 
-        XCTAssertEqual(manifest.schemaVersion, 2)
+        XCTAssertEqual(manifest.schemaVersion, 3)
         XCTAssertNotNil(manifest.captureRequest)
         XCTAssertEqual(manifest.captureRequest?.capturesMicrophone, false)
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-1.mov"])
@@ -191,8 +324,13 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureRequest?.audio.capturesSystemAudio, false)
         XCTAssertEqual(manifest.captureRequest?.audio.excludesStudioRecorderAudio, false)
         XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "bookmark-9")
-        XCTAssertEqual(manifest.tracks?.map(\.kind), [.screen, .camera])
-        XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-9.mov", "raw-tracks/camera.mov"])
+        XCTAssertEqual(manifest.schemaVersion, 3)
+        XCTAssertEqual(manifest.tracks?.map(\.kind), [.screen, .camera, .audio])
+        XCTAssertEqual(manifest.tracks?.map(\.relativePath), [
+            "raw-tracks/screen-9.mov",
+            "raw-tracks/camera.mov",
+            "raw-tracks/audio-stems.mov",
+        ])
         XCTAssertEqual(
             store.rawTrackURL(for: "camera", in: project)?.path,
             project.rootURL.appending(path: "raw-tracks/camera.mov").path
@@ -200,16 +338,23 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)))
         try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: "camera", in: project)))
+        try await writeReadableAudioStems(
+            to: try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project)),
+            capturesSystemAudio: false,
+            capturesMicrophone: true
+        )
         try store.markStarted(displayID: 9, in: project)
         try store.markStarted(trackID: project.trackID(for: .camera), in: project)
+        try store.markStarted(trackID: project.trackID(for: .audio), in: project)
         try store.markFinished(displayID: 9, in: project)
         try store.markFinished(trackID: project.trackID(for: .camera), in: project)
+        try store.markFinished(trackID: project.trackID(for: .audio), in: project)
         try store.close(project)
 
         let snapshots = await store.discoverProjects(in: [destination])
         let snapshot = try XCTUnwrap(snapshots.single)
         XCTAssertEqual(snapshot.lifecycle, .finalized)
-        XCTAssertEqual(snapshot.recoveryReport.tracks.map(\.state), [.finalized, .finalized])
+        XCTAssertEqual(snapshot.recoveryReport.tracks.map(\.state), [.finalized, .finalized, .finalized])
     }
 
     func testDiscoveryOrdersProjectsNewestFirstDeterministically() async throws {
@@ -326,6 +471,33 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.tracks?.map(\.id), ["screen-1"])
         XCTAssertNotNil(manifest.stoppedAt)
         XCTAssertEqual(events.last?.kind, .recoveryCompleted)
+    }
+
+    func testRecoveryCanKeepAnAudioOnlyStemWhenTheScreenTrackIsUnavailable() async throws {
+        let rootURL = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = RecordingProjectStore(baseDirectory: rootURL)
+        let request = archiveCaptureRequest(destination: rootURL)
+        let project = try store.createProject(request: request)
+        try await writeReadableAudioStems(
+            to: try XCTUnwrap(store.rawTrackURL(for: "audio-stems", in: project)),
+            capturesSystemAudio: true,
+            capturesMicrophone: true
+        )
+        try store.markStarted(trackID: project.trackID(for: .audio), in: project)
+        try store.markInterrupted(project, detail: "Screen capture stopped before its movie became readable")
+
+        let interruptedProjects = await store.discoverProjects()
+        let interrupted = try XCTUnwrap(interruptedProjects.single)
+        XCTAssertEqual(interrupted.recoveryReport.tracks.map(\.state), [.missing, .partialReadable])
+
+        try store.recoverReadableTracks(from: interrupted)
+
+        let recoveredProjects = await store.discoverProjects()
+        let recovered = try XCTUnwrap(recoveredProjects.single)
+        XCTAssertEqual(recovered.lifecycle, .recovered)
+        XCTAssertEqual(recovered.tracks, [.audioStems])
+        XCTAssertEqual(recovered.recoveryReport.tracks.single?.state, .partialReadable)
     }
 
     func testRecoveryRefusesToRewriteAProjectWithoutReadableTracks() async throws {
@@ -646,6 +818,97 @@ final class RecordingProjectStoreTests: XCTestCase {
                 }
             }
         }
+    }
+
+    private func writeReadableAudioStems(
+        to url: URL,
+        capturesSystemAudio: Bool,
+        capturesMicrophone: Bool
+    ) async throws {
+        let writer = try RecordingAudioStemWriter(configuration: .init(
+            outputURL: url,
+            capturesSystemAudio: capturesSystemAudio,
+            capturesMicrophone: capturesMicrophone
+        ))
+        XCTAssertTrue(try writer.establishTimeline(at: .zero))
+        if capturesSystemAudio {
+            try writer.append(
+                try audioSampleBuffer(presentationTime: .zero),
+                source: .systemAudio
+            )
+        }
+        if capturesMicrophone {
+            try writer.append(
+                try audioSampleBuffer(
+                    presentationTime: CMTime(seconds: 0.05, preferredTimescale: 48_000)
+                ),
+                source: .microphone
+            )
+        }
+        _ = try await writer.finish()
+    }
+
+    private func audioSampleBuffer(presentationTime: CMTime) throws -> CMSampleBuffer {
+        let sampleRate = 48_000.0
+        let frameCount: AVAudioFrameCount = 1_024
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 2,
+            interleaved: false
+        ),
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            throw NSError(domain: "RecordingProjectStoreTests", code: 2)
+        }
+        pcmBuffer.frameLength = frameCount
+
+        var formatDescription: CMAudioFormatDescription?
+        guard CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: format.streamDescription,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        ) == noErr,
+        let formatDescription else {
+            throw NSError(domain: "RecordingProjectStoreTests", code: 3)
+        }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 48_000),
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        guard CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: formatDescription,
+            sampleCount: CMItemCount(frameCount),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        ) == noErr,
+        let sampleBuffer else {
+            throw NSError(domain: "RecordingProjectStoreTests", code: 4)
+        }
+        guard CMSampleBufferSetDataBufferFromAudioBufferList(
+            sampleBuffer,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
+            bufferList: pcmBuffer.audioBufferList
+        ) == noErr else {
+            throw NSError(domain: "RecordingProjectStoreTests", code: 5)
+        }
+        return sampleBuffer
     }
 }
 

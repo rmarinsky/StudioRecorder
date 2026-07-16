@@ -31,6 +31,83 @@ enum RecordingState: Equatable {
     }
 }
 
+private final class RecordingAudioStemSessionState: @unchecked Sendable {
+    struct Snapshot {
+        let writer: RecordingAudioStemWriter?
+        let failureDetail: String?
+    }
+
+    private struct Session {
+        let projectID: UUID
+        var writer: RecordingAudioStemWriter?
+        var streamID: ObjectIdentifier?
+        var failureDetail: String?
+    }
+
+    private let lock = NSLock()
+    private var session: Session?
+
+    func install(_ writer: RecordingAudioStemWriter, projectID: UUID) {
+        let previous = lock.withLock { () -> RecordingAudioStemWriter? in
+            let previous = session?.writer
+            session = Session(projectID: projectID, writer: writer)
+            return previous
+        }
+        previous?.abort()
+    }
+
+    func bind(streamID: ObjectIdentifier, projectID: UUID) {
+        lock.withLock {
+            guard session?.projectID == projectID else { return }
+            session?.streamID = streamID
+        }
+    }
+
+    func hasWriter(projectID: UUID) -> Bool {
+        lock.withLock { session?.projectID == projectID && session?.writer != nil }
+    }
+
+    func writer(for streamID: ObjectIdentifier) -> RecordingAudioStemWriter? {
+        lock.withLock {
+            guard session?.streamID == streamID else { return nil }
+            return session?.writer
+        }
+    }
+
+    func fail(streamID: ObjectIdentifier, detail: String) -> UUID? {
+        let result = lock.withLock { () -> (UUID, RecordingAudioStemWriter)? in
+            guard var current = session,
+                  current.streamID == streamID,
+                  current.failureDetail == nil,
+                  let writer = current.writer else { return nil }
+            current.failureDetail = detail
+            current.writer = nil
+            current.streamID = nil
+            session = current
+            return (current.projectID, writer)
+        }
+        result?.1.abort()
+        return result?.0
+    }
+
+    func detach(projectID: UUID) -> Snapshot? {
+        lock.withLock {
+            guard let current = session,
+                  current.projectID == projectID else { return nil }
+            session = nil
+            return Snapshot(writer: current.writer, failureDetail: current.failureDetail)
+        }
+    }
+
+    func abortAndClear() {
+        let writer = lock.withLock { () -> RecordingAudioStemWriter? in
+            defer { session = nil }
+            return session?.writer
+        }
+        writer?.abort()
+    }
+}
+
 @MainActor
 final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var state: RecordingState = .preparing
@@ -55,6 +132,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private let retentionFinalizer = RecordingRetentionFinalizer()
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
+    nonisolated private let audioStemSession = RecordingAudioStemSessionState()
+    private var audioStemFailureReported = false
     private var durationTask: Task<Void, Never>?
     private var cursorTelemetryTask: Task<Void, Never>?
     private var studioSceneTimeline: StudioSceneTimeline?
@@ -163,6 +242,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         recordingStartedHostTime = nil
         recordingStartedAtByDisplayID = [:]
         acceptedSceneSwitchIDs = []
+        audioStemSession.abortAndClear()
+        audioStemFailureReported = false
         hasAuthoritativeRecordingStart = false
         recordingPauseTimeline = RecordingPauseTimeline()
         safeShortcutTimeline = SafeShortcutTimeline()
@@ -182,6 +263,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             let project = try projectStore.createProject(request: request)
             activeProject = project
             activeCaptureRequest = request
+            if let trackID = project.trackID(for: .audio),
+               let outputURL = projectStore.rawTrackURL(for: trackID, in: project) {
+                let writer = try RecordingAudioStemWriter(configuration: .init(
+                    outputURL: outputURL,
+                    capturesSystemAudio: request.audio.capturesSystemAudio,
+                    capturesMicrophone: request.audio.capturesMicrophone
+                ))
+                audioStemSession.install(writer, projectID: project.id)
+            }
             studioSceneTimeline = StudioSceneTimeline(initialPresentation: request.presentation)
             if let studioSceneTimeline {
                 try projectStore.writeStudioSceneTimeline(studioSceneTimeline, in: project)
@@ -210,8 +300,21 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
                 try stream.addRecordingOutput(output)
-                if needsCursorTelemetry(request) {
+                let capturesAudioStems = isPrimaryAudioDisplay
+                    && audioStemSession.hasWriter(projectID: project.id)
+                if capturesAudioStems {
+                    audioStemSession.bind(streamID: ObjectIdentifier(stream), projectID: project.id)
+                }
+                if needsCursorTelemetry(request) || capturesAudioStems {
                     try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
+                }
+                if capturesAudioStems && request.audio.capturesSystemAudio {
+                    try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: cursorTelemetryQueue)
+                }
+                if capturesAudioStems && request.audio.capturesMicrophone {
+                    try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: cursorTelemetryQueue)
+                }
+                if needsCursorTelemetry(request) {
                     cursorSynchronizer.register(
                         streamID: ObjectIdentifier(stream),
                         space: cursorCaptureSpace(for: display, request: request)
@@ -607,10 +710,49 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 }
             }
         }
+        await finishAudioStems()
         if await waitForPendingOutputs() {
             errors.append("Timed out while finalizing one or more recording outputs.")
         }
         return errors
+    }
+
+    private func finishAudioStems() async {
+        guard let project = activeProject else {
+            audioStemSession.abortAndClear()
+            return
+        }
+        guard let session = audioStemSession.detach(projectID: project.id) else { return }
+        if let failureDetail = session.failureDetail {
+            reportAudioStemFailure(failureDetail, projectID: project.id)
+            return
+        }
+        guard let writer = session.writer,
+              let trackID = project.trackID(for: .audio) else {
+            session.writer?.abort()
+            return
+        }
+        do {
+            _ = try await writer.finish()
+            try projectStore.markStarted(trackID: trackID, in: project)
+            try projectStore.markFinished(trackID: trackID, in: project)
+        } catch {
+            try? projectStore.markFailure(trackID: trackID, detail: error.localizedDescription, in: project)
+            finalizationWarning = "The screen recording is safe, but separate audio stems are incomplete. \(error.localizedDescription)"
+        }
+    }
+
+    private func reportAudioStemFailure(_ detail: String, projectID: UUID) {
+        guard !audioStemFailureReported,
+              let project = activeProject,
+              project.id == projectID else { return }
+        audioStemFailureReported = true
+        try? projectStore.markFailure(
+            trackID: project.trackID(for: .audio),
+            detail: detail,
+            in: project
+        )
+        finalizationWarning = "The screen recording continues, but separate audio stems stopped. \(detail)"
     }
 
     private func capture(for output: SCRecordingOutput) -> Capture? {
@@ -675,6 +817,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         cursorSynchronizer.reset()
         captures.removeAll()
         cameraRecorder = nil
+        audioStemSession.abortAndClear()
+        audioStemFailureReported = false
         startedOutputIDs.removeAll()
         pendingOutputIDs.removeAll()
         activeProject = nil
@@ -775,18 +919,42 @@ extension RecordingCoordinator: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .screen,
-              let attachments = CMSampleBufferGetSampleAttachmentsArray(
-                  sampleBuffer,
-                  createIfNecessary: false
-              ) as? [[SCStreamFrameInfo: Any]],
-              let frameInfo = attachments.first,
-              let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value else {
-            return
+        let streamID = ObjectIdentifier(stream)
+        do {
+            switch outputType {
+            case .screen:
+                guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                    sampleBuffer,
+                    createIfNecessary: false
+                ) as? [[SCStreamFrameInfo: Any]],
+                let frameInfo = attachments.first,
+                let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value else {
+                    return
+                }
+                if let writer = audioStemSession.writer(for: streamID) {
+                    guard let statusRawValue = (frameInfo[.status] as? NSNumber)?.intValue,
+                          SCFrameStatus(rawValue: statusRawValue) == .complete else {
+                        return
+                    }
+                    _ = try writer.establishTimeline(at: sampleBuffer.presentationTimeStamp)
+                }
+                cursorSynchronizer.alignFrame(
+                    streamID: ObjectIdentifier(stream),
+                    hostTime: displayTime
+                )
+            case .audio:
+                try audioStemSession.writer(for: streamID)?.append(sampleBuffer, source: .systemAudio)
+            case .microphone:
+                try audioStemSession.writer(for: streamID)?.append(sampleBuffer, source: .microphone)
+            @unknown default:
+                break
+            }
+        } catch {
+            let detail = error.localizedDescription
+            guard let projectID = audioStemSession.fail(streamID: streamID, detail: detail) else { return }
+            Task { @MainActor [weak self] in
+                self?.reportAudioStemFailure(detail, projectID: projectID)
+            }
         }
-        cursorSynchronizer.alignFrame(
-            streamID: ObjectIdentifier(stream),
-            hostTime: displayTime
-        )
     }
 }

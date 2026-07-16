@@ -381,19 +381,19 @@ struct ProjectDetailView: View {
             return FileManager.default.fileExists(atPath: url.path)
                 && (recoveryState == .finalized || recoveryState == .partialReadable)
         })
-        let audioTrack = project.primaryAudioDisplayID.flatMap { displayID in
-            project.tracks.first { track in
-                guard track.kind == .screen, track.displayID == displayID else { return false }
-                let url = project.rootURL.appending(path: track.relativePath)
-                let recoveryState = project.recoveryReport.tracks.first(where: { $0.id == track.id })?.state
-                return FileManager.default.fileExists(atPath: url.path)
-                    && (recoveryState == .finalized || recoveryState == .partialReadable)
-            }
+        let audioStemTrack = project.tracks.first { track in
+            track.kind == .audio && isPlayable(track)
         }
+        let legacyAudioTrack = project.primaryAudioDisplayID.flatMap { displayID in
+            project.tracks.first { track in
+                track.kind == .screen && track.displayID == displayID && isPlayable(track)
+            }
+        } ?? screen
+        let audioTrack = audioStemTrack ?? legacyAudioTrack
         return ProjectProgramSources(
             screenURL: project.rootURL.appending(path: screen.relativePath),
             cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
-            audioURL: audioTrack.map { project.rootURL.appending(path: $0.relativePath) },
+            audioURL: project.rootURL.appending(path: audioTrack.relativePath),
             screenDisplayID: screen.displayID,
             cursorTimeline: cursorTimeline,
             shortcutTimeline: shortcutTimeline,
@@ -542,6 +542,8 @@ struct ProjectDetailView: View {
 
     private func trackTitle(_ track: RecordingTrackDescriptor) -> String {
         switch track.kind {
+        case .audio:
+            return "System & microphone stems"
         case .camera:
             return "Camera track"
         case .program:

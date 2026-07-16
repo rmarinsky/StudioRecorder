@@ -3,12 +3,15 @@ import Foundation
 
 enum RecordingRetentionFinalizerError: LocalizedError {
     case missingScreenTrack
+    case missingAudioStems
     case unreadableProgramMovie
 
     var errorDescription: String? {
         switch self {
         case .missingScreenTrack:
             "The composed program movie could not be created because no screen track is available."
+        case .missingAudioStems:
+            "The composed program movie could not be created because the independent audio stems are unavailable."
         case .unreadableProgramMovie:
             "The composed program movie did not pass media verification."
         }
@@ -60,11 +63,34 @@ final class RecordingRetentionFinalizer {
         }
         let camera = tracks.first { $0.kind == .camera }
         let cameraURL = camera.flatMap { projectStore.rawTrackURL(for: $0.id, in: project) }
-        let audio = request.primaryAudioDisplayID.flatMap { displayID in
+        let audioStem = tracks.first { $0.kind == .audio }
+        let events = projectStore.journalEvents(for: project)
+        let legacyAudio = request.primaryAudioDisplayID.flatMap { displayID in
             tracks.first { $0.kind == .screen && $0.displayID == displayID }
         } ?? screen
-        let audioURL = projectStore.rawTrackURL(for: audio.id, in: project)
-        let events = projectStore.journalEvents(for: project)
+        let audioURL: URL?
+        let expectedAudioTrackCount: Int
+        if let audioStem {
+            guard let stemURL = projectStore.rawTrackURL(for: audioStem.id, in: project),
+                  fileManager.fileExists(atPath: stemURL.path),
+                  events.contains(where: {
+                      $0.trackID == audioStem.id && $0.kind == .trackFinished
+                  }),
+                  !events.contains(where: {
+                      $0.trackID == audioStem.id && $0.kind == .trackFailed
+                  }) else {
+                throw RecordingRetentionFinalizerError.missingAudioStems
+            }
+            audioURL = stemURL
+            expectedAudioTrackCount = [
+                request.audio.capturesSystemAudio,
+                request.audio.capturesMicrophone,
+            ].filter(\.self).count
+        } else {
+            // Schema 1/2 projects embedded their mixed audio in the primary screen movie.
+            audioURL = projectStore.rawTrackURL(for: legacyAudio.id, in: project)
+            expectedAudioTrackCount = 0
+        }
         let programURL = project.rootURL.appending(path: Self.programTrack.relativePath)
 
         try projectStore.markPrepared(trackID: Self.programTrack.id, in: project)
@@ -88,7 +114,10 @@ final class RecordingRetentionFinalizer {
             presentation: request.presentation,
             to: programURL
         )
-        guard await isReadableProgramMovie(at: programURL) else {
+        guard await isReadableProgramMovie(
+            at: programURL,
+            minimumAudioTrackCount: expectedAudioTrackCount
+        ) else {
             throw RecordingRetentionFinalizerError.unreadableProgramMovie
         }
 
@@ -121,15 +150,17 @@ final class RecordingRetentionFinalizer {
         } ?? tracks.first { $0.kind == .screen }
     }
 
-    private func isReadableProgramMovie(at url: URL) async -> Bool {
+    private func isReadableProgramMovie(at url: URL, minimumAudioTrackCount: Int) async -> Bool {
         guard fileManager.fileExists(atPath: url.path) else { return false }
         let asset = AVURLAsset(url: url)
         guard (try? await asset.load(.isReadable)) == true,
               let duration = try? await asset.load(.duration),
               duration.isNumeric,
               duration > .zero,
-              let tracks = try? await asset.loadTracks(withMediaType: .video),
-              !tracks.isEmpty else {
+              let videoTracks = try? await asset.loadTracks(withMediaType: .video),
+              !videoTracks.isEmpty,
+              let audioTracks = try? await asset.loadTracks(withMediaType: .audio),
+              audioTracks.count >= minimumAudioTrackCount else {
             return false
         }
         return true

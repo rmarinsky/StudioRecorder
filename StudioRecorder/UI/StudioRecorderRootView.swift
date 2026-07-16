@@ -1036,6 +1036,7 @@ struct StudioRecorderRootView: View {
         switch track.kind {
         case .screen: track.displayID.map { "Display \($0)" } ?? "Screen"
         case .camera: "Camera"
+        case .audio: "System & microphone stems"
         case .program: "Program movie"
         }
     }
@@ -1044,6 +1045,7 @@ struct StudioRecorderRootView: View {
         switch kind {
         case .screen: "display"
         case .camera: "video"
+        case .audio: "waveform"
         case .program: "rectangle.inset.filled.and.person.filled"
         }
     }

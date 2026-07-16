@@ -121,7 +121,7 @@ final class ProjectProgramRenderer {
 
     private func validateDestination(_ destinationURL: URL, sources: ProjectProgramSources) throws {
         let destination = destinationURL.standardizedFileURL.resolvingSymlinksInPath()
-        for sourceURL in [sources.screenURL, sources.cameraURL].compactMap({ $0 }) {
+        for sourceURL in [sources.screenURL, sources.cameraURL, sources.audioURL].compactMap({ $0 }) {
             let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
             guard destination != source else { throw ProjectEditRendererError.unsafeDestination }
             let sourceDirectory = source.deletingLastPathComponent()
@@ -154,7 +154,7 @@ final class ProjectProgramRenderer {
                     preferredTrackID: kCMPersistentTrackID_Invalid
                 ) else { continue }
                 do {
-                    try await insert(timeline: timeline, from: sourceAudioTrack, into: audioTrack)
+                    try await insertAudio(timeline: timeline, from: sourceAudioTrack, into: audioTrack)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -262,6 +262,38 @@ final class ProjectProgramRenderer {
                 )
                 let range = CMTimeRange(
                     start: CMTime(seconds: sourceStart, preferredTimescale: 600),
+                    duration: CMTime(seconds: overlapEnd - overlapStart, preferredTimescale: 600)
+                )
+                try destination.insertTimeRange(range, of: source, at: destinationStart)
+            }
+            insertionTime = insertionTime + CMTime(seconds: segment.duration, preferredTimescale: 600)
+        }
+    }
+
+    private func insertAudio(
+        timeline: ProjectEditTimeline,
+        from source: AVAssetTrack,
+        into destination: AVMutableCompositionTrack
+    ) async throws {
+        let sourceRange = try await source.load(.timeRange)
+        let sourceStart = sourceRange.start.seconds
+        let sourceEnd = sourceRange.end.seconds
+        guard sourceStart.isFinite,
+              sourceEnd.isFinite,
+              sourceEnd > sourceStart else { return }
+        var insertionTime = CMTime.zero
+
+        for segment in timeline.segments {
+            let segmentEnd = segment.sourceStart + segment.duration
+            let overlapStart = max(segment.sourceStart, sourceStart)
+            let overlapEnd = min(segmentEnd, sourceEnd)
+            if overlapEnd > overlapStart {
+                let destinationStart = insertionTime + CMTime(
+                    seconds: overlapStart - segment.sourceStart,
+                    preferredTimescale: 600
+                )
+                let range = CMTimeRange(
+                    start: CMTime(seconds: overlapStart, preferredTimescale: 600),
                     duration: CMTime(seconds: overlapEnd - overlapStart, preferredTimescale: 600)
                 )
                 try destination.insertTimeRange(range, of: source, at: destinationStart)

@@ -38,6 +38,7 @@ typealias CaptureRequestSnapshot = CaptureRequest
 enum RecordingTrackKind: String, Codable, Equatable, Sendable {
     case screen
     case camera
+    case audio
     case program
 }
 
@@ -54,6 +55,13 @@ extension RecordingTrackDescriptor {
         kind: .program,
         displayID: nil,
         relativePath: "program.mov"
+    )
+
+    static let audioStems = RecordingTrackDescriptor(
+        id: "audio-stems",
+        kind: .audio,
+        displayID: nil,
+        relativePath: "raw-tracks/audio-stems.mov"
     )
 
 }
@@ -388,7 +396,19 @@ final class RecordingProjectStore {
                 fallbackPath: (baseDirectory ?? (try? resolvedProjectsDirectory()))?.path ?? ""
             )
         )
-        return try createProject(request: request)
+        let tracks = request.displaySources.map {
+            RecordingTrackDescriptor(
+                id: "screen-\($0.id)",
+                kind: .screen,
+                displayID: $0.id,
+                relativePath: "raw-tracks/screen-\($0.id).mov"
+            )
+        }
+        return try createProject(
+            request: request,
+            tracks: tracks,
+            createsRawTracksDirectory: true
+        )
     }
 
     func createProject(request: CaptureRequest) throws -> RecordingProject {
@@ -409,6 +429,9 @@ final class RecordingProjectStore {
                     relativePath: "raw-tracks/camera.mov"
                 )
             )
+        }
+        if request.audio.capturesSystemAudio || request.audio.capturesMicrophone {
+            tracks.append(.audioStems)
         }
         return try createProject(request: request, tracks: tracks, createsRawTracksDirectory: true)
     }
@@ -441,7 +464,7 @@ final class RecordingProjectStore {
 
         let displays = request.displaySources.map(\.id)
         let manifest = RecordingProjectManifest(
-            schemaVersion: 2,
+            schemaVersion: 3,
             id: projectID,
             createdAt: createdAt,
             stoppedAt: nil,
@@ -740,7 +763,7 @@ final class RecordingProjectStore {
         guard let manifest = try? makeDecoder().decode(RecordingProjectManifest.self, from: data) else {
             return unreadableSnapshot(at: rootURL, createdAt: fallbackDate, diagnostic: "Unreadable manifest.json")
         }
-        guard manifest.schemaVersion == 1 || manifest.schemaVersion == 2 else {
+        guard (1...3).contains(manifest.schemaVersion) else {
             return unreadableSnapshot(at: rootURL, createdAt: manifest.createdAt, manifestID: manifest.id, diagnostic: "Unsupported manifest schema \(manifest.schemaVersion)")
         }
 
@@ -820,19 +843,23 @@ final class RecordingProjectStore {
             return .init(descriptor: track, state: isV1 ? .unknownV1 : .missing, fileSize: nil)
         }
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        guard size > 0, await isReadableMedia(at: url) else {
+        guard size > 0, await isReadableMedia(at: url, kind: track.kind) else {
             return .init(descriptor: track, state: .unreadable, fileSize: size)
         }
         return .init(descriptor: track, state: finishedTrackIDs.contains(track.id) ? .finalized : .partialReadable, fileSize: size)
     }
 
-    nonisolated private static func isReadableMedia(at url: URL) async -> Bool {
+    nonisolated private static func isReadableMedia(
+        at url: URL,
+        kind: RecordingTrackKind
+    ) async -> Bool {
         let asset = AVURLAsset(url: url)
         guard (try? await asset.load(.isReadable)) == true else { return false }
         guard let duration = try? await asset.load(.duration) else { return false }
         guard duration.isNumeric, duration > .zero else { return false }
-        guard let videoTracks = try? await asset.loadTracks(withMediaType: .video) else { return false }
-        return !videoTracks.isEmpty
+        let requiredMediaType: AVMediaType = kind == .audio ? .audio : .video
+        guard let tracks = try? await asset.loadTracks(withMediaType: requiredMediaType) else { return false }
+        return !tracks.isEmpty
     }
 
     nonisolated private static func safeTrackURL(for track: RecordingTrackDescriptor, in rootURL: URL) -> URL? {
