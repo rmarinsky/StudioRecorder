@@ -2999,7 +2999,7 @@ private struct LiveProgramPreview: View {
     }
 
     private func screenDragGesture(in size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .updating($screenDrag) { value, state, _ in
                 guard !isLocked else { return }
                 let moved = SourcePlacementManipulator.moved(
@@ -3025,7 +3025,7 @@ private struct LiveProgramPreview: View {
     }
 
     private func cameraDragGesture(in size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .updating($cameraDrag) { value, state, _ in
                 guard !isLocked else { return }
                 let moved = SourcePlacementManipulator.moved(
