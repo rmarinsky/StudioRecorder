@@ -2584,10 +2584,6 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.screen.height
                             )
                         ))
-                        .position(
-                            x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
-                            y: proxy.size.height * presentation.screen.centerY + screenDrag.height
-                        )
                         .contentShape(sourceShape(
                             for: presentation.screen,
                             size: CGSize(
@@ -2597,6 +2593,10 @@ private struct LiveProgramPreview: View {
                         ))
                         .onTapGesture { select(.screen) }
                         .gesture(screenDragGesture(in: proxy.size))
+                        .position(
+                            x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
+                            y: proxy.size.height * presentation.screen.centerY + screenDrag.height
+                        )
                         .accessibilityLabel("Screen source on canvas")
                 } else if let screenPreviewError {
                     VStack(spacing: 12) {
@@ -2656,10 +2656,6 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.camera.height
                             )
                         ))
-                        .position(
-                            x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
-                            y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
-                        )
                         .contentShape(sourceShape(
                             for: presentation.camera,
                             size: CGSize(
@@ -2669,6 +2665,10 @@ private struct LiveProgramPreview: View {
                         ))
                         .onTapGesture { select(.camera) }
                         .gesture(cameraDragGesture(in: proxy.size))
+                        .position(
+                            x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
+                            y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
+                        )
                         .accessibilityLabel("Camera source on canvas")
                 }
 
