@@ -178,15 +178,25 @@ enum AppIntent: Equatable {
     case toggleRecording
     case toggleRecordingPause
     case setSelectedDisplayIDs(Set<UInt32>)
+    case setActiveFollowCursorDisplay(UInt32)
+    case setDraftRecordingName(String)
     case setCapturesMicrophone(Bool)
     case setCapturesCamera(Bool)
     case setDraftCameraDeviceID(String?)
+    case setDraftCameraOrientation(StudioCameraOrientation)
+    case setDraftSocialGuide(StudioSocialGuide)
+    case setDraftCameraSyncOffset(TimeInterval)
+    case setDraftArmedSources(displayIDs: Set<UInt32>, camera: Bool)
     case setDraftCapturesSystemAudio(Bool)
     case setDraftMicrophoneDeviceID(String?)
+    case setDraftFrameRate(Int)
+    case setDraftCodecPolicy(RecordingCodecPolicy)
     case setDraftIncludeCursor(Bool)
     case setDraftExcludeStudioRecorder(Bool)
     case setDraftExcludeStudioRecorderAudio(Bool)
     case switchScene(CapturePresentationSnapshot)
+    case switchScenePreset(StudioScenePreset)
+    case applyProfile(StudioProfileConfiguration, StudioScenePreset?)
     case setDraftPresentation(CapturePresentationSnapshot)
     case setDraftManualZoomPresentation(CapturePresentationSnapshot, isReset: Bool)
     case setDraftRetentionPolicy(MediaRetentionPolicy)
@@ -198,6 +208,7 @@ enum AppIntent: Equatable {
 
 enum PreferenceChange: Equatable {
     case appearance(AppearancePreference)
+    case frameRate(Int)
     case codecPolicy(RecordingCodecPolicy)
     case programPreset(CaptureCanvasPreset)
     case includeCursor(Bool)
@@ -235,6 +246,18 @@ enum PendingCaptureCommand: Equatable {
     case resume
 }
 
+struct CaptureTransitionPresentation: Equatable {
+    enum Kind: Equatable {
+        case preparing
+        case saving
+    }
+
+    let kind: Kind
+    let title: String
+    let detail: String
+    let progress: Double?
+}
+
 struct StudioRecorderSnapshot: Equatable {
     var route: MainRoute = .projects
     var launchPhase: LaunchPhase = .checking
@@ -253,7 +276,9 @@ struct StudioRecorderSnapshot: Equatable {
     var activeCaptureRequest: CaptureRequest?
     var recordedDuration: TimeInterval = 0
     var finalizationWarning: String?
+    var finalizationProgress: RecordingFinalizationProgress?
     var sourceHealth = LiveSourceHealthSnapshot.empty
+    var sourceRecoveryState = LiveSourceRecoveryState.idle
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
@@ -288,7 +313,7 @@ struct StudioRecorderSnapshot: Equatable {
         captureState = state
 
         switch (pendingCaptureCommand, state) {
-        case (.start?, .ready), (.stop?, .recording), (.stop?, .paused),
+        case (.start?, .ready), (.start?, .preparing), (.stop?, .recording), (.stop?, .paused),
              (.pause?, .recording), (.resume?, .paused):
             break
         case (.some, _):
@@ -296,6 +321,26 @@ struct StudioRecorderSnapshot: Equatable {
         case (.none, _):
             break
         }
+    }
+
+    var captureTransitionPresentation: CaptureTransitionPresentation? {
+        if pendingCaptureCommand == .start || (captureState == .preparing && activeCaptureRequest != nil) {
+            return CaptureTransitionPresentation(
+                kind: .preparing,
+                title: "Preparing recording",
+                detail: "Starting camera and screen capture…",
+                progress: nil
+            )
+        }
+        if pendingCaptureCommand == .stop || captureState == .stopping {
+            return CaptureTransitionPresentation(
+                kind: .saving,
+                title: "Saving recording",
+                detail: finalizationProgress?.phase ?? "Stopping capture sources…",
+                progress: finalizationProgress?.fraction ?? 0.02
+            )
+        }
+        return nil
     }
 }
 
@@ -489,8 +534,7 @@ final class StudioRecorderModel: ObservableObject {
     func makeCaptureRequest(retentionPolicy: MediaRetentionPolicy) -> CaptureRequest? {
         guard snapshot.route == .studio,
               snapshot.captureState == .ready,
-              snapshot.requiredCapturePermission == nil,
-              !snapshot.selectedDisplayIDs.isEmpty else { return nil }
+              snapshot.requiredCapturePermission == nil else { return nil }
         let draft = currentCaptureDraft()
         return try? draft.freeze(
             displays: snapshot.availableDisplays,
@@ -575,7 +619,36 @@ final class StudioRecorderModel: ObservableObject {
             }
             snapshot.selectedDisplayIDs = displayIDs.intersection(Set(snapshot.availableDisplays.map(\.id)))
             snapshot.studioDraft?.selectedDisplayIDs = snapshot.selectedDisplayIDs
+            snapshot.studioDraft?.defaultDisplayIDs = snapshot.selectedDisplayIDs
             result = .displaySelectionChanged
+
+        case .setActiveFollowCursorDisplay(let displayID):
+            guard let draft = snapshot.studioDraft,
+                  draft.presentation.framing.mode == .followCursor,
+                  (draft.armedDisplayIDs ?? draft.selectedDisplayIDs).contains(displayID) else {
+                return .ignored
+            }
+            if snapshot.captureState == .recording || snapshot.captureState == .paused {
+                let event = makeSceneSwitchEvent(
+                    presentation: draft.presentation,
+                    kind: .displaySwitch,
+                    displayID: displayID
+                )
+                guard !snapshot.isCaptureCommandInFlight,
+                      coordinator?.acceptSceneSwitch(event) == true else {
+                    return .ignored
+                }
+            }
+            snapshot.selectedDisplayIDs = [displayID]
+            snapshot.studioDraft?.selectedDisplayIDs = [displayID]
+            result = .displaySelectionChanged
+
+        case .setDraftRecordingName(let name):
+            guard canEditDraft else { return .ignored }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return .ignored }
+            snapshot.studioDraft?.recordingName = String(trimmed.prefix(120))
+            result = .draftChanged
 
         case .setCapturesMicrophone(let capturesMicrophone):
             guard snapshot.route == .studio,
@@ -601,6 +674,28 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft?.cameraDeviceID = deviceID
             result = .draftChanged
 
+        case .setDraftCameraOrientation(let orientation):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.cameraOrientation = orientation
+            result = .draftChanged
+
+        case .setDraftSocialGuide(let guide):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.socialGuide = guide
+            result = .draftChanged
+
+        case .setDraftCameraSyncOffset(let offset):
+            guard canEditDraft, let cameraID = snapshot.studioDraft?.cameraDeviceID else { return .ignored }
+            snapshot.studioDraft?.cameraSyncOffsets[cameraID] = min(max(offset, -0.5), 0.5)
+            result = .draftChanged
+
+        case .setDraftArmedSources(let displayIDs, let camera):
+            guard canEditDraft else { return .ignored }
+            let available = Set(snapshot.availableDisplays.map(\.id))
+            snapshot.studioDraft?.armedDisplayIDs = displayIDs.intersection(available)
+            snapshot.studioDraft?.armsCamera = camera
+            result = .draftChanged
+
         case .setDraftCapturesSystemAudio(let captures):
             guard canEditDraft else { return .ignored }
             snapshot.studioDraft?.capturesSystemAudio = captures
@@ -613,6 +708,16 @@ final class StudioRecorderModel: ObservableObject {
             }
             snapshot.studioDraft?.microphoneDeviceID = deviceID
             snapshot.studioDraft?.microphoneFallback = nil
+            result = .draftChanged
+
+        case .setDraftFrameRate(let frameRate):
+            guard canEditDraft, CaptureDefaults.supportedFrameRates.contains(frameRate) else { return .ignored }
+            snapshot.studioDraft?.frameRate = frameRate
+            result = .draftChanged
+
+        case .setDraftCodecPolicy(let policy):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.codecPolicy = policy
             result = .draftChanged
 
         case .setDraftIncludeCursor(let includesCursor):
@@ -634,6 +739,50 @@ final class StudioRecorderModel: ObservableObject {
             let event = makeSceneSwitchEvent(presentation: presentation, kind: .scene)
             guard setDraftPresentation(event: event) else { return .ignored }
             result = .sceneSwitchAccepted(event)
+
+        case .switchScenePreset(let scene):
+            let event = makeSceneSwitchEvent(
+                presentation: scene.presentation.applyingSourceAvailability(scene.sources),
+                kind: .scene,
+                transition: scene.incomingTransition,
+                displayID: scene.sources?.selectedDisplayIDs?.sorted().first
+                    ?? snapshot.studioDraft?.defaultDisplayIDs.sorted().first
+            )
+            guard setDraftPresentation(event: event) else { return .ignored }
+            if canEditDraft, let configuration = scene.configuration {
+                snapshot.studioDraft?.apply(
+                    profile: configuration,
+                    displays: snapshot.availableDisplays,
+                    microphones: snapshot.availableMicrophones,
+                    cameras: snapshot.availableCameras
+                )
+            }
+            if let sources = scene.sources {
+                applySceneSources(sources)
+            }
+            result = .sceneSwitchAccepted(event)
+
+        case .applyProfile(let configuration, let scene):
+            guard canEditDraft, var draft = snapshot.studioDraft else { return .ignored }
+            draft.apply(
+                profile: scene?.configuration ?? configuration,
+                displays: snapshot.availableDisplays,
+                microphones: snapshot.availableMicrophones,
+                cameras: snapshot.availableCameras
+            )
+            if let scene {
+                draft.presentation = scene.presentation.applyingSourceAvailability(scene.sources)
+                if let sources = scene.sources {
+                    draft.apply(
+                        sceneSources: sources,
+                        displays: snapshot.availableDisplays,
+                        cameras: snapshot.availableCameras
+                    )
+                }
+            }
+            snapshot.studioDraft = draft
+            synchronizeDraftSummary()
+            result = .draftChanged
 
         case .setDraftPresentation(let presentation):
             guard setDraftPresentation(presentation, transitionKind: .scene) else { return .ignored }
@@ -674,6 +823,7 @@ final class StudioRecorderModel: ObservableObject {
             preferencesStore.update { preferences in
                 switch change {
                 case .appearance(let appearance): preferences.appearance = appearance
+                case .frameRate(let frameRate): preferences.capture.frameRate = frameRate
                 case .codecPolicy(let policy): preferences.capture.codecPolicy = policy
                 case .programPreset(let preset): preferences.capture.programPreset = preset
                 case .includeCursor(let includeCursor): preferences.capture.includeCursor = includeCursor
@@ -704,7 +854,6 @@ final class StudioRecorderModel: ObservableObject {
             case .ready:
                 guard snapshot.route == .studio else { return .ignored }
                 guard snapshot.requiredCapturePermission == nil else { return .ignored }
-                guard !snapshot.selectedDisplayIDs.isEmpty else { return .ignored }
                 let draft = currentCaptureDraft()
                 guard let request = try? draft.freeze(
                     displays: snapshot.availableDisplays,
@@ -785,14 +934,33 @@ final class StudioRecorderModel: ObservableObject {
 
     private func makeSceneSwitchEvent(
         presentation: CapturePresentationSnapshot,
-        kind: StudioSceneTransitionKind
+        kind: StudioSceneTransitionKind,
+        transition: StudioSceneTransitionConfiguration = .cut,
+        displayID: UInt32? = nil
     ) -> StudioSceneSwitchEvent {
         nextSceneSwitchSequence &+= 1
         return StudioSceneSwitchEvent.now(
             sequence: nextSceneSwitchSequence,
             presentation: presentation,
-            kind: kind
+            kind: kind,
+            transition: transition,
+            displayID: displayID
         )
+    }
+
+    private func applySceneSources(_ sources: StudioSceneSourceState) {
+        snapshot.studioDraft?.apply(
+            sceneSources: sources,
+            displays: snapshot.availableDisplays,
+            cameras: snapshot.availableCameras
+        )
+        synchronizeDraftSummary()
+    }
+
+    private func synchronizeDraftSummary() {
+        snapshot.selectedDisplayIDs = snapshot.studioDraft?.selectedDisplayIDs ?? []
+        snapshot.capturesMicrophone = snapshot.studioDraft?.capturesMicrophone ?? false
+        snapshot.capturesCamera = snapshot.studioDraft?.capturesCamera ?? false
     }
 
     private func currentCaptureDraft() -> StudioDraft {
@@ -814,9 +982,7 @@ final class StudioRecorderModel: ObservableObject {
             cameras: snapshot.availableCameras
         )
         snapshot.studioDraft = draft
-        snapshot.selectedDisplayIDs = draft.selectedDisplayIDs
-        snapshot.capturesMicrophone = draft.capturesMicrophone
-        snapshot.capturesCamera = draft.capturesCamera
+        synchronizeDraftSummary()
     }
 
     private func observeCoordinator() {
@@ -874,8 +1040,10 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.projects = coordinator.projects
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
+        snapshot.finalizationProgress = coordinator.finalizationProgress
         snapshot.recordedDuration = coordinator.recordedDuration
         snapshot.sourceHealth = coordinator.sourceHealth
+        snapshot.sourceRecoveryState = coordinator.sourceRecoveryState
 
         if snapshot.studioDraft != nil {
             snapshot.studioDraft?.reconcile(

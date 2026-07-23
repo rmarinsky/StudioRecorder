@@ -24,6 +24,25 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(retryWindow, 60)
     }
 
+    func testYouTubeCanRetryWithoutStoppingAnActiveLocalRecording() {
+        XCTAssertTrue(LiveStreamRetryPolicy.canRetry(
+            streamState: .failed("offline"),
+            captureState: .recording
+        ))
+        XCTAssertTrue(LiveStreamRetryPolicy.canRetry(
+            streamState: .failed("offline"),
+            captureState: .paused
+        ))
+        XCTAssertFalse(LiveStreamRetryPolicy.canRetry(
+            streamState: .reconnecting(attempt: 1, maximumAttempts: 2),
+            captureState: .recording
+        ))
+        XCTAssertFalse(LiveStreamRetryPolicy.canRetry(
+            streamState: .failed("offline"),
+            captureState: .ready
+        ))
+    }
+
     func testPreparedPipelineRendersTheExactStageBeforeTransportStarts() async throws {
         let pipeline = LiveProgramPipeline(sink: InspectableStreamSink())
         var presentation = CapturePresentationSnapshot.default
@@ -111,6 +130,7 @@ final class YouTubeStreamingTests: XCTestCase {
         let configuration = store.configuration(canvasSize: CGSize(width: 1_920, height: 1_080), frameRate: 30)
         XCTAssertEqual(configuration?.publishURL?.absoluteString, "rtmps://a.rtmps.youtube.com/live2/secret-key")
         XCTAssertEqual(configuration?.videoBitRate, 30_000_000)
+        XCTAssertEqual(configuration?.audioBitRate, 128_000)
 
         let fourK = store.configuration(canvasSize: CGSize(width: 3_840, height: 2_160), frameRate: 30)
         XCTAssertEqual(fourK?.canvasSize, CGSize(width: 3_840, height: 2_160))
@@ -126,13 +146,50 @@ final class YouTubeStreamingTests: XCTestCase {
         store.streamKey = "  private-key  "
         store.serverURL = "  rtmps://example.com/live  "
         store.videoBitRate = 1_000_000
+        store.audioBitRate = 500_000
 
         store.save()
 
         XCTAssertEqual(credentials.key, "private-key")
         XCTAssertEqual(defaults.string(forKey: YouTubeStreamingSettingsStore.serverURLKey), "rtmps://example.com/live")
         XCTAssertEqual(defaults.integer(forKey: YouTubeStreamingSettingsStore.videoBitRateKey), 3_000_000)
+        XCTAssertEqual(defaults.integer(forKey: YouTubeStreamingSettingsStore.audioBitRateKey), 256_000)
         XCTAssertFalse(defaults.dictionaryRepresentation().values.contains { ($0 as? String) == "private-key" })
+    }
+
+    func testSettingsUseOnlyTheBundledOAuthClientIDAndDefaultToManagedYouTube() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set("user-entered-client-id", forKey: YouTubeStreamingSettingsStore.legacyOAuthClientIDKey)
+
+        let store = YouTubeStreamingSettingsStore(
+            defaults: defaults,
+            credentials: MemoryStreamCredentials(),
+            bundledOAuthClientID: "  studio-recorder.apps.googleusercontent.com  ",
+            bundledOAuthClientSecret: "  injected-client-secret  "
+        )
+
+        XCTAssertEqual(store.oauthClientID, "studio-recorder.apps.googleusercontent.com")
+        XCTAssertTrue(store.isManagedYouTubeConfigured)
+        XCTAssertTrue(store.usesManagedYouTube)
+        XCTAssertNil(defaults.string(forKey: YouTubeStreamingSettingsStore.legacyOAuthClientIDKey))
+    }
+
+    func testManagedYouTubeIsUnavailableWhenEitherBundledOAuthValueIsMissing() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+
+        let missingSecret = YouTubeStreamingSettingsStore(
+            defaults: defaults,
+            credentials: MemoryStreamCredentials(),
+            bundledOAuthClientID: "studio-recorder.apps.googleusercontent.com"
+        )
+        let missingClientID = YouTubeStreamingSettingsStore(
+            defaults: defaults,
+            credentials: MemoryStreamCredentials(),
+            bundledOAuthClientSecret: "injected-client-secret"
+        )
+
+        XCTAssertFalse(missingSecret.isManagedYouTubeConfigured)
+        XCTAssertFalse(missingClientID.isManagedYouTubeConfigured)
     }
 
     func testSinkFailsClosedWhenTheRTMPSEndpointIsUnavailable() async {
@@ -454,6 +511,255 @@ final class YouTubeStreamingTests: XCTestCase {
         await pipeline.stop()
     }
 
+    func testInitialTransientFailureUsesTheReconnectBudget() async throws {
+        let sink = ReconnectableStreamSink(initialFailures: 1)
+        let pipeline = LiveProgramPipeline(
+            sink: sink,
+            reconnectPolicy: LiveStreamReconnectPolicy(
+                maximumAttempts: 2,
+                baseDelaySeconds: 0,
+                maximumDelaySeconds: 0
+            )
+        )
+        var observedStates: [LiveStreamState] = []
+
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration()
+        ) { observedStates.append($0) }
+
+        let connectionCount = await sink.currentConnectionCount()
+        XCTAssertEqual(connectionCount, 2)
+        XCTAssertTrue(observedStates.contains(.reconnecting(attempt: 1, maximumAttempts: 2)))
+        await pipeline.stop()
+    }
+
+    func testSourceFallbackKeepsSendingTheLastComposedFrame() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil
+        )
+
+        await pipeline.beginSourceFallback()
+        try await Task.sleep(for: .milliseconds(140))
+        await pipeline.endSourceFallback()
+
+        let videoCount = await sink.videoCount()
+        XCTAssertGreaterThan(videoCount, 1)
+        let latestVideo = await sink.latestVideo()
+        XCTAssertGreaterThan(try XCTUnwrap(latestVideo).value.presentationTimeStamp.seconds, 0)
+        await pipeline.stop()
+    }
+
+    func testRecoveredScreenFrameStaysMonotonicAfterFallback() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        let staleFrame = SendableSampleBuffer(
+            value: try videoSampleBuffer(color: .blue, presentationTimeStamp: .zero)
+        )
+        await pipeline.appendScreen(staleFrame, cursor: nil)
+        await pipeline.beginSourceFallback()
+        try await Task.sleep(for: .milliseconds(80))
+
+        await pipeline.appendScreen(staleFrame, cursor: nil)
+
+        let samples = await sink.videoSamples()
+        let recoveredTime = try XCTUnwrap(samples.last).value.presentationTimeStamp
+        let fallbackTime = try XCTUnwrap(samples.dropLast().last).value.presentationTimeStamp
+        XCTAssertGreaterThan(recoveredTime.seconds, fallbackTime.seconds)
+        await pipeline.stop()
+    }
+
+    func testIdleCursorMovementRecomposesTheRetainedScreen() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.framing = ScreenFramingSnapshot(
+            mode: .followCursor,
+            centerX: 0.2,
+            centerY: 0.5,
+            scale: 0.5
+        )
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: presentation,
+            includesCursor: false,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try horizontalGradientVideoSampleBuffer()),
+            cursor: ProgramCursorState(
+                normalizedX: 0.2,
+                normalizedY: 0.5,
+                isPrimaryButtonDown: false
+            ),
+            presentation: presentation,
+            displayID: 1,
+            at: 0
+        )
+        let initialSample = await sink.latestVideo()
+        let initial = try XCTUnwrap(initialSample?.value.imageBuffer)
+        let initialCenter = try pixel(in: CIImage(cvPixelBuffer: initial), x: 320, y: 180)
+
+        await pipeline.updateIdleScreen(
+            cursor: ProgramCursorState(
+                normalizedX: 0.8,
+                normalizedY: 0.5,
+                isPrimaryButtonDown: false
+            ),
+            displayID: 1,
+            presentation: presentation,
+            at: 1.0 / 30.0
+        )
+        try await Task.sleep(for: .milliseconds(120))
+        let updatedSample = await sink.latestVideo()
+        let updated = try XCTUnwrap(updatedSample?.value.imageBuffer)
+        let updatedCenter = try pixel(in: CIImage(cvPixelBuffer: updated), x: 320, y: 180)
+        XCTAssertGreaterThan(updatedCenter.red, initialCenter.red)
+
+        try await Task.sleep(for: .seconds(1))
+        await pipeline.endSourceFallback()
+        let samples = await sink.videoSamples()
+        let presentationTimes = samples.map { $0.value.presentationTimeStamp.seconds }
+        XCTAssertTrue(zip(presentationTimes, presentationTimes.dropFirst()).allSatisfy(<))
+        let settledBuffers = try samples.suffix(2).map {
+            try XCTUnwrap($0.value.imageBuffer)
+        }
+        XCTAssertTrue(settledBuffers[0] === settledBuffers[1])
+        await pipeline.stop()
+    }
+
+    func testIdleDisplaySwitchDoesNotRecomposeThePreviousDisplaySurface() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.framing = ScreenFramingSnapshot(
+            mode: .followCursor,
+            centerX: 0.2,
+            centerY: 0.5,
+            scale: 0.5
+        )
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: presentation,
+            includesCursor: false,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try horizontalGradientVideoSampleBuffer()),
+            cursor: ProgramCursorState(
+                normalizedX: 0.2,
+                normalizedY: 0.5,
+                isPrimaryButtonDown: false
+            ),
+            presentation: presentation,
+            displayID: 1,
+            at: 0
+        )
+        let previousDisplaySample = await sink.latestVideo()
+        let previousDisplayBuffer = try XCTUnwrap(previousDisplaySample?.value.imageBuffer)
+
+        await pipeline.updateIdleScreen(
+            cursor: ProgramCursorState(
+                normalizedX: 0.8,
+                normalizedY: 0.5,
+                isPrimaryButtonDown: false
+            ),
+            displayID: 2,
+            presentation: presentation,
+            at: 1.0 / 30.0
+        )
+        try await Task.sleep(for: .milliseconds(90))
+        await pipeline.endSourceFallback()
+
+        let samples = await sink.videoSamples()
+        let idleSamples = samples.dropFirst()
+        XCTAssertFalse(idleSamples.isEmpty)
+        XCTAssertTrue(idleSamples.allSatisfy {
+            $0.value.imageBuffer === previousDisplayBuffer
+        })
+        await pipeline.stop()
+    }
+
+    func testIdleShortcutExpiryRecomposesOnceThenReusesTheCleanFrame() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.cursor.showsShortcutKeys = true
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: presentation,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        await pipeline.appendScreen(
+            SendableSampleBuffer(value: try videoSampleBuffer(color: .blue)),
+            cursor: nil,
+            presentation: presentation,
+            displayID: 1,
+            at: 0
+        )
+
+        await pipeline.showShortcut("⌘K", duration: 0.2)
+        try await Task.sleep(for: .milliseconds(80))
+        let shortcutSample = await sink.latestVideo()
+        let shortcutBuffer = try XCTUnwrap(shortcutSample?.value.imageBuffer)
+        let shortcutPixel = try pixel(in: CIImage(cvPixelBuffer: shortcutBuffer), x: 302, y: 39)
+
+        try await Task.sleep(for: .milliseconds(180))
+        let cleanSample = await sink.latestVideo()
+        let cleanBuffer = try XCTUnwrap(cleanSample?.value.imageBuffer)
+        let cleanPixel = try pixel(in: CIImage(cvPixelBuffer: cleanBuffer), x: 302, y: 39)
+        XCTAssertFalse(cleanBuffer === shortcutBuffer)
+        XCTAssertGreaterThan(cleanPixel.blue, shortcutPixel.blue)
+
+        try await Task.sleep(for: .milliseconds(80))
+        await pipeline.endSourceFallback()
+        let settledSample = await sink.latestVideo()
+        XCTAssertTrue(settledSample?.value.imageBuffer === cleanBuffer)
+        await pipeline.stop()
+    }
+
+    func testFirstRecoveredScreenFrameStopsFallbackImmediately() async throws {
+        let sink = InspectableStreamSink()
+        let pipeline = LiveProgramPipeline(sink: sink)
+        try await pipeline.start(
+            configuration: streamConfiguration(),
+            presentation: .default,
+            audioConfiguration: streamAudioConfiguration()
+        ) { _ in }
+        let frame = SendableSampleBuffer(value: try videoSampleBuffer(color: .blue))
+        await pipeline.appendScreen(frame, cursor: nil)
+        await pipeline.beginSourceFallback()
+        try await Task.sleep(for: .milliseconds(80))
+
+        await pipeline.appendScreen(frame, cursor: nil)
+        let countAfterRecovery = await sink.videoCount()
+        try await Task.sleep(for: .milliseconds(80))
+
+        let finalCount = await sink.videoCount()
+        XCTAssertEqual(finalCount, countAfterRecovery)
+        await pipeline.stop()
+    }
+
     func testLocalArchiveKeepsComposedFramesDuringReconnectAndFinishesOnceOnStop() async throws {
         let sink = ReconnectableStreamSink()
         let archive = InspectableProgramArchiveSink()
@@ -673,7 +979,35 @@ final class YouTubeStreamingTests: XCTestCase {
         XCTAssertEqual(connectionCount, 1)
     }
 
-    private func videoSampleBuffer(color: CIColor) throws -> CMSampleBuffer {
+    private func videoSampleBuffer(
+        color: CIColor,
+        presentationTimeStamp: CMTime = .zero
+    ) throws -> CMSampleBuffer {
+        try videoSampleBuffer(
+            image: CIImage(color: color).cropped(
+                to: CGRect(x: 0, y: 0, width: 320, height: 180)
+            ),
+            presentationTimeStamp: presentationTimeStamp
+        )
+    }
+
+    private func horizontalGradientVideoSampleBuffer() throws -> CMSampleBuffer {
+        let gradient = CIFilter.linearGradient()
+        gradient.point0 = CGPoint(x: 0, y: 0)
+        gradient.point1 = CGPoint(x: 320, y: 0)
+        gradient.color0 = .black
+        gradient.color1 = .white
+        return try videoSampleBuffer(
+            image: try XCTUnwrap(gradient.outputImage).cropped(
+                to: CGRect(x: 0, y: 0, width: 320, height: 180)
+            )
+        )
+    }
+
+    private func videoSampleBuffer(
+        image: CIImage,
+        presentationTimeStamp: CMTime = .zero
+    ) throws -> CMSampleBuffer {
         var pixelBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
         XCTAssertEqual(
@@ -688,10 +1022,7 @@ final class YouTubeStreamingTests: XCTestCase {
             kCVReturnSuccess
         )
         let buffer = try XCTUnwrap(pixelBuffer)
-        CIContext().render(
-            CIImage(color: color).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180)),
-            to: buffer
-        )
+        CIContext().render(image, to: buffer)
         var description: CMVideoFormatDescription?
         XCTAssertEqual(
             CMVideoFormatDescriptionCreateForImageBuffer(
@@ -703,7 +1034,7 @@ final class YouTubeStreamingTests: XCTestCase {
         )
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: 30),
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: presentationTimeStamp,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -795,6 +1126,7 @@ private actor InspectableStreamSink: LiveProgramSink {
 
     func latestVideo() -> SendableSampleBuffer? { videos.last }
     func videoCount() -> Int { videos.count }
+    func videoSamples() -> [SendableSampleBuffer] { videos }
 
     func connectedAudioConfiguration() -> LiveStreamAudioConfiguration? { audioConfiguration }
 }
@@ -897,11 +1229,17 @@ private actor ReconnectableStreamSink: LiveProgramSink {
     private var connectionCount = 0
     private var videos: [SendableSampleBuffer] = []
     private var reconnectFailures: Int
+    private var initialFailures: Int
     private var dropsOnSuccessfulReconnects: Int
     private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    init(reconnectFailures: Int = 0, dropsOnSuccessfulReconnects: Int = 0) {
+    init(
+        reconnectFailures: Int = 0,
+        initialFailures: Int = 0,
+        dropsOnSuccessfulReconnects: Int = 0
+    ) {
         self.reconnectFailures = reconnectFailures
+        self.initialFailures = initialFailures
         self.dropsOnSuccessfulReconnects = dropsOnSuccessfulReconnects
     }
 
@@ -913,6 +1251,13 @@ private actor ReconnectableStreamSink: LiveProgramSink {
         self.eventHandler = eventHandler
         connectionCount += 1
         await eventHandler(.connecting)
+        if initialFailures > 0 {
+            initialFailures -= 1
+            let error = ReconnectableStreamSinkError.connectionFailed
+            await eventHandler(.failed(error.localizedDescription))
+            resumeReadyWaiters()
+            throw error
+        }
         if connectionCount > 1, reconnectFailures > 0 {
             reconnectFailures -= 1
             let error = ReconnectableStreamSinkError.connectionFailed

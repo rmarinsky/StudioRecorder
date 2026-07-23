@@ -3,4 +3,11 @@ build/
 DerivedData/
 xcuserdata/
 graphify-out/
-outputs/verification/
+outputs/
+design/previews/
+design/prototype/
+design/presentation/
+.env
+.env.*
+*.xcconfig.local
+LocalOAuth.xcconfig

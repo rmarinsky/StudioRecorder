@@ -39,6 +39,13 @@ enum LiveStreamState: Equatable, Sendable {
     }
 }
 
+enum LiveStreamRetryPolicy {
+    static func canRetry(streamState: LiveStreamState, captureState: RecordingState) -> Bool {
+        guard streamState.hasFailed else { return false }
+        return captureState == .recording || captureState == .paused
+    }
+}
+
 struct SendableSampleBuffer: @unchecked Sendable {
     let value: CMSampleBuffer
 }
@@ -141,7 +148,7 @@ actor YouTubeStreamSink: LiveProgramSink {
             try await stream.setVideoSettings(videoSettings)
 
             let audioSettings = AudioCodecSettings(
-                bitRate: 128_000,
+                bitRate: configuration.audioBitRate,
                 downmix: true,
                 sampleRate: 44_100,
                 format: .aac

@@ -36,6 +36,8 @@ enum MediaRetentionPolicy: String, Codable, CaseIterable, Identifiable, Equatabl
 }
 
 struct CaptureDefaults: Codable, Equatable, Sendable {
+    static let supportedFrameRates = [24, 25, 30, 48, 50, 60]
+
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
     var programPreset: CaptureCanvasPreset
@@ -112,7 +114,9 @@ struct RecordingPreferences: Codable, Equatable, Sendable {
 
     func validated() -> RecordingPreferences {
         var value = self
-        value.capture.frameRate = 30
+        if !CaptureDefaults.supportedFrameRates.contains(value.capture.frameRate) {
+            value.capture.frameRate = 30
+        }
         if value.audio.microphoneDeviceID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
             value.audio.microphoneDeviceID = nil
         }
@@ -162,6 +166,7 @@ enum MicrophoneFallback: Equatable, Sendable {
 }
 
 struct StudioDraft: Equatable {
+    var recordingName = "Untitled Recording"
     var selectedDisplayIDs: Set<UInt32>
     var capturesSystemAudio: Bool
     var capturesMicrophone: Bool
@@ -177,6 +182,13 @@ struct StudioDraft: Equatable {
     var presentation: CapturePresentationSnapshot
     var retentionPolicy: MediaRetentionPolicy
     var destination: ResolvedProjectDestination
+    var cameraOrientation: StudioCameraOrientation = .automatic
+    var socialGuide: StudioSocialGuide = .off
+    /// Raw sources armed for the session so saved scenes can switch without restarting capture.
+    var armedDisplayIDs: Set<UInt32>? = nil
+    var armsCamera: Bool? = nil
+    var cameraSyncOffsets: [String: TimeInterval] = [:]
+    var defaultDisplayIDs: Set<UInt32> = []
 
     mutating func reconcile(
         displays: [AvailableDisplay],
@@ -185,8 +197,13 @@ struct StudioDraft: Equatable {
     ) {
         let availableDisplayIDs = Set(displays.map(\.id))
         selectedDisplayIDs.formIntersection(availableDisplayIDs)
-        if selectedDisplayIDs.isEmpty, let firstDisplayID = displays.first?.id {
+        defaultDisplayIDs.formIntersection(availableDisplayIDs)
+        if defaultDisplayIDs.isEmpty, !selectedDisplayIDs.isEmpty {
+            defaultDisplayIDs = selectedDisplayIDs
+        }
+        if selectedDisplayIDs.isEmpty, !capturesCamera, let firstDisplayID = displays.first?.id {
             selectedDisplayIDs = [firstDisplayID]
+            defaultDisplayIDs = [firstDisplayID]
         }
 
         if capturesCamera {
@@ -218,13 +235,18 @@ struct StudioDraft: Equatable {
         cameras: [AvailableCamera] = [],
         permissions: PermissionSnapshot
     ) -> [StudioDraftValidationIssue] {
-        guard !selectedDisplayIDs.isEmpty else { return [.noDisplaySelected] }
+        let requestedDisplayIDs = armedDisplayIDs ?? selectedDisplayIDs
+        let requestsCamera = armsCamera ?? capturesCamera
+        guard !requestedDisplayIDs.isEmpty || requestsCamera else { return [.noDisplaySelected] }
         let availableDisplayIDs = Set(displays.map(\.id))
-        let unavailableDisplayIDs = selectedDisplayIDs.subtracting(availableDisplayIDs).sorted()
+        let unavailableDisplayIDs = requestedDisplayIDs.subtracting(availableDisplayIDs).sorted()
         if !unavailableDisplayIDs.isEmpty {
             return unavailableDisplayIDs.map(StudioDraftValidationIssue.displayUnavailable)
         }
-        guard permissions.screenRecording.isGranted else { return [.screenRecordingPermission] }
+        let needsScreenCapture = !requestedDisplayIDs.isEmpty || capturesSystemAudio || capturesMicrophone
+        if needsScreenCapture, !permissions.screenRecording.isGranted {
+            return [.screenRecordingPermission]
+        }
         if capturesMicrophone {
             guard permissions.microphone.isGranted else { return [.microphonePermission] }
             guard let microphoneDeviceID,
@@ -232,7 +254,7 @@ struct StudioDraft: Equatable {
                 return [.microphoneUnavailable]
             }
         }
-        if capturesCamera {
+        if requestsCamera {
             guard permissions.camera.isGranted else { return [.cameraPermission] }
             guard let cameraDeviceID,
                   cameras.contains(where: { $0.id == cameraDeviceID }) else {
@@ -260,8 +282,10 @@ struct StudioDraft: Equatable {
         )
         guard issues.isEmpty else { throw StudioDraftFreezeError.invalid(issues) }
 
-        let displaySources = displays.compactMap { display -> DisplaySourceSnapshot? in
-            guard selectedDisplayIDs.contains(display.id) else { return nil }
+        let requestedDisplayIDs = armedDisplayIDs ?? selectedDisplayIDs
+        let requestsCamera = armsCamera ?? capturesCamera
+        var displaySources = displays.compactMap { display -> DisplaySourceSnapshot? in
+            guard requestedDisplayIDs.contains(display.id) else { return nil }
             return DisplaySourceSnapshot(
                 id: display.id,
                 name: display.title,
@@ -270,12 +294,24 @@ struct StudioDraft: Equatable {
                 metadataState: .known
             )
         }
+        if displaySources.isEmpty,
+           requestsCamera,
+           let audioHost = displays.first {
+            // A hidden raw display keeps audio capture and program-only export available for camera-only scenes.
+            displaySources = [DisplaySourceSnapshot(
+                id: audioHost.id,
+                name: audioHost.title,
+                pixelWidth: Int(audioHost.pixelSize.width),
+                pixelHeight: Int(audioHost.pixelSize.height),
+                metadataState: .known
+            )]
+        }
         let microphone = capturesMicrophone
             ? microphones.first(where: { $0.id == microphoneDeviceID }).map {
                 MicrophoneSourceSnapshot(id: $0.id, name: $0.name)
             }
             : nil
-        let camera = capturesCamera
+        let camera = requestsCamera
             ? cameras.first(where: { $0.id == cameraDeviceID }).map {
                 CameraSourceSnapshot(id: $0.id, name: $0.name)
             }
@@ -284,6 +320,7 @@ struct StudioDraft: Equatable {
         return CaptureRequest(
             id: id,
             createdAt: createdAt,
+            recordingName: String(recordingName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120)),
             displaySources: displaySources,
             camera: camera,
             audio: AudioCaptureSnapshot(
@@ -299,7 +336,10 @@ struct StudioDraft: Equatable {
                 includeCursor: includeCursor,
                 excludeStudioRecorder: excludeStudioRecorder,
                 programResolutionTarget: "\(presentation.canvas.width)x\(presentation.canvas.height)",
-                cursorRendering: .composited
+                cursorRendering: .composited,
+                cameraOrientation: cameraOrientation,
+                cameraSyncOffset: cameraDeviceID.flatMap { cameraSyncOffsets[$0] },
+                programDisplayID: selectedDisplayIDs.sorted().first ?? defaultDisplayIDs.sorted().first
             ),
             presentation: presentation.validated(),
             storage: StorageCaptureSnapshot(
@@ -366,6 +406,9 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
     let programResolutionTarget: String
     let historicalLabel: String?
     let cursorRendering: CursorRenderingMode?
+    let cameraOrientation: StudioCameraOrientation?
+    let cameraSyncOffset: TimeInterval?
+    let programDisplayID: UInt32?
 
     init(
         frameRate: Int,
@@ -374,7 +417,10 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
         excludeStudioRecorder: Bool,
         programResolutionTarget: String,
         historicalLabel: String? = nil,
-        cursorRendering: CursorRenderingMode? = nil
+        cursorRendering: CursorRenderingMode? = nil,
+        cameraOrientation: StudioCameraOrientation? = nil,
+        cameraSyncOffset: TimeInterval? = nil,
+        programDisplayID: UInt32? = nil
     ) {
         self.frameRate = frameRate
         self.codecPolicy = codecPolicy
@@ -383,9 +429,14 @@ struct CaptureProfileSnapshot: Codable, Equatable, Sendable {
         self.programResolutionTarget = programResolutionTarget
         self.historicalLabel = historicalLabel
         self.cursorRendering = cursorRendering
+        self.cameraOrientation = cameraOrientation
+        self.cameraSyncOffset = cameraSyncOffset.map { min(max($0, -0.5), 0.5) }
+        self.programDisplayID = programDisplayID
     }
 
     var resolvedCursorRendering: CursorRenderingMode { cursorRendering ?? .systemEmbedded }
+    var resolvedCameraOrientation: StudioCameraOrientation { cameraOrientation ?? .automatic }
+    var resolvedCameraSyncOffset: TimeInterval { min(max(cameraSyncOffset ?? 0, -0.5), 0.5) }
 
     var label: String {
         historicalLabel ?? "native-\(frameRate)fps-\(codecPolicy.rawValue)"
@@ -406,6 +457,7 @@ struct StorageCaptureSnapshot: Codable, Equatable, Sendable {
 struct CaptureRequest: Codable, Equatable, Sendable {
     let id: UUID
     let createdAt: Date
+    let recordingName: String?
     let displaySources: [DisplaySourceSnapshot]
     let camera: CameraSourceSnapshot?
     let audio: AudioCaptureSnapshot
@@ -416,6 +468,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     init(
         id: UUID,
         createdAt: Date,
+        recordingName: String? = nil,
         displaySources: [DisplaySourceSnapshot],
         camera: CameraSourceSnapshot? = nil,
         audio: AudioCaptureSnapshot,
@@ -425,6 +478,8 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     ) {
         self.id = id
         self.createdAt = createdAt
+        let trimmedName = recordingName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.recordingName = trimmedName.isEmpty ? nil : String(trimmedName.prefix(120))
         self.displaySources = displaySources
         self.camera = camera
         self.audio = audio
@@ -451,7 +506,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     var excludesStudioRecorderAudio: Bool { audio.excludesStudioRecorderAudio }
 
     private enum CodingKeys: String, CodingKey {
-        case id, createdAt, displaySources, camera, audio, profile, presentation, storage
+        case id, createdAt, recordingName, displaySources, camera, audio, profile, presentation, storage
         case sources, captureProfile, primaryAudioDisplayID, capturesMicrophone
         case includesCursor, excludesStudioRecorderAudio
     }
@@ -460,6 +515,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
+        recordingName = try container.decodeIfPresent(String.self, forKey: .recordingName)
         if container.contains(.displaySources) {
             displaySources = try container.decode([DisplaySourceSnapshot].self, forKey: .displaySources)
             camera = try container.decodeIfPresent(CameraSourceSnapshot.self, forKey: .camera)
@@ -511,6 +567,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(recordingName, forKey: .recordingName)
         try container.encode(displaySources, forKey: .displaySources)
         try container.encodeIfPresent(camera, forKey: .camera)
         try container.encode(audio, forKey: .audio)
@@ -673,7 +730,8 @@ final class PreferencesStore: ObservableObject {
             codecPolicy: preferences.capture.codecPolicy,
             presentation: presentation,
             retentionPolicy: .editableTracks,
-            destination: destination
+            destination: destination,
+            defaultDisplayIDs: selectedDisplayIDs
         )
     }
 

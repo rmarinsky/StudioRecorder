@@ -5,6 +5,8 @@ settings:
   base:
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
 packages:
   HaishinKit:
     url: https://github.com/HaishinKit/HaishinKit.swift
@@ -21,7 +23,11 @@ targets:
     info:
       path: StudioRecorder/Resources/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: Studio Recorder will use your camera for an optional camera track.
+        GoogleOAuthClientID: $(GOOGLE_OAUTH_CLIENT_ID)
+        GoogleOAuthClientSecret: $(GOOGLE_OAUTH_CLIENT_SECRET)
         NSMicrophoneUsageDescription: Studio Recorder records your selected microphone as part of the primary raw capture.
         NSScreenCaptureUsageDescription: Studio Recorder records the displays you select into editable tracks or a composed program movie.
     settings:
@@ -30,6 +36,8 @@ targets:
         PRODUCT_NAME: Studio Recorder
         PRODUCT_MODULE_NAME: StudioRecorder
         GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: StudioRecorder/Resources/StudioRecorder.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
     dependencies:
       - package: HaishinKit
         product: HaishinKit

@@ -4,6 +4,80 @@ import XCTest
 
 @MainActor
 final class StudioRecorderModelTests: XCTestCase {
+    func testCaptureTransitionShowsPreparationOnlyForARequestedRecording() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .preparing
+        XCTAssertNil(snapshot.captureTransitionPresentation)
+
+        snapshot.beginCaptureCommand(.start)
+        snapshot.applyCaptureState(.preparing)
+
+        XCTAssertEqual(
+            snapshot.captureTransitionPresentation,
+            CaptureTransitionPresentation(
+                kind: .preparing,
+                title: "Preparing recording",
+                detail: "Starting camera and screen capture…",
+                progress: nil
+            )
+        )
+    }
+
+    func testCaptureTransitionShowsLiveSavingProgress() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .stopping
+        snapshot.finalizationProgress = RecordingFinalizationProgress(
+            fraction: 0.64,
+            phase: "Rendering final video…"
+        )
+
+        XCTAssertEqual(
+            snapshot.captureTransitionPresentation,
+            CaptureTransitionPresentation(
+                kind: .saving,
+                title: "Saving recording",
+                detail: "Rendering final video…",
+                progress: 0.64
+            )
+        )
+    }
+
+    func testRecordingControlsOnlySwitchScenesForAnActiveStableLocalRecording() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        XCTAssertFalse(RecordingControlPanelPolicy.canSwitchScenes(snapshot))
+
+        snapshot.captureState = .recording
+        snapshot.activeCaptureRequest = CaptureRequest(
+            id: UUID(),
+            createdAt: .now,
+            displaySources: [],
+            audio: AudioCaptureSnapshot(
+                capturesSystemAudio: false,
+                capturesMicrophone: false,
+                microphone: nil,
+                primaryAudioDisplayID: nil,
+                excludesStudioRecorderAudio: true
+            ),
+            profile: CaptureProfileSnapshot(
+                frameRate: 30,
+                codecPolicy: .automatic,
+                includeCursor: true,
+                excludeStudioRecorder: true,
+                programResolutionTarget: "1920x1080"
+            ),
+            storage: StorageCaptureSnapshot(
+                destinationURL: nil,
+                destinationBookmarkID: "test",
+                fallbackPath: "/tmp"
+            )
+        )
+        XCTAssertTrue(RecordingControlPanelPolicy.canSwitchScenes(snapshot))
+
+        snapshot.beginCaptureCommand(.pause)
+        XCTAssertFalse(RecordingControlPanelPolicy.canSwitchScenes(snapshot))
+    }
+
     func testLatestAsyncTaskQueueBoundsPendingScreenFrames() async {
         let queue = LatestAsyncTaskQueue()
         let values = LatestValueRecorder()
@@ -25,6 +99,29 @@ final class StudioRecorderModelTests: XCTestCase {
 
         let recorded = await values.values
         XCTAssertEqual(recorded, [1, 3])
+    }
+
+    func testLatestAsyncTaskQueueDoesNotLetIdleMetadataReplaceAPendingCompleteFrame() async {
+        let queue = LatestAsyncTaskQueue()
+        let values = LatestValueRecorder()
+        queue.enqueue(priority: .frame) {
+            await values.appendAndWaitForRelease(1)
+        }
+        while !(await values.didStartFirstValue) {
+            await Task.yield()
+        }
+        queue.enqueue(priority: .frame) {
+            await values.append(2)
+        }
+        queue.enqueue(priority: .idle) {
+            await values.append(3)
+        }
+        await values.releaseFirstValue()
+
+        await queue.flush()
+
+        let recorded = await values.values
+        XCTAssertEqual(recorded, [1, 2])
     }
 
     func testSavedSceneSwitchReturnsOneOrderedEventForAllDeliveryConsumers() throws {
@@ -53,6 +150,66 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(secondEvent.presentation, second.validated())
         XCTAssertGreaterThan(secondEvent.sequence, firstEvent.sequence)
         XCTAssertEqual(model.snapshot.studioDraft?.presentation, second.validated())
+    }
+
+    func testSavedSceneSwitchRestoresDisplayCameraAndAudioSourceState() {
+        let displays = [
+            AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080)),
+        ]
+        let microphones = [AvailableMicrophone(id: "mic-1", name: "Studio Mic", isSystemDefault: true)]
+        let cameras = [
+            AvailableCamera(id: "camera-1", name: "FaceTime Camera"),
+            AvailableCamera(id: "camera-2", name: "iPhone Camera"),
+        ]
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.route = .studio
+        snapshot.captureState = .ready
+        snapshot.permissionSnapshot = PermissionSnapshot(
+            screenRecording: .granted,
+            microphone: .granted,
+            camera: .granted
+        )
+        snapshot.availableDisplays = displays
+        snapshot.availableMicrophones = microphones
+        snapshot.availableCameras = cameras
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(
+            displays: displays,
+            microphones: microphones,
+            cameras: cameras
+        )
+        snapshot.selectedDisplayIDs = [7]
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.name = "Full Camera"
+        presentation.screen.isVisible = false
+        var configuration = StudioProfileConfiguration.desktop
+        configuration.frameRate = 60
+        configuration.cameraDeviceID = "camera-2"
+        configuration.microphoneDeviceID = "mic-1"
+        configuration.displayIDs = [7]
+        let scene = StudioScenePreset(
+            presentation: presentation,
+            sources: StudioSceneSourceState(
+                selectedDisplayIDs: [],
+                capturesSystemAudio: false,
+                capturesMicrophone: false,
+                capturesCamera: true
+            ),
+            configuration: configuration
+        )
+
+        guard case .sceneSwitchAccepted = model.send(.switchScenePreset(scene)) else {
+            return XCTFail("The saved scene should be applied.")
+        }
+
+        XCTAssertEqual(model.snapshot.selectedDisplayIDs, [])
+        XCTAssertTrue(model.snapshot.capturesCamera)
+        XCTAssertFalse(model.snapshot.capturesMicrophone)
+        XCTAssertFalse(model.snapshot.studioDraft?.capturesSystemAudio ?? true)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 60)
+        XCTAssertEqual(model.snapshot.studioDraft?.cameraDeviceID, "camera-2")
+        XCTAssertEqual(model.snapshot.studioDraft?.microphoneDeviceID, "mic-1")
+        XCTAssertEqual(model.snapshot.studioDraft?.presentation.resolvedName, "Full Camera")
     }
 
     func testLiveSceneStaysVisibleWhileRecording() {
@@ -432,6 +589,8 @@ final class StudioRecorderModelTests: XCTestCase {
         synchronized.applyCaptureState(.ready)
         XCTAssertTrue(synchronized.isCaptureCommandInFlight)
         synchronized.applyCaptureState(.preparing)
+        XCTAssertTrue(synchronized.isCaptureCommandInFlight)
+        synchronized.applyCaptureState(.recording)
         XCTAssertFalse(synchronized.isCaptureCommandInFlight)
     }
 
@@ -469,6 +628,40 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.send(.selectRoute(.studio)), .routeChanged(.studio))
         XCTAssertEqual(model.snapshot.studioDraft?.selectedDisplayIDs, [7])
         XCTAssertEqual(model.send(.setDraftIncludeCursor(false)), .draftChanged)
+    }
+
+    func testFrameRateChangeUpdatesTheCurrentDraftWithoutChangingDefaults() {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = store.makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.setDraftFrameRate(60)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 60)
+        XCTAssertEqual(store.preferences.capture.frameRate, 30)
+    }
+
+    func testCodecChangeUpdatesTheCurrentDraftWithoutChangingDefaults() {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = store.makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.setDraftCodecPolicy(.h264)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.codecPolicy, .h264)
+        XCTAssertEqual(store.preferences.capture.codecPolicy, .automatic)
     }
 
     func testSettingsChangesDoNotMutateAnExistingDraftAndTheNextDraftUsesThem() {

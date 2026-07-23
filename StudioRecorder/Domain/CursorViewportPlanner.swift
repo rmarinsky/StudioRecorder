@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreMedia
 import Foundation
+import SwiftUI
 
 struct CursorHostSample: Equatable, Sendable {
     let hostTime: UInt64
@@ -87,7 +88,7 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
                 normalizedY: (hostSample.location.y - space.visibleFrame.minY) / space.visibleFrame.height,
                 isPrimaryButtonDown: hostSample.isPrimaryButtonDown
             ).validated()
-            if recordsTimeline {
+            if recordsTimeline, space.visibleFrame.contains(hostSample.location) {
                 state.alignedSamples.append(sample)
             }
             return sample
@@ -204,6 +205,77 @@ struct ViewportDecision: Equatable {
     let displayID: UInt32
     let viewport: CGRect
     let transition: ViewportTransition
+}
+
+struct CursorFollowMotion {
+    private(set) var center: CGPoint?
+    private(set) var isSettled = true
+    private var lastTimestamp: TimeInterval?
+    private var velocityX = 0.0
+    private var velocityY = 0.0
+    private let spring: Spring
+
+    init(initialCenter: CGPoint? = nil, responseDuration: TimeInterval = 0.4) {
+        center = initialCenter
+        spring = Spring(
+            response: responseDuration.isFinite ? max(responseDuration, 0.001) : 0.4,
+            dampingRatio: 1
+        )
+    }
+
+    @discardableResult
+    mutating func update(target: CGPoint, at timestamp: TimeInterval) -> CGPoint {
+        guard let center,
+              let lastTimestamp,
+              timestamp.isFinite,
+              timestamp > lastTimestamp,
+              timestamp - lastTimestamp <= 0.25 else {
+            reset(to: target)
+            lastTimestamp = timestamp.isFinite ? timestamp : nil
+            return target
+        }
+
+        var x = Double(center.x)
+        var y = Double(center.y)
+        spring.update(
+            value: &x,
+            velocity: &velocityX,
+            target: Double(target.x),
+            deltaTime: timestamp - lastTimestamp
+        )
+        spring.update(
+            value: &y,
+            velocity: &velocityY,
+            target: Double(target.y),
+            deltaTime: timestamp - lastTimestamp
+        )
+
+        isSettled = max(
+            abs(x - Double(target.x)),
+            abs(y - Double(target.y)),
+            abs(velocityX),
+            abs(velocityY)
+        ) <= 0.001
+        if isSettled {
+            x = Double(target.x)
+            y = Double(target.y)
+            velocityX = 0
+            velocityY = 0
+        }
+
+        let next = CGPoint(x: x, y: y)
+        self.center = next
+        self.lastTimestamp = timestamp
+        return next
+    }
+
+    mutating func reset(to center: CGPoint? = nil) {
+        self.center = center
+        lastTimestamp = nil
+        velocityX = 0
+        velocityY = 0
+        isSettled = true
+    }
 }
 
 struct CursorViewportPlanner {

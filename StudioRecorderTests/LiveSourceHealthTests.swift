@@ -1,4 +1,5 @@
 import XCTest
+@preconcurrency import ScreenCaptureKit
 @testable import StudioRecorder
 
 final class LiveSourceHealthTests: XCTestCase {
@@ -28,6 +29,7 @@ final class LiveSourceHealthTests: XCTestCase {
         }
 
         XCTAssertTrue(monitor.snapshot(at: 1).entries.allSatisfy { $0.state == .active })
+        monitor.invalidate(display)
         XCTAssertTrue(monitor.snapshot(at: 3).hasStalledSources)
 
         monitor.record(display, at: 3)
@@ -44,12 +46,12 @@ final class LiveSourceHealthTests: XCTestCase {
             videoStallThreshold: 1,
             audioStallThreshold: 2
         )
-        monitor.configure(expected: [display, .microphone], at: 0)
-        monitor.record(display, at: 1)
+        monitor.configure(expected: [.camera, .microphone], at: 0)
+        monitor.record(.camera, at: 1)
         monitor.record(.microphone, at: 1)
 
         let snapshot = monitor.snapshot(at: 2.5)
-        XCTAssertEqual(snapshot[display]?.state, .stalled)
+        XCTAssertEqual(snapshot[.camera]?.state, .stalled)
         XCTAssertEqual(snapshot[.microphone]?.state, .active)
     }
 
@@ -72,11 +74,72 @@ final class LiveSourceHealthTests: XCTestCase {
         monitor.configure(expected: [display, secondDisplay], at: 0)
         monitor.record(display, at: 2)
         monitor.record(secondDisplay, at: 0.5)
+        monitor.invalidate(secondDisplay)
 
         let snapshot = monitor.snapshot(at: 2.1)
 
         XCTAssertEqual(snapshot[display]?.state, .active)
         XCTAssertEqual(snapshot[secondDisplay]?.state, .stalled)
         XCTAssertEqual(snapshot.stalledSources, [secondDisplay])
+    }
+
+    func testPreviewHoldsItsLastGoodFrameAcrossIdleBlankAndRetiredDisplayFrames() {
+        XCTAssertTrue(LiveScreenPreviewFramePolicy.shouldAccept(
+            status: .complete,
+            hasCurrentStreamContext: true
+        ))
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldAccept(
+            status: .idle,
+            hasCurrentStreamContext: true
+        ))
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldAccept(
+            status: .blank,
+            hasCurrentStreamContext: true
+        ))
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldAccept(
+            status: .complete,
+            hasCurrentStreamContext: false
+        ))
+    }
+
+    func testIdleCallbacksKeepScreenHealthyUntilTheyStop() {
+        let monitor = LiveSourceHealthMonitor(startupGrace: 0, videoStallThreshold: 1)
+        monitor.configure(expected: [display], at: 0)
+        monitor.recordIdle(display, at: 0.5)
+
+        XCTAssertEqual(monitor.snapshot(at: 1)[display]?.state, .active)
+        monitor.recordIdle(display, at: 29.5)
+        XCTAssertEqual(monitor.snapshot(at: 30)[display]?.state, .active)
+        XCTAssertEqual(monitor.snapshot(at: 30.6)[display]?.state, .stalled)
+
+        monitor.invalidate(display)
+        XCTAssertEqual(monitor.snapshot(at: 31)[display]?.state, .stalled)
+    }
+
+    func testActiveScreenStallsWhenCallbacksStop() {
+        let monitor = LiveSourceHealthMonitor(startupGrace: 0, videoStallThreshold: 1)
+        monitor.configure(expected: [display], at: 0)
+        monitor.record(display, at: 0.5)
+
+        XCTAssertEqual(monitor.snapshot(at: 1)[display]?.state, .active)
+        XCTAssertEqual(monitor.snapshot(at: 1.6)[display]?.state, .stalled)
+    }
+
+    func testTerminalStopInvalidatesOnlyTheCurrentScreenStream() {
+        XCTAssertTrue(LiveScreenPreviewFramePolicy.shouldInvalidateAfterStop(
+            hasCurrentStreamContext: true,
+            error: NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.internalError.rawValue)
+        ))
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldInvalidateAfterStop(
+            hasCurrentStreamContext: false,
+            error: NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.internalError.rawValue)
+        ))
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldInvalidateAfterStop(
+            hasCurrentStreamContext: true,
+            error: NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userStopped.rawValue)
+        ))
+        XCTAssertTrue(LiveScreenPreviewFramePolicy.isUserStopped(
+            NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userStopped.rawValue)
+        ))
     }
 }

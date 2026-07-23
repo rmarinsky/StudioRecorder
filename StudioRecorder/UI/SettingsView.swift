@@ -1,27 +1,22 @@
 import AppKit
 import SwiftUI
 
-private enum SettingsTab: String, CaseIterable {
+enum SettingsTab: String, CaseIterable, Hashable {
     case general
-    case capture
     case audio
     case streaming
     case storage
     case shortcuts
-}
 
-private struct SettingsFrameModifier: ViewModifier {
-    let embedded: Bool
+    var title: String { rawValue.capitalized }
 
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if embedded {
-            content
-                .frame(maxWidth: 900, maxHeight: .infinity)
-                .padding(.horizontal, 28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            content.frame(width: 620, height: 460)
+    var icon: String {
+        switch self {
+        case .general: "gearshape"
+        case .audio: "waveform"
+        case .streaming: "dot.radiowaves.left.and.right"
+        case .storage: "internaldrive"
+        case .shortcuts: "keyboard"
         }
     }
 }
@@ -30,38 +25,112 @@ struct SettingsView: View {
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
+    @ObservedObject var managedYouTube: YouTubeManagedSessionCoordinator
     var embedded = false
-    @AppStorage("selectedSettingsTab") private var selectedTab = SettingsTab.general.rawValue
+    var selectedTab = SettingsTab.general
+    @AppStorage("selectedSettingsTab") private var selectedSettingsTabRaw = SettingsTab.general.rawValue
+    @AppStorage("controlPanelShowsTransport") private var controlPanelShowsTransport = true
+    @AppStorage("controlPanelShowsScenes") private var controlPanelShowsScenes = true
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingYouTubeAuthorization = false
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
-
-    var body: some View {
-        settingsTabs
-            .modifier(SettingsFrameModifier(embedded: embedded))
-            .padding(.top, embedded ? 22 : 8)
-            .navigationTitle("Settings")
+    private var windowTab: SettingsTab {
+        get { SettingsTab(rawValue: selectedSettingsTabRaw) ?? .general }
+        nonmutating set { selectedSettingsTabRaw = newValue.rawValue }
     }
 
-    private var settingsTabs: some View {
-        TabView(selection: $selectedTab) {
-            generalSettings
-                .tabItem { Label("General", systemImage: "gearshape") }
-                .tag(SettingsTab.general.rawValue)
-            captureSettings
-                .tabItem { Label("Capture", systemImage: "display") }
-                .tag(SettingsTab.capture.rawValue)
-            audioSettings
-                .tabItem { Label("Audio", systemImage: "waveform") }
-                .tag(SettingsTab.audio.rawValue)
-            streamingSettingsView
-                .tabItem { Label("Streaming", systemImage: "dot.radiowaves.left.and.right") }
-                .tag(SettingsTab.streaming.rawValue)
-            storageSettings
-                .tabItem { Label("Storage", systemImage: "internaldrive") }
-                .tag(SettingsTab.storage.rawValue)
-            shortcutsSettings
-                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
-                .tag(SettingsTab.shortcuts.rawValue)
+    var body: some View {
+        Group {
+            if embedded {
+                selectedSettings(for: selectedTab)
+                    .frame(maxWidth: 720, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 22)
+                    .navigationTitle(selectedTab.title)
+            } else {
+                HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Studio Recorder")
+                        .font(.headline)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 34)
+                        .padding(.bottom, 12)
+                    ForEach(SettingsTab.allCases, id: \.self) { tab in
+                        Button {
+                            windowTab = tab
+                        } label: {
+                            Label(tab.title, systemImage: tab.icon)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 8)
+                                .background(
+                                    windowTab == tab ? settingsRaised : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer()
+                    Text("LOCAL-FIRST MEDIA")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(16)
+                }
+                .padding(.horizontal, 8)
+                .frame(width: 198)
+                .background(settingsPanel)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(windowTab.title)
+                        .font(.title2.weight(.semibold))
+                        .padding(.horizontal, 22)
+                        .padding(.top, 32)
+                        .padding(.bottom, 8)
+                    selectedSettings(for: windowTab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(.horizontal, 18)
+                }
+                .background(settingsContent)
+            }
+                .frame(width: 760, height: 540)
+                .tint(Color(red: 0.90, green: 0.40, blue: 0.36))
+            }
+        }
+        .sheet(isPresented: $isShowingYouTubeAuthorization) {
+            YouTubeAuthorizationDisclosureView {
+                Task { await managedYouTube.connect(clientID: streamingSettings.oauthClientID) }
+            }
+        }
+    }
+
+    private var settingsContent: Color {
+        colorScheme == .dark
+            ? Color(red: 0.055, green: 0.058, blue: 0.062)
+            : Color(red: 0.95, green: 0.945, blue: 0.935)
+    }
+
+    private var settingsPanel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.085, green: 0.088, blue: 0.094)
+            : Color(red: 0.98, green: 0.975, blue: 0.965)
+    }
+
+    private var settingsRaised: Color {
+        colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+    }
+
+    @ViewBuilder
+    private func selectedSettings(for tab: SettingsTab) -> some View {
+        switch tab {
+        case .general: generalSettings
+        case .audio: audioSettings
+        case .streaming: streamingSettingsView
+        case .storage: storageSettings
+        case .shortcuts: shortcutsSettings
         }
     }
 
@@ -78,34 +147,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var captureSettings: some View {
-        Form {
-            lockedNotice
-            Section("Video profile") {
-                LabeledContent("Frame rate", value: "30 fps")
-                Picker("Codec policy", selection: codecBinding) {
-                    Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
-                    Text("H.264").tag(RecordingCodecPolicy.h264)
-                }
-                Picker("New Scene output", selection: programPresetBinding) {
-                    ForEach(CaptureCanvasPreset.allCases) { preset in
-                        Text(preset.label).tag(preset)
-                    }
-                }
-                Text("The Scene output is the exact program recording, export, and stream resolution. Editable raw display tracks keep native resolution.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(isLocked)
-            Section("Capture behavior") {
-                Toggle("Include cursor", isOn: includeCursorBinding)
-                Toggle("Exclude Studio Recorder", isOn: excludeAppBinding)
-            }
-            .disabled(isLocked)
         }
         .formStyle(.grouped)
     }
@@ -181,11 +222,46 @@ struct SettingsView: View {
 
     private var streamingSettingsView: some View {
         Form {
-            Section("YouTube Live") {
-                TextField("RTMPS server", text: $streamingSettings.serverURL)
-                    .textContentType(.URL)
-                SecureField("Stream key", text: $streamingSettings.streamKey)
-                    .textContentType(.password)
+            Section("YouTube Account") {
+                HStack {
+                    if managedYouTube.isAuthorized {
+                        Button("Disconnect YouTube") {
+                            Task { await managedYouTube.disconnect() }
+                        }
+                    } else {
+                        Button("Connect YouTube") {
+                            isShowingYouTubeAuthorization = true
+                        }
+                        .disabled(!streamingSettings.isManagedYouTubeConfigured)
+                    }
+                    Text(managedYouTube.isAuthorized ? "Connected to YouTube" : managedYouTube.state.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if managedYouTube.pendingSession != nil {
+                    HStack {
+                        Button("Resume in Recording Studio") {
+                            model.send(.selectRoute(.studio))
+                        }
+                        Button("End YouTube event") {
+                            Task { await managedYouTube.complete(clientID: streamingSettings.oauthClientID) }
+                        }
+                        Button("Open Live Control Room") {
+                            NSWorkspace.shared.open(URL(string: "https://studio.youtube.com/")!)
+                        }
+                    }
+                }
+                if !streamingSettings.isManagedYouTubeConfigured {
+                    Label("YouTube connection is not configured in this build.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Authorization opens in your browser. OAuth tokens stay in macOS Keychain; managed stream keys stay in memory only.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Stream Quality") {
                 LabeledContent("Video bitrate") {
                     Picker("Video bitrate", selection: $streamingSettings.videoBitRate) {
                         Text("6 Mbps").tag(6_000_000)
@@ -200,31 +276,58 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                 }
-                if activeCanvasIs4K {
-                    Label("4K Scene active. Use 30 Mbps for 30 fps and Normal latency in YouTube.", systemImage: "4k.tv")
-                        .font(.caption)
-                        .foregroundStyle(streamingSettings.videoBitRate >= 30_000_000 ? Color.secondary : Color.orange)
-                }
-                HStack {
-                    Button("Save to Keychain") { streamingSettings.save() }
-                    Button("Open YouTube Live Control Room") {
-                        NSWorkspace.shared.open(URL(string: "https://studio.youtube.com/channel/UC/livestreaming")!)
+                LabeledContent("Audio bitrate") {
+                    Picker("Audio bitrate", selection: $streamingSettings.audioBitRate) {
+                        Text("128 Kbps").tag(128_000)
+                        Text("192 Kbps").tag(192_000)
+                        Text("256 Kbps").tag(256_000)
                     }
+                    .labelsHidden()
+                }
+                if activeCanvasIs4K {
+                    Label("4K Scene active. Use \(recommended4KBitRate / 1_000_000) Mbps for \(activeFrameRate) fps and Normal latency in YouTube.", systemImage: "4k.tv")
+                        .font(.caption)
+                        .foregroundStyle(streamingSettings.videoBitRate >= recommended4KBitRate ? Color.secondary : Color.orange)
+                }
+                Button("Save settings") { streamingSettings.save() }
+            }
+            Section("Advanced") {
+                Toggle("Use a custom stream key", isOn: customStreamKeyBinding)
+                    .disabled(managedYouTube.pendingSession != nil)
+                if !streamingSettings.usesManagedYouTube {
+                    TextField("RTMPS server", text: $streamingSettings.serverURL)
+                        .textContentType(.URL)
+                    SecureField("Stream key", text: $streamingSettings.streamKey)
+                        .textContentType(.password)
+                    HStack {
+                        Button("Save stream key") { streamingSettings.save() }
+                        Button("Open YouTube Live Control Room") {
+                            NSWorkspace.shared.open(URL(string: "https://studio.youtube.com/")!)
+                        }
+                    }
+                    Text("The custom stream key is stored only in macOS Keychain. It is never written to project files or logs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let credentialError = streamingSettings.credentialError {
                     Label(credentialError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else {
-                    Text("The stream key is stored only in macOS Keychain. It is never written to project files or logs.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             Section("YouTube encoder contract") {
-                LabeledContent("Video", value: "H.264 · 30 fps · 2 s keyframes")
-                LabeledContent("Audio", value: "AAC · 128 Kbps")
+                LabeledContent("Video", value: "H.264 · \(activeFrameRate) fps · 2 s keyframes")
+                LabeledContent("Audio", value: "AAC · \(streamingSettings.audioBitRate / 1_000) Kbps")
                 Text("The active Scene determines horizontal, vertical, 4K, or custom stream dimensions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Go live") {
+                Label("Connect your YouTube account and choose a scheduled broadcast in Recording Studio.", systemImage: "1.circle")
+                Label("Choose Stream and run the preflight before starting.", systemImage: "2.circle")
+                Label("Studio Recorder creates or binds the YouTube stream automatically.", systemImage: "3.circle")
+                Label("Confirm the preview and stream health in YouTube Live Control Room.", systemImage: "4.circle")
+                Text("For a scheduled stream, YouTube requires a final Go live action in Live Control Room. 4K uses normal latency.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -232,11 +335,31 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    private var customStreamKeyBinding: Binding<Bool> {
+        Binding(
+            get: { !streamingSettings.usesManagedYouTube },
+            set: {
+                streamingSettings.usesManagedYouTube = !$0
+                streamingSettings.save()
+            }
+        )
+    }
+
     private var shortcutsSettings: some View {
         Form {
+            Section("Recording Controls window") {
+                Toggle("Show recording controls", isOn: $controlPanelShowsTransport)
+                Toggle("Show saved scenes", isOn: $controlPanelShowsScenes)
+                shortcut("Open Recording Controls", keys: "⌘⇧C")
+                Text("This floating window is protected from screen capture and stays available over other apps.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Keyboard shortcuts") {
                 shortcut("New Recording", keys: "⌘N")
                 shortcut("Record / Stop in Studio", keys: "⌘R")
+                shortcut("Pause / Resume Recording", keys: "⌘⇧P")
+                shortcut("Switch to Scene 1–9", keys: "⌥1–⌥9")
                 shortcut("Search Projects", keys: "⌘F")
                 shortcut("Settings", keys: "⌘,")
                 shortcut("Dismiss dialog or sheet", keys: "Esc")
@@ -249,6 +372,14 @@ struct SettingsView: View {
         let canvas = model.snapshot.studioDraft?.presentation.canvas
             ?? CaptureCanvasSnapshot(preset: preferencesStore.preferences.capture.programPreset)
         return canvas.width >= 3_840 || canvas.height >= 3_840
+    }
+
+    private var recommended4KBitRate: Int {
+        activeFrameRate > 30 ? 35_000_000 : 30_000_000
+    }
+
+    private var activeFrameRate: Int {
+        model.snapshot.studioDraft?.frameRate ?? preferencesStore.preferences.capture.frameRate
     }
 
     @ViewBuilder
@@ -292,34 +423,6 @@ struct SettingsView: View {
         Binding(
             get: { preferencesStore.preferences.appearance },
             set: { model.send(.changePreference(.appearance($0))) }
-        )
-    }
-
-    private var codecBinding: Binding<RecordingCodecPolicy> {
-        Binding(
-            get: { preferencesStore.preferences.capture.codecPolicy },
-            set: { model.send(.changePreference(.codecPolicy($0))) }
-        )
-    }
-
-    private var programPresetBinding: Binding<CaptureCanvasPreset> {
-        Binding(
-            get: { preferencesStore.preferences.capture.programPreset },
-            set: { model.send(.changePreference(.programPreset($0))) }
-        )
-    }
-
-    private var includeCursorBinding: Binding<Bool> {
-        preferenceBinding(
-            get: { preferencesStore.preferences.capture.includeCursor },
-            change: PreferenceChange.includeCursor
-        )
-    }
-
-    private var excludeAppBinding: Binding<Bool> {
-        preferenceBinding(
-            get: { preferencesStore.preferences.capture.excludeStudioRecorder },
-            change: PreferenceChange.excludeStudioRecorder
         )
     }
 

@@ -3,8 +3,27 @@ import CoreImage
 import CoreVideo
 import Foundation
 
+enum ProjectProgramExportPolicy {
+    static func presetName(
+        codecPolicy: RecordingCodecPolicy,
+        availablePresets: [String]
+    ) -> String {
+        if codecPolicy == .automatic,
+           availablePresets.contains(AVAssetExportPresetHEVCHighestQuality) {
+            return AVAssetExportPresetHEVCHighestQuality
+        }
+        return AVAssetExportPresetHighestQuality
+    }
+}
+
+struct ProjectScreenSource: Sendable, Equatable {
+    let url: URL
+    let displayID: UInt32?
+}
+
 struct ProjectProgramSources: Sendable {
     let screenURL: URL
+    let screenSources: [ProjectScreenSource]
     let cameraURL: URL?
     let audioURL: URL?
     let audioSourceOrder: [ProjectAudioSource]
@@ -16,9 +35,11 @@ struct ProjectProgramSources: Sendable {
     let screenWasCapturedAsFixedRegion: Bool
     let cameraTimeOffset: TimeInterval
     let rendersCursor: Bool
+    let frameRate: Int
 
     init(
         screenURL: URL,
+        screenSources: [ProjectScreenSource]? = nil,
         cameraURL: URL?,
         audioURL: URL? = nil,
         audioSourceOrder: [ProjectAudioSource] = [],
@@ -29,9 +50,15 @@ struct ProjectProgramSources: Sendable {
         sceneTimeline: StudioSceneTimeline? = nil,
         screenWasCapturedAsFixedRegion: Bool = false,
         cameraTimeOffset: TimeInterval = 0,
-        rendersCursor: Bool = false
+        rendersCursor: Bool = false,
+        frameRate: Int = 30
     ) {
         self.screenURL = screenURL
+        if let screenSources, !screenSources.isEmpty {
+            self.screenSources = screenSources
+        } else {
+            self.screenSources = [ProjectScreenSource(url: screenURL, displayID: screenDisplayID)]
+        }
         self.cameraURL = cameraURL
         self.audioURL = audioURL
         self.audioSourceOrder = audioSourceOrder
@@ -43,11 +70,13 @@ struct ProjectProgramSources: Sendable {
         self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.cameraTimeOffset = cameraTimeOffset
         self.rendersCursor = rendersCursor
+        self.frameRate = CaptureDefaults.supportedFrameRates.contains(frameRate) ? frameRate : 30
     }
 
     func replacingSceneTimeline(_ sceneTimeline: StudioSceneTimeline?) -> ProjectProgramSources {
         ProjectProgramSources(
             screenURL: screenURL,
+            screenSources: screenSources,
             cameraURL: cameraURL,
             audioURL: audioURL,
             audioSourceOrder: audioSourceOrder,
@@ -58,7 +87,8 @@ struct ProjectProgramSources: Sendable {
             sceneTimeline: sceneTimeline,
             screenWasCapturedAsFixedRegion: screenWasCapturedAsFixedRegion,
             cameraTimeOffset: cameraTimeOffset,
-            rendersCursor: rendersCursor
+            rendersCursor: rendersCursor,
+            frameRate: frameRate
         )
     }
 }
@@ -108,7 +138,9 @@ final class ProjectProgramRenderer {
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
         sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
-        to destinationURL: URL
+        codecPolicy: RecordingCodecPolicy = .h264,
+        to destinationURL: URL,
+        progress: @escaping (Double) -> Void = { _ in }
     ) async throws {
         try validateDestination(destinationURL, sources: sources)
         let rendered = try await makeComposition(
@@ -117,7 +149,12 @@ final class ProjectProgramRenderer {
             presentation: presentation,
             privacyOverlays: privacyOverlays
         )
-        guard let session = AVAssetExportSession(asset: rendered.asset, presetName: AVAssetExportPresetHighestQuality) else {
+        let preferredPreset = ProjectProgramExportPolicy.presetName(
+            codecPolicy: codecPolicy,
+            availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
+        )
+        guard let session = AVAssetExportSession(asset: rendered.asset, presetName: preferredPreset)
+            ?? AVAssetExportSession(asset: rendered.asset, presetName: AVAssetExportPresetHighestQuality) else {
             throw ProjectEditRendererError.exportUnavailable
         }
         session.videoComposition = rendered.videoComposition
@@ -133,7 +170,16 @@ final class ProjectProgramRenderer {
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-program-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        progress(0)
+        let progressTask = Task { @MainActor in
+            while !Task.isCancelled {
+                progress(Double(session.progress))
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        defer { progressTask.cancel() }
         try await session.export(to: temporaryURL, as: .mov)
+        progress(1)
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {
@@ -143,7 +189,8 @@ final class ProjectProgramRenderer {
 
     private func validateDestination(_ destinationURL: URL, sources: ProjectProgramSources) throws {
         let destination = destinationURL.standardizedFileURL.resolvingSymlinksInPath()
-        for sourceURL in [sources.screenURL, sources.cameraURL, sources.audioURL].compactMap({ $0 }) {
+        let sourceURLs = sources.screenSources.map(\.url) + [sources.cameraURL, sources.audioURL].compactMap { $0 }
+        for sourceURL in sourceURLs {
             let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
             guard destination != source else { throw ProjectEditRendererError.unsafeDestination }
             let sourceDirectory = source.deletingLastPathComponent()
@@ -161,14 +208,28 @@ final class ProjectProgramRenderer {
         privacyOverlays: [ProjectPrivacyOverlay]
     ) async throws -> CompositionResult {
         let composition = AVMutableComposition()
-        let screenAsset = AVURLAsset(url: sources.screenURL)
-        guard let sourceScreenTrack = try await screenAsset.loadTracks(withMediaType: .video).first,
-              let screenTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: 1) else {
+        var screenTrackIDs: [UInt32: CMPersistentTrackID] = [:]
+        var screenTransforms: [CMPersistentTrackID: CGAffineTransform] = [:]
+        var primaryScreenTrackID: CMPersistentTrackID?
+        for (index, source) in sources.screenSources.enumerated() {
+            let asset = AVURLAsset(url: source.url)
+            guard let sourceTrack = try await asset.loadTracks(withMediaType: .video).first,
+                  let track = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: CMPersistentTrackID(index + 1)
+                  ) else { continue }
+            try await insert(timeline: timeline, from: sourceTrack, into: track)
+            if let displayID = source.displayID { screenTrackIDs[displayID] = track.trackID }
+            screenTransforms[track.trackID] = try await sourceTrack.load(.preferredTransform)
+            if primaryScreenTrackID == nil || source.displayID == sources.screenDisplayID {
+                primaryScreenTrackID = track.trackID
+            }
+        }
+        guard let primaryScreenTrackID else {
             throw ProjectEditRendererError.noMediaTracks
         }
-        try await insert(timeline: timeline, from: sourceScreenTrack, into: screenTrack)
 
-        let audioAsset = sources.audioURL.map(AVURLAsset.init(url:)) ?? screenAsset
+        let audioAsset = AVURLAsset(url: sources.audioURL ?? sources.screenURL)
         var audioSourceByTrackID: [CMPersistentTrackID: ProjectAudioSource] = [:]
         do {
             let sourceAudioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
@@ -212,7 +273,10 @@ final class ProjectProgramRenderer {
             do {
                 let cameraAsset = AVURLAsset(url: cameraURL)
                 if let sourceCameraTrack = try await cameraAsset.loadTracks(withMediaType: .video).first,
-                   let cameraTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: 2) {
+                   let cameraTrack = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: CMPersistentTrackID(sources.screenSources.count + 1)
+                   ) {
                     do {
                         try await insertCamera(
                             timeline: timeline,
@@ -238,26 +302,26 @@ final class ProjectProgramRenderer {
         let validated = presentation.validated()
         let instruction = ProjectProgramInstruction(
             timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: timeline.duration, preferredTimescale: 600)),
-            screenTrackID: screenTrack.trackID,
+            primaryScreenTrackID: primaryScreenTrackID,
+            screenTrackIDs: screenTrackIDs,
             cameraTrackID: cameraTrackID,
             presentation: validated,
             timeline: timeline,
-            cursorSamples: sources.cursorTimeline?.samples.filter {
-                sources.screenDisplayID == nil || $0.displayID == sources.screenDisplayID
-            } ?? [],
+            cursorSamples: sources.cursorTimeline?.samples ?? [],
             shortcutTimeline: sources.shortcutTimeline,
             sceneTimeline: sources.sceneTimeline,
             screenWasCapturedAsFixedRegion: sources.screenWasCapturedAsFixedRegion,
             privacyOverlays: privacyOverlays,
             rendersCursor: sources.rendersCursor,
-            screenTransform: try await sourceScreenTrack.load(.preferredTransform),
-            cameraTransform: cameraTransform
+            screenTransforms: screenTransforms,
+            cameraTransform: cameraTransform,
+            frameRate: sources.frameRate
         )
         let videoComposition = AVMutableVideoComposition()
         videoComposition.customVideoCompositorClass = ProjectVideoCompositor.self
         videoComposition.instructions = [instruction]
         videoComposition.renderSize = validated.canvas.pixelSize
-        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(sources.frameRate))
         return CompositionResult(
             asset: composition,
             videoComposition: videoComposition,
@@ -349,11 +413,12 @@ final class ProjectProgramRenderer {
 private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
     let timeRange: CMTimeRange
     let enablePostProcessing = false
-    let containsTweening = false
+    let containsTweening = true
     let requiredSourceTrackIDs: [NSValue]?
     let passthroughTrackID = kCMPersistentTrackID_Invalid
 
-    let screenTrackID: CMPersistentTrackID
+    let primaryScreenTrackID: CMPersistentTrackID
+    let screenTrackIDs: [UInt32: CMPersistentTrackID]
     let cameraTrackID: CMPersistentTrackID?
     let presentation: CapturePresentationSnapshot
     let timeline: ProjectEditTimeline
@@ -363,12 +428,16 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
     let screenWasCapturedAsFixedRegion: Bool
     let privacyOverlays: [ProjectPrivacyOverlay]
     let rendersCursor: Bool
-    let screenTransform: CGAffineTransform
+    let screenTransforms: [CMPersistentTrackID: CGAffineTransform]
     let cameraTransform: CGAffineTransform
+    let outputDuration: TimeInterval
+    let frameRate: Int
+    let cinematicViewportFrames: [ScreenFramingSnapshot?]
 
     init(
         timeRange: CMTimeRange,
-        screenTrackID: CMPersistentTrackID,
+        primaryScreenTrackID: CMPersistentTrackID,
+        screenTrackIDs: [UInt32: CMPersistentTrackID],
         cameraTrackID: CMPersistentTrackID?,
         presentation: CapturePresentationSnapshot,
         timeline: ProjectEditTimeline,
@@ -378,25 +447,56 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         screenWasCapturedAsFixedRegion: Bool,
         privacyOverlays: [ProjectPrivacyOverlay],
         rendersCursor: Bool,
-        screenTransform: CGAffineTransform,
-        cameraTransform: CGAffineTransform
+        screenTransforms: [CMPersistentTrackID: CGAffineTransform],
+        cameraTransform: CGAffineTransform,
+        frameRate: Int
     ) {
+        let cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        let outputDuration = timeRange.duration.seconds
         self.timeRange = timeRange
-        self.screenTrackID = screenTrackID
+        self.primaryScreenTrackID = primaryScreenTrackID
+        self.screenTrackIDs = screenTrackIDs
         self.cameraTrackID = cameraTrackID
         self.presentation = presentation
         self.timeline = timeline
-        cursorTimeline = cursorSamples.isEmpty ? nil : CursorSceneTimeline(samples: cursorSamples)
+        self.cursorTimeline = cursorTimeline
         self.shortcutTimeline = shortcutTimeline
         self.sceneTimeline = sceneTimeline
         self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
         self.privacyOverlays = privacyOverlays
         self.rendersCursor = rendersCursor
-        self.screenTransform = screenTransform
+        self.screenTransforms = screenTransforms
         self.cameraTransform = cameraTransform
-        requiredSourceTrackIDs = ([screenTrackID] + (cameraTrackID.map { [$0] } ?? [])).map {
+        self.outputDuration = outputDuration
+        self.frameRate = frameRate
+        cinematicViewportFrames = Self.makeCinematicViewportFrames(
+            outputDuration: outputDuration,
+            frameRate: frameRate,
+            presentation: presentation,
+            timeline: timeline,
+            cursorTimeline: cursorTimeline,
+            sceneTimeline: sceneTimeline
+        )
+        requiredSourceTrackIDs = (Array(Set(screenTrackIDs.values).union([primaryScreenTrackID]))
+            + (cameraTrackID.map { [$0] } ?? [])).map {
             NSNumber(value: $0)
         }
+    }
+
+    func screenTrackID(at compositionTime: CMTime) -> CMPersistentTrackID {
+        guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds) else {
+            return primaryScreenTrackID
+        }
+        if let displayID = sceneTimeline?.displayID(at: sourceTime),
+           let trackID = screenTrackIDs[displayID] {
+            return trackID
+        }
+        if presentation(at: compositionTime).framing.mode == .followCursor,
+           let displayID = cursorTimeline?.sample(at: sourceTime, for: nil)?.displayID,
+           let trackID = screenTrackIDs[displayID] {
+            return trackID
+        }
+        return primaryScreenTrackID
     }
 
     func screenFraming(at compositionTime: CMTime) -> ScreenFramingSnapshot? {
@@ -413,23 +513,97 @@ private final class ProjectProgramInstruction: NSObject, AVVideoCompositionInstr
         case .fixedRegion:
             return activePresentation.framing
         case .followCursor:
-            guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
-                  let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
-                return activePresentation.framing
-            }
-            return ScreenFramingSnapshot(
-                mode: .fixedRegion,
-                centerX: sample.normalizedX,
-                centerY: sample.normalizedY,
-                scale: activePresentation.framing.scale
-            ).validated()
+            return cinematicViewportFrame(at: compositionTime.seconds) ?? activePresentation.framing
         }
     }
 
+    private func cinematicViewportFrame(at compositionTime: TimeInterval) -> ScreenFramingSnapshot? {
+        guard !cinematicViewportFrames.isEmpty else { return nil }
+        let frame = Int(floor(max(compositionTime, 0) * Double(frameRate) + 0.000_001))
+        return cinematicViewportFrames[min(frame, cinematicViewportFrames.count - 1)]
+    }
+
+    private static func makeCinematicViewportFrames(
+        outputDuration: TimeInterval,
+        frameRate: Int,
+        presentation: CapturePresentationSnapshot,
+        timeline: ProjectEditTimeline,
+        cursorTimeline: CursorSceneTimeline?,
+        sceneTimeline: StudioSceneTimeline?
+    ) -> [ScreenFramingSnapshot?] {
+        let frameDuration = 1 / Double(frameRate)
+        let frameCount = max(Int(ceil(outputDuration * Double(frameRate))) + 1, 1)
+        var frames: [ScreenFramingSnapshot?] = []
+        frames.reserveCapacity(frameCount)
+        var motion = CursorFollowMotion()
+        var previousCompositionTime: TimeInterval?
+        var previousSourceTime: TimeInterval?
+        var previousDisplayID: UInt32?
+        var wasFollowing = false
+
+        for frameIndex in 0..<frameCount {
+            let compositionTime = min(Double(frameIndex) * frameDuration, outputDuration)
+            guard let sourceTime = timeline.sourceTime(at: compositionTime) else {
+                frames.append(nil)
+                motion.reset()
+                wasFollowing = false
+                continue
+            }
+            let activePresentation = sceneTimeline?.presentation(at: sourceTime) ?? presentation
+            guard activePresentation.framing.mode == .followCursor,
+                  let sample = cursorTimeline?.sample(at: sourceTime, for: nil) else {
+                frames.append(nil)
+                motion.reset()
+                previousCompositionTime = compositionTime
+                previousSourceTime = sourceTime
+                previousDisplayID = nil
+                wasFollowing = false
+                continue
+            }
+
+            let displayID = sceneTimeline?.displayID(at: sourceTime) ?? sample.displayID
+            let sourceIsDiscontinuous = if let previousCompositionTime, let previousSourceTime {
+                abs((sourceTime - previousSourceTime) - (compositionTime - previousCompositionTime))
+                    > frameDuration / 2
+            } else {
+                false
+            }
+            if !wasFollowing || sourceIsDiscontinuous || previousDisplayID != displayID {
+                motion.reset()
+            }
+            let center = motion.update(
+                target: CGPoint(x: sample.normalizedX, y: sample.normalizedY),
+                at: compositionTime
+            )
+            frames.append(ScreenFramingSnapshot(
+                mode: .fixedRegion,
+                centerX: center.x,
+                centerY: center.y,
+                scale: activePresentation.framing.scale
+            ).validated())
+            previousCompositionTime = compositionTime
+            previousSourceTime = sourceTime
+            previousDisplayID = displayID
+            wasFollowing = true
+        }
+        return frames
+    }
+
     func presentation(at compositionTime: CMTime) -> CapturePresentationSnapshot {
-        guard let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
-              let sceneTimeline else { return presentation }
-        return sceneTimeline.presentation(at: sourceTime)
+        let activePresentation: CapturePresentationSnapshot
+        if let sourceTime = timeline.sourceTime(at: compositionTime.seconds),
+           let sceneTimeline {
+            activePresentation = sceneTimeline.presentation(at: sourceTime)
+        } else {
+            activePresentation = presentation
+        }
+        return StudioSceneInterpolator.applyingOpacity(
+            StudioRecordingBoundaryFade.opacity(
+                at: compositionTime.seconds,
+                outputDuration: outputDuration
+            ),
+            to: activePresentation
+        )
     }
 
     func cursorState(at compositionTime: CMTime) -> ProgramCursorState? {
@@ -476,7 +650,8 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
             return
         }
 
-        let screen = request.sourceFrame(byTrackID: instruction.screenTrackID).map(CIImage.init(cvPixelBuffer:))
+        let screenTrackID = instruction.screenTrackID(at: request.compositionTime)
+        let screen = request.sourceFrame(byTrackID: screenTrackID).map(CIImage.init(cvPixelBuffer:))
         let camera = instruction.cameraTrackID
             .flatMap { request.sourceFrame(byTrackID: $0) }
             .map(CIImage.init(cvPixelBuffer:))
@@ -484,7 +659,7 @@ private final class ProjectVideoCompositor: NSObject, AVVideoCompositing, @unche
         compositor.render(
             screen: screen,
             camera: camera,
-            screenTransform: instruction.screenTransform,
+            screenTransform: instruction.screenTransforms[screenTrackID] ?? .identity,
             cameraTransform: instruction.cameraTransform,
             presentation: presentation,
             screenFraming: instruction.screenFraming(at: request.compositionTime),

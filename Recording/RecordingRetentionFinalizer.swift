@@ -40,13 +40,17 @@ final class RecordingRetentionFinalizer {
         cursorTimeline: CursorSceneTimeline?,
         shortcutTimeline: SafeShortcutTimeline? = nil,
         sceneTimeline: StudioSceneTimeline? = nil,
-        editTimeline: ProjectEditTimeline? = nil
+        editTimeline: ProjectEditTimeline? = nil,
+        progress: @escaping (_ fraction: Double, _ phase: String) -> Void = { _, _ in }
     ) async throws {
         guard request.storage.resolvedRetentionPolicy == .programOnly else {
+            progress(0.2, "Closing recording package…")
             try projectStore.close(project)
+            progress(1, "Recording saved")
             return
         }
 
+        progress(0.04, "Preparing final video…")
         let tracks = project.manifest.tracks ?? []
         guard let screen = preferredScreenTrack(in: tracks, primaryDisplayID: request.primaryAudioDisplayID),
               let screenURL = projectStore.rawTrackURL(for: screen.id, in: project) else {
@@ -94,26 +98,39 @@ final class RecordingRetentionFinalizer {
         let programURL = project.rootURL.appending(path: Self.programTrack.relativePath)
 
         try projectStore.markPrepared(trackID: Self.programTrack.id, in: project)
+        progress(0.12, "Rendering final video…")
         try await renderer.exportMovie(
             sources: ProjectProgramSources(
                 screenURL: screenURL,
+                screenSources: tracks.filter { $0.kind == .screen }.compactMap { track in
+                    projectStore.rawTrackURL(for: track.id, in: project).map {
+                        ProjectScreenSource(url: $0, displayID: track.displayID)
+                    }
+                },
                 cameraURL: cameraURL,
                 audioURL: audioURL,
-                screenDisplayID: screen.displayID,
+                screenDisplayID: request.profile.programDisplayID ?? screen.displayID,
                 cursorTimeline: cursorTimeline,
                 shortcutTimeline: shortcutTimeline,
                 sceneTimeline: sceneTimeline,
                 screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
                 cameraTimeOffset: camera.map {
                     ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
+                        + request.profile.resolvedCameraSyncOffset
                 } ?? 0,
                 rendersCursor: request.profile.includeCursor
-                    && request.profile.resolvedCursorRendering == .composited
+                    && request.profile.resolvedCursorRendering == .composited,
+                frameRate: request.profile.frameRate
             ),
             timeline: timeline,
             presentation: request.presentation,
-            to: programURL
+            codecPolicy: request.profile.codecPolicy,
+            to: programURL,
+            progress: { exportProgress in
+                progress(0.12 + exportProgress * 0.72, "Rendering final video…")
+            }
         )
+        progress(0.88, "Verifying saved video…")
         guard await isReadableProgramMovie(
             at: programURL,
             minimumAudioTrackCount: expectedAudioTrackCount
@@ -123,6 +140,7 @@ final class RecordingRetentionFinalizer {
 
         try projectStore.markStarted(trackID: Self.programTrack.id, in: project)
         try projectStore.markFinished(trackID: Self.programTrack.id, in: project)
+        progress(0.94, "Closing recording package…")
         try projectStore.close(project, replacingTracks: [Self.programTrack])
 
         // The manifest now points at a verified program movie. Removing raw tracks after
@@ -139,6 +157,7 @@ final class RecordingRetentionFinalizer {
         if fileManager.fileExists(atPath: shortcutTimelineURL.path) {
             try? fileManager.removeItem(at: shortcutTimelineURL)
         }
+        progress(1, "Recording saved")
     }
 
     private func preferredScreenTrack(

@@ -5,6 +5,7 @@ enum CameraTrackRecorderError: LocalizedError {
     case deviceUnavailable
     case inputUnavailable
     case outputUnavailable
+    case portraitUnavailable
     case startTimedOut
     case stopTimedOut
 
@@ -13,6 +14,7 @@ enum CameraTrackRecorderError: LocalizedError {
         case .deviceUnavailable: "The selected camera is no longer available."
         case .inputUnavailable: "The selected camera could not be connected."
         case .outputUnavailable: "The camera movie output could not be prepared."
+        case .portraitUnavailable: "This camera cannot provide a native portrait video connection."
         case .startTimedOut: "The camera did not start delivering video in time."
         case .stopTimedOut: "The camera movie did not finish writing in time."
         }
@@ -21,6 +23,55 @@ enum CameraTrackRecorderError: LocalizedError {
 
 struct CameraSessionReference: @unchecked Sendable {
     let session: AVCaptureSession
+}
+
+enum CameraOrientationApplier {
+    static func rotationAngle(for orientation: StudioCameraOrientation) -> CGFloat? {
+        switch orientation {
+        case .automatic: nil
+        case .landscape: 0
+        case .portrait: 90
+        }
+    }
+
+    @discardableResult
+    static func apply(_ orientation: StudioCameraOrientation, to connection: AVCaptureConnection) -> Bool {
+        guard let angle = rotationAngle(for: orientation) else {
+            // Automatic means the camera/session owns orientation. Overriding it with
+            // zero made the movie output disagree with AVCaptureVideoPreviewLayer.
+            return true
+        }
+        guard connection.isVideoRotationAngleSupported(angle) else { return false }
+        connection.videoRotationAngle = angle
+        return true
+    }
+}
+
+enum CameraFormatSelector {
+    static func configure(
+        _ device: AVCaptureDevice,
+        orientation: StudioCameraOrientation,
+        frameRate: Int
+    ) throws {
+        guard orientation == .portrait else { return }
+        let rate = Double(frameRate)
+        guard let format = device.formats.first(where: { format in
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return dimensions.width == 1_920
+                && dimensions.height == 1_080
+                && format.videoSupportedFrameRateRanges.contains {
+                    $0.minFrameRate <= rate && rate <= $0.maxFrameRate
+                }
+        }) else {
+            throw CameraTrackRecorderError.portraitUnavailable
+        }
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.activeFormat = format
+        let duration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
+        device.activeVideoMinFrameDuration = duration
+        device.activeVideoMaxFrameDuration = duration
+    }
 }
 
 final class CameraTrackRecorder: NSObject, @unchecked Sendable {
@@ -42,6 +93,8 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
     func start(
         deviceID: String,
         outputURL: URL,
+        orientation: StudioCameraOrientation = .automatic,
+        frameRate: Int = 30,
         existingSession: CameraSessionReference? = nil
     ) async throws {
         try await withCheckedThrowingContinuation { continuation in
@@ -53,6 +106,8 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
                 self?.prepareAndStart(
                     deviceID: deviceID,
                     outputURL: outputURL,
+                    orientation: orientation,
+                    frameRate: frameRate,
                     existingSession: existingSession
                 )
             }
@@ -97,12 +152,15 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
     private func prepareAndStart(
         deviceID: String,
         outputURL: URL,
+        orientation: StudioCameraOrientation,
+        frameRate: Int,
         existingSession: CameraSessionReference?
     ) {
         do {
             guard let device = AVCaptureDevice(uniqueID: deviceID) else {
                 throw CameraTrackRecorderError.deviceUnavailable
             }
+            try CameraFormatSelector.configure(device, orientation: orientation, frameRate: frameRate)
             let session: AVCaptureSession
             if let existingSession {
                 let hasSelectedInput = existingSession.session.inputs
@@ -127,7 +185,17 @@ final class CameraTrackRecorder: NSObject, @unchecked Sendable {
             guard session.canAddOutput(output) else { throw CameraTrackRecorderError.outputUnavailable }
             session.beginConfiguration()
             session.addOutput(output)
+            var orientationSupported = true
+            if let connection = output.connection(with: .video) {
+                orientationSupported = CameraOrientationApplier.apply(orientation, to: connection)
+            }
             session.commitConfiguration()
+            guard orientationSupported || orientation != .portrait else {
+                session.beginConfiguration()
+                session.removeOutput(output)
+                session.commitConfiguration()
+                throw CameraTrackRecorderError.portraitUnavailable
+            }
 
             self.session = session
             self.output = output

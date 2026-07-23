@@ -4,6 +4,35 @@ import XCTest
 
 @MainActor
 final class StudioSceneTests: XCTestCase {
+    func testAutomaticCameraOrientationPreservesTheSessionNativeRotation() {
+        XCTAssertNil(CameraOrientationApplier.rotationAngle(for: .automatic))
+        XCTAssertEqual(CameraOrientationApplier.rotationAngle(for: .landscape), 0)
+        XCTAssertEqual(CameraOrientationApplier.rotationAngle(for: .portrait), 90)
+    }
+
+    func testSceneSourcesUseProfileDisplaySelectionWithoutLookingModified() {
+        var draft = PreferencesStore().makeStudioDraft(
+            displays: [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))],
+            microphones: []
+        )
+        draft.defaultDisplayIDs = [7]
+        draft.selectedDisplayIDs = [7]
+
+        XCTAssertNil(StudioSceneSourceState(draft: draft).selectedDisplayIDs)
+
+        draft.selectedDisplayIDs = []
+        XCTAssertEqual(StudioSceneSourceState(draft: draft).selectedDisplayIDs, [])
+    }
+
+    func testRecordingBoundaryFadeUsesAQuarterSecondAtBothEnds() {
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 0, outputDuration: 2), 0)
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 0.125, outputDuration: 2), 0.5)
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 0.25, outputDuration: 2), 1)
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 1, outputDuration: 2), 1)
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 1.875, outputDuration: 2), 0.5)
+        XCTAssertEqual(StudioRecordingBoundaryFade.opacity(at: 2, outputDuration: 2), 0)
+    }
+
     func testSceneSwitchQueueChangesPresentationOnTheFirstEligibleFrame() {
         var wide = CapturePresentationSnapshot.default
         wide.name = "Wide"
@@ -21,6 +50,38 @@ final class StudioSceneTests: XCTestCase {
         XCTAssertEqual(queue.resolve(forFrameHostTime: 1_999), wide.validated())
         XCTAssertEqual(queue.resolve(forFrameHostTime: 2_000), speaker.validated())
         XCTAssertEqual(queue.resolve(forFrameHostTime: 2_001), speaker.validated())
+    }
+
+    func testSmoothMoveUsesTheSameInterpolationInLiveResolverAndSavedTimeline() {
+        var start = CapturePresentationSnapshot.default
+        start.camera.shape = .rectangle
+        start.camera.width = 0.2
+        var target = start
+        target.camera.width = 0.6
+        let startHostTime = CMClockConvertHostTimeToSystemUnits(
+            CMTime(seconds: 10, preferredTimescale: 1_000_000)
+        )
+        let midHostTime = CMClockConvertHostTimeToSystemUnits(
+            CMTime(seconds: 10.15, preferredTimescale: 1_000_000)
+        )
+        let configuration = StudioSceneTransitionConfiguration(effect: .smoothMove, duration: 0.3)
+        var resolver = StudioSceneSwitchResolver(initialPresentation: start)
+        resolver.schedule(StudioSceneSwitchEvent(
+            sequence: 1,
+            hostTime: startHostTime,
+            presentation: target,
+            kind: .scene,
+            transition: configuration
+        ))
+        var timeline = StudioSceneTimeline(initialPresentation: start)
+        timeline.append(target, at: 2, transition: configuration)
+
+        let live = resolver.resolve(forFrameHostTime: midHostTime)
+        let saved = timeline.presentation(at: 2.15)
+
+        XCTAssertEqual(live.camera.width, 0.4, accuracy: 0.01)
+        XCTAssertEqual(saved.camera.width, live.camera.width, accuracy: 0.01)
+        XCTAssertEqual(timeline.presentation(at: 2.3), target.validated())
     }
 
     func testSceneSwitchQueueOrdersEventsByDisplayTimeInsteadOfDeliveryOrder() {
@@ -110,11 +171,60 @@ final class StudioSceneTests: XCTestCase {
 
         var updated = scene
         updated.presentation.camera.shape = .roundedRectangle
+        updated.presentation.camera.shadow = SourceShadowSnapshot()
+        updated.presentation.imageOverlays = [ImageOverlaySnapshot(
+            name: "Logo",
+            filePath: "/tmp/logo.png",
+            placement: SourcePlacementSnapshot(
+                centerX: 0.8,
+                centerY: 0.2,
+                width: 0.2,
+                shape: .rectangle
+            )
+        )]
         try store.save(updated)
 
         let reloaded = StudioSceneLibraryStore(fileURL: url)
-        XCTAssertEqual(reloaded.scenes, [updated])
+        var expected = updated
+        expected.configuration = .desktop
+        XCTAssertEqual(reloaded.scenes, [expected])
         XCTAssertEqual(reloaded.scenes.first?.name, "Interview")
+    }
+
+    func testLibraryPersistsProfilesAndCompleteSceneSourceState() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "StudioSceneTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "scenes.json")
+        let store = StudioSceneLibraryStore(fileURL: url)
+        var configuration = StudioProfileConfiguration.desktop
+        configuration.frameRate = 60
+        configuration.cameraOrientation = .portrait
+        configuration.socialGuide = .tikTok
+        try store.updateActiveConfiguration(configuration)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.name = "Full Camera"
+        presentation.screen.isVisible = false
+        let scene = StudioScenePreset(
+            presentation: presentation,
+            sources: StudioSceneSourceState(
+                selectedDisplayIDs: [],
+                capturesSystemAudio: false,
+                capturesMicrophone: true,
+                capturesCamera: true
+            ),
+            incomingTransition: StudioSceneTransitionConfiguration(effect: .dissolve, duration: 0.45)
+        )
+        try store.save(scene)
+        try store.selectScene(scene.id)
+
+        let reloaded = StudioSceneLibraryStore(fileURL: url)
+
+        XCTAssertEqual(reloaded.activeProfile?.configuration, configuration)
+        XCTAssertEqual(reloaded.activeProfile?.lastSceneID, scene.id)
+        var expected = scene
+        expected.configuration = configuration
+        XCTAssertEqual(reloaded.scenes, [expected])
     }
 
     func testLibraryPersistsSceneOrderingForLiveSwitcherShortcuts() throws {
@@ -176,6 +286,17 @@ final class StudioSceneTests: XCTestCase {
         XCTAssertEqual(timeline.presentation(at: 4.24), first.validated())
         XCTAssertEqual(timeline.presentation(at: 4.25), second.validated())
         XCTAssertEqual(timeline.presentation(at: 99), second.validated())
+    }
+
+    func testTimelinePreservesDisplayOnlySwitchesForFollowCursorRecording() {
+        let presentation = CapturePresentationSnapshot.default
+        var timeline = StudioSceneTimeline(initialPresentation: presentation, displayID: 1)
+
+        timeline.append(presentation, at: 2.5, displayID: 2)
+
+        XCTAssertEqual(timeline.transitions.count, 2)
+        XCTAssertEqual(timeline.displayID(at: 2.49), 1)
+        XCTAssertEqual(timeline.displayID(at: 2.5), 2)
     }
 
     func testTimelineRebasesSwitchesWhenTheAuthoritativeRecordingStartArrives() {

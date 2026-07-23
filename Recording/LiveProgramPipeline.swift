@@ -67,7 +67,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
         presentation: CapturePresentationSnapshot,
         includesCursor: Bool,
         audioConfiguration: LiveStreamAudioConfiguration,
-        localArchive: (any LiveProgramArchiveSink)? = nil
+        localArchive: (any LiveProgramArchiveSink)? = nil,
+        configurationProvider: LiveProgramPipeline.ConfigurationProvider? = nil
     ) {
         guard !state.isActive else { return }
         let attemptID = UUID()
@@ -82,7 +83,8 @@ final class YouTubeStreamingCoordinator: ObservableObject {
                     presentation: presentation,
                     includesCursor: includesCursor,
                     audioConfiguration: audioConfiguration,
-                    localArchive: localArchive
+                    localArchive: localArchive,
+                    configurationProvider: configurationProvider
                 ) { [weak self] state in
                     guard let self, self.activeAttemptID == attemptID else { return }
                     self.state = state
@@ -107,8 +109,11 @@ final class YouTubeStreamingCoordinator: ObservableObject {
         }
     }
 
-    func stop() {
-        guard state.isActive else { return }
+    func stop(completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard state.isActive else {
+            completion?()
+            return
+        }
         activeAttemptID = nil
         healthTask?.cancel()
         healthTask = nil
@@ -121,6 +126,7 @@ final class YouTubeStreamingCoordinator: ObservableObject {
             guard activeAttemptID == nil else { return }
             state = .idle
             health = nil
+            completion?()
         }
     }
 
@@ -147,6 +153,7 @@ final class YouTubeStreamingCoordinator: ObservableObject {
 
 actor LiveProgramPipeline {
     typealias StateHandler = @MainActor @Sendable (LiveStreamState) -> Void
+    typealias ConfigurationProvider = @MainActor @Sendable () async throws -> YouTubeStreamConfiguration
 
     private let sink: any LiveProgramSink
     private let reconnectPolicy: LiveStreamReconnectPolicy
@@ -167,10 +174,25 @@ actor LiveProgramPipeline {
     private var hasReportedSending = false
     private var streamGeneration = 0
     private var activeConfiguration: YouTubeStreamConfiguration?
+    private var activeConfigurationProvider: ConfigurationProvider?
     private var activeAudioConfiguration: LiveStreamAudioConfiguration?
     private var activeStateHandler: StateHandler?
     private var activeArchive: (any LiveProgramArchiveSink)?
     private var reconnectTask: Task<Void, Never>?
+    private var sourceFallbackTask: Task<Void, Never>?
+    private var latestComposedVideo: SendableSampleBuffer?
+    private var latestComposedAt: TimeInterval?
+    private var latestRawScreen: SendableSampleBuffer?
+    private var latestRawScreenDisplayID: UInt32?
+    private var latestScreenCursor: ProgramCursorState?
+    private var latestScreenDisplayID: UInt32?
+    private var latestScreenMediaTime: TimeInterval?
+    private var latestScreenReceivedAt: TimeInterval?
+    private var cursorFollowMotion = CursorFollowMotion()
+    private var cursorFollowDisplayID: UInt32?
+    private var cursorFollowMode: ScreenFramingMode?
+    private var fallbackNeedsComposition = false
+    private var latestCompositionShowsShortcut = false
     private var reconnectRequestedWhileRetrying = false
     private var healthStartedAt: TimeInterval?
     private var composedVideoFrames = 0
@@ -195,6 +217,7 @@ actor LiveProgramPipeline {
         self.presentation = presentation.validated()
         rendersCursor = includesCursor
         latestCamera = nil
+        resetScreenState()
         pixelBufferPool = makePixelBufferPool(size: configuration.canvasSize)
         preparedConfiguration = configuration
         preparedRequiresCamera = requiresCamera
@@ -206,6 +229,7 @@ actor LiveProgramPipeline {
         clearPreparation()
         latestCamera = nil
         pixelBufferPool = nil
+        resetScreenState()
     }
 
     func start(
@@ -214,6 +238,7 @@ actor LiveProgramPipeline {
         includesCursor: Bool = true,
         audioConfiguration: LiveStreamAudioConfiguration,
         localArchive: (any LiveProgramArchiveSink)? = nil,
+        configurationProvider: ConfigurationProvider? = nil,
         stateHandler: @escaping StateHandler
     ) async throws {
         guard !isRunning else { return }
@@ -230,6 +255,7 @@ actor LiveProgramPipeline {
         shortcutLabel = nil
         shortcutExpiresAt = 0
         activeConfiguration = configuration
+        activeConfigurationProvider = configurationProvider
         activeAudioConfiguration = audioConfiguration
         activeStateHandler = stateHandler
         activeArchive = localArchive
@@ -240,15 +266,30 @@ actor LiveProgramPipeline {
         composedVideoFrames = 0
         droppedVideoFrames = 0
         totalRenderDuration = 0
+        latestComposedVideo = nil
+        latestComposedAt = nil
+        resetScreenState()
+        sourceFallbackTask?.cancel()
+        sourceFallbackTask = nil
         isRunning = true
         do {
-            try await connectSink(
-                configuration: configuration,
-                audioConfiguration: audioConfiguration,
-                stateHandler: stateHandler,
-                generation: generation,
-                reconnectAttempt: nil
-            )
+            do {
+                try await connectSink(
+                    configuration: configuration,
+                    audioConfiguration: audioConfiguration,
+                    stateHandler: stateHandler,
+                    generation: generation,
+                    reconnectAttempt: 0
+                )
+            } catch {
+                await sink.disconnect()
+                try await retryInitialConnection(
+                    configuration: configuration,
+                    audioConfiguration: audioConfiguration,
+                    stateHandler: stateHandler,
+                    generation: generation
+                )
+            }
             guard isRunning, streamGeneration == generation else {
                 await sink.disconnect()
                 throw CancellationError()
@@ -265,14 +306,59 @@ actor LiveProgramPipeline {
             clearPreparation()
             pixelBufferPool = nil
             activeConfiguration = nil
+            activeConfigurationProvider = nil
             activeAudioConfiguration = nil
             activeStateHandler = nil
+            resetScreenState()
             let archive = activeArchive
             activeArchive = nil
             await sink.disconnect()
             await archive?.finish()
             throw error
         }
+    }
+
+    private func retryInitialConnection(
+        configuration: YouTubeStreamConfiguration,
+        audioConfiguration: LiveStreamAudioConfiguration,
+        stateHandler: @escaping StateHandler,
+        generation: Int
+    ) async throws {
+        var lastError: Error?
+        for attempt in 1...reconnectPolicy.maximumAttempts {
+            guard isRunning, streamGeneration == generation else {
+                throw CancellationError()
+            }
+            await stateHandler(.reconnecting(
+                attempt: attempt,
+                maximumAttempts: reconnectPolicy.maximumAttempts
+            ))
+            do {
+                let delay = reconnectPolicy.delaySeconds(beforeAttempt: attempt)
+                if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+                try Task.checkCancellation()
+                let retryConfiguration = try await activeConfigurationProvider?() ?? configuration
+                activeConfiguration = retryConfiguration
+                try await connectSink(
+                    configuration: retryConfiguration,
+                    audioConfiguration: audioConfiguration,
+                    stateHandler: stateHandler,
+                    generation: generation,
+                    reconnectAttempt: attempt
+                )
+                return
+            } catch is CancellationError {
+                guard isRunning, streamGeneration == generation else {
+                    throw CancellationError()
+                }
+                lastError = CancellationError()
+                await sink.disconnect()
+            } catch {
+                lastError = error
+                await sink.disconnect()
+            }
+        }
+        throw lastError ?? CancellationError()
     }
 
     func stop() async {
@@ -283,6 +369,8 @@ actor LiveProgramPipeline {
         resetTransportEvidence()
         reconnectTask?.cancel()
         reconnectTask = nil
+        sourceFallbackTask?.cancel()
+        sourceFallbackTask = nil
         reconnectRequestedWhileRetrying = false
         let archive = activeArchive
         activeArchive = nil
@@ -292,14 +380,26 @@ actor LiveProgramPipeline {
         shortcutExpiresAt = 0
         pixelBufferPool = nil
         activeConfiguration = nil
+        activeConfigurationProvider = nil
         activeAudioConfiguration = nil
         activeStateHandler = nil
+        latestComposedVideo = nil
+        latestComposedAt = nil
+        resetScreenState()
         await sink.disconnect()
         await archive?.finish()
     }
 
     func updatePresentation(_ presentation: CapturePresentationSnapshot) {
+        let previous = self.presentation
         self.presentation = presentation.validated()
+        if previous.framing.mode != self.presentation.framing.mode {
+            resetCursorFollowMotion()
+        }
+        if previous != self.presentation {
+            fallbackNeedsComposition = true
+            beginSourceFallback()
+        }
         if !self.presentation.cursor.resolvedShowsShortcutKeys {
             shortcutLabel = nil
             shortcutExpiresAt = 0
@@ -310,6 +410,8 @@ actor LiveProgramPipeline {
         guard presentation.cursor.resolvedShowsShortcutKeys else { return }
         shortcutLabel = String(label.prefix(32))
         shortcutExpiresAt = ProcessInfo.processInfo.systemUptime + min(max(duration, 0.2), 5)
+        fallbackNeedsComposition = true
+        beginSourceFallback()
     }
 
     @discardableResult
@@ -323,49 +425,83 @@ actor LiveProgramPipeline {
     func appendScreen(
         _ sampleBuffer: SendableSampleBuffer,
         cursor: ProgramCursorState?,
-        presentation framePresentation: CapturePresentationSnapshot? = nil
+        presentation framePresentation: CapturePresentationSnapshot? = nil,
+        displayID: UInt32? = nil,
+        at mediaTime: TimeInterval? = nil
     ) async -> Bool {
+        endSourceFallback()
         guard isRunning else {
             return renderPreparedScreen(
                 sampleBuffer,
                 cursor: cursor,
-                presentation: framePresentation
+                presentation: framePresentation,
+                displayID: displayID,
+                at: mediaTime
             )
         }
         let appliedPresentation = (framePresentation ?? presentation).validated()
         presentation = appliedPresentation
+        let resolvedMediaTime = resolvedMediaTime(mediaTime, sampleBuffer: sampleBuffer.value)
         let renderStartedAt = ProcessInfo.processInfo.systemUptime
         healthStartedAt = healthStartedAt ?? renderStartedAt
         let archive = activeArchive
+        guard let sourceBuffer = sampleBuffer.value.imageBuffer else {
+            droppedVideoFrames += 1
+            return false
+        }
+        latestRawScreen = sampleBuffer
+        latestRawScreenDisplayID = displayID
+        latestScreenCursor = cursor
+        latestScreenDisplayID = displayID
+        latestScreenMediaTime = resolvedMediaTime
+        latestScreenReceivedAt = renderStartedAt
         guard isTransportLive || archive != nil else {
             droppedVideoFrames += 1
             return false
         }
-        guard let sourceBuffer = sampleBuffer.value.imageBuffer,
-              let outputBuffer = makePixelBuffer() else {
+        guard let outputBuffer = makePixelBuffer() else {
             droppedVideoFrames += 1
             return false
         }
         let cameraBuffer = latestCamera?.value.imageBuffer
+        let renderedShortcutLabel = activeShortcutLabel(for: appliedPresentation)
         compositor.render(
             screen: CIImage(cvPixelBuffer: sourceBuffer),
             camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
             presentation: appliedPresentation,
-            screenFraming: streamFraming(presentation: appliedPresentation, cursorPosition: cursor.map {
-                CGPoint(x: $0.normalizedX, y: $0.normalizedY)
-            }),
+            screenFraming: streamFraming(
+                presentation: appliedPresentation,
+                cursorPosition: cursor.map { CGPoint(x: $0.normalizedX, y: $0.normalizedY) },
+                displayID: displayID,
+                at: resolvedMediaTime
+            ),
             cursor: rendersCursor ? cursor : nil,
-            shortcutLabel: activeShortcutLabel(for: appliedPresentation),
+            shortcutLabel: renderedShortcutLabel,
             to: outputBuffer
         )
+        let sourcePresentationTime = sampleBuffer.value.presentationTimeStamp
+        let presentationTimeStamp: CMTime
+        if let previousTime = latestComposedVideo?.value.presentationTimeStamp,
+           previousTime.isNumeric,
+           (!sourcePresentationTime.isNumeric || CMTimeCompare(sourcePresentationTime, previousTime) <= 0) {
+            let frameRate = max(activeConfiguration?.frameRate ?? 30, 1)
+            presentationTimeStamp = previousTime + CMTime(value: 1, timescale: CMTimeScale(frameRate))
+        } else {
+            presentationTimeStamp = sourcePresentationTime
+        }
         guard let composed = makeSampleBuffer(
             pixelBuffer: outputBuffer,
-            timingSource: sampleBuffer.value
+            timingSource: sampleBuffer.value,
+            presentationTimeStamp: presentationTimeStamp
         ) else {
             droppedVideoFrames += 1
             return false
         }
         let composedBuffer = SendableSampleBuffer(value: composed)
+        latestComposedVideo = composedBuffer
+        latestComposedAt = ProcessInfo.processInfo.systemUptime
+        latestCompositionShowsShortcut = renderedShortcutLabel != nil
+        fallbackNeedsComposition = false
         if isTransportLive {
             await sink.appendVideo(composedBuffer)
             hasSubmittedVideo = true
@@ -386,10 +522,145 @@ actor LiveProgramPipeline {
         return true
     }
 
+    func updateIdleScreen(
+        cursor: ProgramCursorState?,
+        displayID: UInt32,
+        presentation framePresentation: CapturePresentationSnapshot? = nil,
+        at mediaTime: TimeInterval
+    ) {
+        guard isRunning else { return }
+        let appliedPresentation = (framePresentation ?? presentation).validated()
+        let cursorChanged = latestScreenCursor != cursor
+        let displayChanged = latestScreenDisplayID != displayID
+        let presentationChanged = presentation != appliedPresentation
+        presentation = appliedPresentation
+        latestScreenCursor = cursor
+        latestScreenDisplayID = displayID
+        latestScreenMediaTime = mediaTime
+        latestScreenReceivedAt = ProcessInfo.processInfo.systemUptime
+        if displayChanged || cursorFollowMode != appliedPresentation.framing.mode {
+            resetCursorFollowMotion()
+        }
+        fallbackNeedsComposition = fallbackNeedsComposition
+            || presentationChanged
+            || displayChanged
+            || (cursorChanged && (rendersCursor || appliedPresentation.framing.mode == .followCursor))
+        beginSourceFallback()
+    }
+
+    func beginSourceFallback() {
+        guard isRunning,
+              sourceFallbackTask == nil,
+              latestComposedVideo != nil,
+              let configuration = activeConfiguration else { return }
+        let generation = streamGeneration
+        let frameDuration = 1.0 / Double(max(configuration.frameRate, 1))
+        sourceFallbackTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(frameDuration))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                await self.appendSourceFallbackFrame(
+                    generation: generation,
+                    frameDuration: CMTime(seconds: frameDuration, preferredTimescale: 60_000)
+                )
+            }
+        }
+    }
+
+    func endSourceFallback() {
+        sourceFallbackTask?.cancel()
+        sourceFallbackTask = nil
+    }
+
+    private func appendSourceFallbackFrame(generation: Int, frameDuration: CMTime) async {
+        guard isRunning,
+              streamGeneration == generation,
+              !Task.isCancelled,
+              isTransportLive || activeArchive != nil,
+              let previousComposed = latestComposedVideo,
+              let latestComposedAt,
+              let previousPixelBuffer = previousComposed.value.imageBuffer else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let presentationTimeStamp = previousComposed.value.presentationTimeStamp + CMTime(
+            seconds: max(now - latestComposedAt, frameDuration.seconds),
+            preferredTimescale: 60_000
+        )
+        let motionWasSettled = cursorFollowMotion.isSettled
+        let motionTime = latestScreenMediaTime.map {
+            $0 + max(now - (latestScreenReceivedAt ?? now), 0)
+        } ?? now
+        let framing = streamFraming(
+            presentation: presentation,
+            cursorPosition: latestScreenCursor.map { CGPoint(x: $0.normalizedX, y: $0.normalizedY) },
+            displayID: latestScreenDisplayID,
+            at: motionTime
+        )
+        let renderedShortcutLabel = activeShortcutLabel(for: presentation)
+        let shouldRecompose = fallbackNeedsComposition
+            || !motionWasSettled
+            || !cursorFollowMotion.isSettled
+            || (latestCompositionShowsShortcut && renderedShortcutLabel == nil)
+        var didRecompose = false
+        let outputPixelBuffer: CVPixelBuffer
+        if shouldRecompose,
+           latestRawScreenDisplayID == latestScreenDisplayID,
+           let rawScreen = latestRawScreen?.value.imageBuffer,
+           let rendered = makePixelBuffer() {
+            let renderStartedAt = now
+            let cameraBuffer = latestCamera?.value.imageBuffer
+            compositor.render(
+                screen: CIImage(cvPixelBuffer: rawScreen),
+                camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
+                presentation: presentation,
+                screenFraming: framing,
+                cursor: rendersCursor ? latestScreenCursor : nil,
+                shortcutLabel: renderedShortcutLabel,
+                to: rendered
+            )
+            outputPixelBuffer = rendered
+            didRecompose = true
+            fallbackNeedsComposition = false
+            composedVideoFrames += 1
+            totalRenderDuration += ProcessInfo.processInfo.systemUptime - renderStartedAt
+        } else {
+            outputPixelBuffer = previousPixelBuffer
+        }
+        guard let fallback = makeSampleBuffer(
+              pixelBuffer: outputPixelBuffer,
+              timingSource: previousComposed.value,
+              presentationTimeStamp: presentationTimeStamp
+        ) else { return }
+        let fallbackBuffer = SendableSampleBuffer(value: fallback)
+        self.latestComposedVideo = fallbackBuffer
+        self.latestComposedAt = now
+        if didRecompose {
+            latestCompositionShowsShortcut = renderedShortcutLabel != nil
+        }
+        if isTransportLive {
+            await sink.appendVideo(fallbackBuffer)
+            hasSubmittedVideo = true
+            await reportSendingIfReady()
+        }
+        if let archive = activeArchive {
+            if let archiveBuffer = copySampleBuffer(fallback) {
+                await archive.appendVideo(archiveBuffer)
+            } else {
+                activeArchive = nil
+                await archive.fail("The fallback video buffer could not be copied into the local safety archive.")
+            }
+        }
+    }
+
     private func renderPreparedScreen(
         _ sampleBuffer: SendableSampleBuffer,
         cursor: ProgramCursorState?,
-        presentation framePresentation: CapturePresentationSnapshot?
+        presentation framePresentation: CapturePresentationSnapshot?,
+        displayID: UInt32?,
+        at mediaTime: TimeInterval?
     ) -> Bool {
         guard isPrepared else { return false }
         let appliedPresentation = (framePresentation ?? presentation).validated()
@@ -402,9 +673,12 @@ actor LiveProgramPipeline {
             screen: CIImage(cvPixelBuffer: sourceBuffer),
             camera: cameraBuffer.map(CIImage.init(cvPixelBuffer:)),
             presentation: appliedPresentation,
-            screenFraming: streamFraming(presentation: appliedPresentation, cursorPosition: cursor.map {
-                CGPoint(x: $0.normalizedX, y: $0.normalizedY)
-            }),
+            screenFraming: streamFraming(
+                presentation: appliedPresentation,
+                cursorPosition: cursor.map { CGPoint(x: $0.normalizedX, y: $0.normalizedY) },
+                displayID: displayID,
+                at: resolvedMediaTime(mediaTime, sampleBuffer: sampleBuffer.value)
+            ),
             cursor: rendersCursor ? cursor : nil,
             shortcutLabel: activeShortcutLabel(for: appliedPresentation),
             to: outputBuffer
@@ -416,6 +690,33 @@ actor LiveProgramPipeline {
         isPrepared = false
         preparedConfiguration = nil
         preparedRequiresCamera = false
+    }
+
+    private func resetScreenState() {
+        latestRawScreen = nil
+        latestRawScreenDisplayID = nil
+        latestScreenCursor = nil
+        latestScreenDisplayID = nil
+        latestScreenMediaTime = nil
+        latestScreenReceivedAt = nil
+        fallbackNeedsComposition = false
+        latestCompositionShowsShortcut = false
+        resetCursorFollowMotion()
+    }
+
+    private func resetCursorFollowMotion() {
+        cursorFollowMotion.reset()
+        cursorFollowDisplayID = nil
+        cursorFollowMode = nil
+    }
+
+    private func resolvedMediaTime(
+        _ mediaTime: TimeInterval?,
+        sampleBuffer: CMSampleBuffer
+    ) -> TimeInterval {
+        if let mediaTime, mediaTime.isFinite { return mediaTime }
+        let presentationTime = sampleBuffer.presentationTimeStamp.seconds
+        return presentationTime.isFinite ? presentationTime : ProcessInfo.processInfo.systemUptime
     }
 
     private func activeShortcutLabel(for presentation: CapturePresentationSnapshot) -> String? {
@@ -539,8 +840,10 @@ actor LiveProgramPipeline {
                     try await Task.sleep(for: .seconds(delay))
                 }
                 try Task.checkCancellation()
+                let retryConfiguration = try await activeConfigurationProvider?() ?? configuration
+                activeConfiguration = retryConfiguration
                 try await connectSink(
-                    configuration: configuration,
+                    configuration: retryConfiguration,
                     audioConfiguration: audioConfiguration,
                     stateHandler: stateHandler,
                     generation: generation,
@@ -586,12 +889,18 @@ actor LiveProgramPipeline {
         latestCamera = nil
         pixelBufferPool = nil
         activeConfiguration = nil
+        activeConfigurationProvider = nil
         activeAudioConfiguration = nil
         activeStateHandler = nil
         let archive = activeArchive
         activeArchive = nil
         reconnectTask = nil
         reconnectRequestedWhileRetrying = false
+        sourceFallbackTask?.cancel()
+        sourceFallbackTask = nil
+        latestComposedVideo = nil
+        latestComposedAt = nil
+        resetScreenState()
         let detail = lastError?.localizedDescription ?? "The connection did not recover."
         await archive?.finish()
         await stateHandler(.failed(
@@ -619,23 +928,32 @@ actor LiveProgramPipeline {
 
     private func streamFraming(
         presentation: CapturePresentationSnapshot,
-        cursorPosition: CGPoint?
+        cursorPosition: CGPoint?,
+        displayID: UInt32?,
+        at mediaTime: TimeInterval
     ) -> ScreenFramingSnapshot? {
+        if cursorFollowMode != presentation.framing.mode
+            || cursorFollowDisplayID != displayID {
+            cursorFollowMotion.reset()
+        }
+        cursorFollowMode = presentation.framing.mode
+        cursorFollowDisplayID = displayID
         switch presentation.framing.mode {
         case .fullDisplay:
-            nil
+            return nil
         case .fixedRegion:
-            presentation.framing
+            return presentation.framing
         case .followCursor:
             if let cursorPosition {
-                ScreenFramingSnapshot(
+                let center = cursorFollowMotion.update(target: cursorPosition, at: mediaTime)
+                return ScreenFramingSnapshot(
                     mode: .fixedRegion,
-                    centerX: cursorPosition.x,
-                    centerY: cursorPosition.y,
+                    centerX: center.x,
+                    centerY: center.y,
                     scale: presentation.framing.scale
                 ).validated()
             } else {
-                presentation.framing
+                return presentation.framing
             }
         }
     }
@@ -665,7 +983,8 @@ actor LiveProgramPipeline {
 
     private func makeSampleBuffer(
         pixelBuffer: CVPixelBuffer,
-        timingSource: CMSampleBuffer
+        timingSource: CMSampleBuffer,
+        presentationTimeStamp: CMTime? = nil
     ) -> CMSampleBuffer? {
         var formatDescription: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(
@@ -679,7 +998,7 @@ actor LiveProgramPipeline {
             : CMTime(value: 1, timescale: CMTimeScale(30))
         var timing = CMSampleTimingInfo(
             duration: duration,
-            presentationTimeStamp: timingSource.presentationTimeStamp,
+            presentationTimeStamp: presentationTimeStamp ?? timingSource.presentationTimeStamp,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?

@@ -49,7 +49,7 @@ final class PreferencesStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(store.preferences.appearance, .light)
-        XCTAssertEqual(store.preferences.capture.frameRate, 30)
+        XCTAssertEqual(store.preferences.capture.frameRate, 60)
         XCTAssertEqual(store.preferences.capture.programPreset, .ultraHD)
         XCTAssertFalse(store.preferences.audio.capturesMicrophone)
 
@@ -321,6 +321,129 @@ final class PreferencesStoreTests: XCTestCase {
             ),
             [.cameraUnavailable]
         )
+    }
+
+    func testCameraOnlyDraftFreezesWithoutAVisibleDisplay() throws {
+        let cameras = [AvailableCamera(id: "camera-1", name: "iPhone Camera")]
+        var draft = makeStore().makeStudioDraft(displays: [], microphones: [], cameras: cameras)
+        draft.selectedDisplayIDs = []
+        draft.capturesSystemAudio = false
+        draft.capturesMicrophone = false
+        draft.capturesCamera = true
+
+        let request = try draft.freeze(
+            displays: [],
+            microphones: [],
+            cameras: cameras,
+            permissions: PermissionSnapshot(
+                screenRecording: .granted,
+                microphone: .granted,
+                camera: .granted
+            )
+        )
+
+        XCTAssertTrue(request.displaySources.isEmpty)
+        XCTAssertEqual(request.camera?.id, "camera-1")
+    }
+
+    func testCameraOnlyDraftUsesAHiddenDisplayAsTheNativeAudioHost() throws {
+        let displays = [AvailableDisplay(id: 9, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        let cameras = [AvailableCamera(id: "camera-1", name: "iPhone Camera")]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [], cameras: cameras)
+        draft.selectedDisplayIDs = []
+        draft.capturesMicrophone = false
+        draft.capturesSystemAudio = true
+        draft.capturesCamera = true
+        draft.presentation.screen.isVisible = false
+
+        let request = try draft.freeze(
+            displays: displays,
+            microphones: [],
+            cameras: cameras,
+            permissions: PermissionSnapshot(
+                screenRecording: .granted,
+                microphone: .granted,
+                camera: .granted
+            )
+        )
+
+        XCTAssertEqual(request.displaySources.map(\.id), [9])
+        XCTAssertEqual(request.audio.primaryAudioDisplayID, 9)
+        XCTAssertFalse(request.presentation.screen.isVisible)
+    }
+
+    func testProfileSourceUnionArmsEveryRawSourceAndPersistsCameraCalibration() throws {
+        let displays = [
+            AvailableDisplay(id: 7, title: "Main", pixelSize: CGSize(width: 1_920, height: 1_080)),
+            AvailableDisplay(id: 9, title: "Demo", pixelSize: CGSize(width: 2_560, height: 1_440)),
+        ]
+        let cameras = [AvailableCamera(id: "iphone", name: "iPhone Camera")]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [], cameras: cameras)
+        draft.selectedDisplayIDs = [7]
+        draft.armedDisplayIDs = [7, 9]
+        draft.armsCamera = true
+        draft.cameraDeviceID = "iphone"
+        draft.cameraOrientation = .portrait
+        draft.cameraSyncOffsets["iphone"] = 0.125
+        draft.capturesMicrophone = false
+
+        let request = try draft.freeze(
+            displays: displays,
+            microphones: [],
+            cameras: cameras,
+            permissions: PermissionSnapshot(screenRecording: .granted, microphone: .granted, camera: .granted)
+        )
+
+        XCTAssertEqual(request.displaySources.map(\.id), [7, 9])
+        XCTAssertEqual(request.camera?.id, "iphone")
+        XCTAssertEqual(request.profile.resolvedCameraOrientation, .portrait)
+        XCTAssertEqual(request.profile.resolvedCameraSyncOffset, 0.125, accuracy: 0.001)
+    }
+
+    func testScreenSceneRestoresTheProfileDisplayAfterCameraOnlyScene() {
+        let displays = [AvailableDisplay(id: 7, title: "Main", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        let cameras = [AvailableCamera(id: "iphone", name: "iPhone Camera")]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [], cameras: cameras)
+        draft.apply(
+            sceneSources: StudioSceneSourceState(
+                selectedDisplayIDs: [],
+                capturesSystemAudio: false,
+                capturesMicrophone: false,
+                capturesCamera: true
+            ),
+            displays: displays,
+            cameras: cameras
+        )
+        XCTAssertTrue(draft.selectedDisplayIDs.isEmpty)
+
+        draft.apply(
+            sceneSources: StudioSceneSourceState(
+                selectedDisplayIDs: nil,
+                capturesSystemAudio: true,
+                capturesMicrophone: false,
+                capturesCamera: false
+            ),
+            displays: displays,
+            cameras: cameras
+        )
+
+        XCTAssertEqual(draft.selectedDisplayIDs, [7])
+    }
+
+    func testSilentCameraOnlyDraftDoesNotRequireScreenRecordingPermission() throws {
+        let cameras = [AvailableCamera(id: "iphone", name: "iPhone Camera")]
+        var draft = makeStore().makeStudioDraft(displays: [], microphones: [], cameras: cameras)
+        draft.selectedDisplayIDs = []
+        draft.capturesSystemAudio = false
+        draft.capturesMicrophone = false
+        draft.capturesCamera = true
+
+        XCTAssertNoThrow(try draft.freeze(
+            displays: [],
+            microphones: [],
+            cameras: cameras,
+            permissions: PermissionSnapshot(screenRecording: .denied, microphone: .denied, camera: .granted)
+        ))
     }
 
     func testCameraDraftReconcileDisablesCaptureWhenTheLastCameraDisconnects() {

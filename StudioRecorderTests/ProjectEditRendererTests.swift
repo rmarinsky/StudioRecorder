@@ -4,7 +4,92 @@ import ImageIO
 import XCTest
 @testable import StudioRecorder
 
+@MainActor
 final class ProjectEditRendererTests: XCTestCase {
+    func testProgramCompositionUsesTheValidatedRequestedFrameRateAndTweening() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let outputURL = directory.appending(path: "program-60fps.mov")
+        try await writeReadableMovie(to: screenURL)
+        let sources = ProjectProgramSources(
+            screenURL: screenURL,
+            cameraURL: nil,
+            frameRate: 60
+        )
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+
+        let item = try await ProjectProgramRenderer().makePlayerItem(
+            sources: sources,
+            timeline: timeline,
+            presentation: presentation
+        )
+
+        let composition = try XCTUnwrap(item.videoComposition)
+        XCTAssertEqual(composition.frameDuration, CMTime(value: 1, timescale: 60))
+        XCTAssertTrue(composition.instructions.allSatisfy(\.containsTweening))
+        try await ProjectProgramRenderer().exportMovie(
+            sources: sources,
+            timeline: timeline,
+            presentation: presentation,
+            to: outputURL
+        )
+        let outputTracks = try await AVURLAsset(url: outputURL).loadTracks(withMediaType: .video)
+        let outputTrack = try XCTUnwrap(outputTracks.first)
+        let outputFrameRate = try await outputTrack.load(.nominalFrameRate)
+        XCTAssertEqual(outputFrameRate, 60, accuracy: 0.1)
+        XCTAssertEqual(
+            ProjectProgramSources(screenURL: screenURL, cameraURL: nil, frameRate: 120).frameRate,
+            30
+        )
+    }
+
+    func testProgramExportKeepsAutomaticCaptureInHEVCWhenAvailable() {
+        XCTAssertEqual(
+            ProjectProgramExportPolicy.presetName(
+                codecPolicy: .automatic,
+                availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
+            ),
+            AVAssetExportPresetHEVCHighestQuality
+        )
+        XCTAssertEqual(
+            ProjectProgramExportPolicy.presetName(
+                codecPolicy: .h264,
+                availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
+            ),
+            AVAssetExportPresetHighestQuality
+        )
+    }
+
+    func testFinalizationFallbackAcceptsAReadableScreenMovieAfterDelegateTimeout() {
+        XCTAssertTrue(
+            RecordingOutputFinalizationPolicy.isUsable(
+                isReadable: true,
+                duration: 12.5,
+                videoTrackCount: 1
+            )
+        )
+        XCTAssertFalse(
+            RecordingOutputFinalizationPolicy.isUsable(
+                isReadable: true,
+                duration: 0,
+                videoTrackCount: 1
+            )
+        )
+        XCTAssertFalse(
+            RecordingOutputFinalizationPolicy.isUsable(
+                isReadable: true,
+                duration: 12.5,
+                videoTrackCount: 0
+            )
+        )
+    }
+
     func testAudioMixAppliesIndependentSourceGainByPersistentTrackIdentity() throws {
         let composition = AVMutableComposition()
         _ = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: 11))
@@ -665,6 +750,7 @@ final class ProjectEditRendererTests: XCTestCase {
         let screenURL = directory.appending(path: "split-screen.mov")
         let outputURL = directory.appending(path: "follow-program.mov")
         let leftFrameURL = directory.appending(path: "left.png")
+        let transitioningFrameURL = directory.appending(path: "transitioning.png")
         let rightFrameURL = directory.appending(path: "right.png")
         try await writeSplitMovie(to: screenURL)
 
@@ -688,15 +774,175 @@ final class ProjectEditRendererTests: XCTestCase {
             presentation: presentation,
             to: outputURL
         )
-        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.25, to: leftFrameURL)
-        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: rightFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: leftFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.05, to: transitioningFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.75, to: rightFrameURL)
 
         let left = try color(in: leftFrameURL, normalizedX: 0.5, normalizedY: 0.5)
+        let transitioning = try color(in: transitioningFrameURL, normalizedX: 0.5, normalizedY: 0.5)
         let right = try color(in: rightFrameURL, normalizedX: 0.5, normalizedY: 0.5)
         XCTAssertGreaterThan(left.red, 180)
         XCTAssertLessThan(left.blue, 80)
+        XCTAssertGreaterThan(transitioning.red, 180)
+        XCTAssertLessThan(transitioning.blue, 80)
         XCTAssertGreaterThan(right.blue, 180)
         XCTAssertLessThan(right.red, 80)
+    }
+
+    func testFollowCursorFramesStayDeterministicWhenRequestedOutOfOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "split-screen.mov")
+        try await writeSplitMovie(to: screenURL)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        presentation.framing = ScreenFramingSnapshot(mode: .followCursor, scale: 0.5)
+        presentation.camera.isVisible = false
+        let item = try await ProjectProgramRenderer().makePlayerItem(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                screenDisplayID: 7,
+                cursorTimeline: CursorSceneTimeline(samples: [
+                    CursorSceneSample(
+                        time: 0,
+                        displayID: 7,
+                        normalizedX: 0.1,
+                        normalizedY: 0.5,
+                        isPrimaryButtonDown: false
+                    ),
+                    CursorSceneSample(
+                        time: 1,
+                        displayID: 7,
+                        normalizedX: 0.9,
+                        normalizedY: 0.5,
+                        isPrimaryButtonDown: false
+                    ),
+                ])
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 2),
+            presentation: presentation
+        )
+        let generator = AVAssetImageGenerator(asset: item.asset)
+        generator.videoComposition = try XCTUnwrap(item.videoComposition)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+
+        let lateTime = CMTime(seconds: 1.75, preferredTimescale: 600)
+        let earlyTime = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let lateFirst = try color(in: await generator.image(at: lateTime).image, normalizedX: 0.5, normalizedY: 0.5)
+        let early = try color(in: await generator.image(at: earlyTime).image, normalizedX: 0.5, normalizedY: 0.5)
+        let lateRepeated = try color(in: await generator.image(at: lateTime).image, normalizedX: 0.5, normalizedY: 0.5)
+
+        XCTAssertEqual(lateFirst.red, lateRepeated.red)
+        XCTAssertEqual(lateFirst.green, lateRepeated.green)
+        XCTAssertEqual(lateFirst.blue, lateRepeated.blue)
+        XCTAssertGreaterThan(early.red, 180)
+        XCTAssertLessThan(early.blue, 80)
+        XCTAssertGreaterThan(lateFirst.blue, 180)
+        XCTAssertLessThan(lateFirst.red, 80)
+    }
+
+    func testFollowCursorViewportResetsAtAnEditCut() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "split-screen.mov")
+        let outputURL = directory.appending(path: "cut-program.mov")
+        let frameURL = directory.appending(path: "after-cut.png")
+        try await writeSplitMovie(to: screenURL)
+
+        let removedSegmentID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 2)
+        try timeline.split(at: 0.5, newSegmentID: removedSegmentID)
+        try timeline.split(at: 1.5)
+        try timeline.delete(segmentID: removedSegmentID)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        presentation.framing = ScreenFramingSnapshot(mode: .followCursor, scale: 0.5)
+        presentation.camera.isVisible = false
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL,
+                cameraURL: nil,
+                screenDisplayID: 7,
+                cursorTimeline: CursorSceneTimeline(samples: [
+                    CursorSceneSample(
+                        time: 0,
+                        displayID: 7,
+                        normalizedX: 0.1,
+                        normalizedY: 0.5,
+                        isPrimaryButtonDown: false
+                    ),
+                    CursorSceneSample(
+                        time: 1.5,
+                        displayID: 7,
+                        normalizedX: 0.9,
+                        normalizedY: 0.5,
+                        isPrimaryButtonDown: false
+                    ),
+                ])
+            ),
+            timeline: timeline,
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.55, to: frameURL)
+
+        let afterCut = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(afterCut.blue, 180)
+        XCTAssertLessThan(afterCut.red, 80)
+    }
+
+    func testFollowCursorProgramSwitchesBetweenArmedDisplayTracks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let redURL = directory.appending(path: "display-7.mov")
+        let blueURL = directory.appending(path: "display-9.mov")
+        let outputURL = directory.appending(path: "multi-display.mov")
+        let redFrameURL = directory.appending(path: "red.png")
+        let blueFrameURL = directory.appending(path: "blue.png")
+        try await writeReadableMovie(to: redURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        try await writeReadableMovie(to: blueURL, colors: Array(repeating: 0xFF0000FF, count: 5))
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 640)
+        presentation.framing = ScreenFramingSnapshot(mode: .followCursor, scale: 1)
+        presentation.camera.isVisible = false
+        let cursor = CursorSceneTimeline(samples: [
+            CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.5, normalizedY: 0.5, isPrimaryButtonDown: false),
+            CursorSceneSample(time: 1, displayID: 9, normalizedX: 0.5, normalizedY: 0.5, isPrimaryButtonDown: false),
+        ])
+
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: redURL,
+                screenSources: [
+                    ProjectScreenSource(url: redURL, displayID: 7),
+                    ProjectScreenSource(url: blueURL, displayID: 9),
+                ],
+                cameraURL: nil,
+                screenDisplayID: 7,
+                cursorTimeline: cursor
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-7", sourceDuration: 2),
+            presentation: presentation,
+            to: outputURL
+        )
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: redFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: blueFrameURL)
+
+        let red = try averageColor(in: redFrameURL)
+        let blue = try averageColor(in: blueFrameURL)
+        XCTAssertGreaterThan(red.red, 180)
+        XCTAssertLessThan(red.blue, 80)
+        XCTAssertGreaterThan(blue.blue, 180)
+        XCTAssertLessThan(blue.red, 80)
     }
 
     func testProgramRendererReplaysManualZoomMarkersFromTheSceneTimeline() async throws {
@@ -728,7 +974,7 @@ final class ProjectEditRendererTests: XCTestCase {
             presentation: leftZoom,
             to: outputURL
         )
-        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.25, to: leftFrameURL)
+        try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.5, to: leftFrameURL)
         try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 1.25, to: rightFrameURL)
 
         let left = try color(in: leftFrameURL, normalizedX: 0.5, normalizedY: 0.5)
@@ -1059,6 +1305,14 @@ final class ProjectEditRendererTests: XCTestCase {
     ) throws -> (red: UInt8, green: UInt8, blue: UInt8) {
         let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        return try color(in: image, normalizedX: normalizedX, normalizedY: normalizedY)
+    }
+
+    private func color(
+        in image: CGImage,
+        normalizedX: CGFloat,
+        normalizedY: CGFloat
+    ) throws -> (red: UInt8, green: UInt8, blue: UInt8) {
         var pixel = [UInt8](repeating: 0, count: 4)
         let context = try XCTUnwrap(
             CGContext(

@@ -153,6 +153,7 @@ enum ManualZoomPlanner {
 final class ManualZoomPointerTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var pointsByDisplayID: [UInt32: CGPoint] = [:]
+    private var viewportPlanner: CursorViewportPlanner?
 
     func update(_ point: CGPoint, for displayID: UInt32) {
         lock.lock()
@@ -164,6 +165,23 @@ final class ManualZoomPointerTracker: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return pointsByDisplayID[displayID]
+    }
+
+    func configureViewportPlanner(displays: [CapturedDisplay], outputSize: CGSize) {
+        lock.withLock {
+            viewportPlanner = displays.count > 1
+                ? CursorViewportPlanner(displays: displays, outputSize: outputSize)
+                : nil
+        }
+    }
+
+    func viewportDecision(cursor: CGPoint, at timestamp: TimeInterval) -> ViewportDecision? {
+        lock.withLock {
+            guard var planner = viewportPlanner else { return nil }
+            let decision = planner.update(cursor: cursor, at: timestamp)
+            viewportPlanner = planner
+            return decision
+        }
     }
 }
 
@@ -317,6 +335,34 @@ struct CameraBackgroundSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+struct SourceShadowSnapshot: Codable, Equatable, Sendable {
+    var opacity: CGFloat
+    var radius: CGFloat
+    var offsetX: CGFloat
+    var offsetY: CGFloat
+
+    init(
+        opacity: CGFloat = 0.35,
+        radius: CGFloat = 0.035,
+        offsetX: CGFloat = 0,
+        offsetY: CGFloat = 0.018
+    ) {
+        self.opacity = opacity
+        self.radius = radius
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+    }
+
+    func validated() -> SourceShadowSnapshot {
+        SourceShadowSnapshot(
+            opacity: min(max(opacity, 0), 1),
+            radius: min(max(radius, 0), 0.12),
+            offsetX: min(max(offsetX, -0.12), 0.12),
+            offsetY: min(max(offsetY, -0.12), 0.12)
+        )
+    }
+}
+
 struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     var centerX: CGFloat
     var centerY: CGFloat
@@ -326,6 +372,10 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
     var cornerRadius: CGFloat
     var isVisible: Bool
     var isMirrored: Bool
+    var shadow: SourceShadowSnapshot?
+    var opacity: CGFloat?
+
+    var resolvedOpacity: CGFloat { opacity ?? 1 }
 
     var effectiveCornerRadius: CGFloat {
         guard shape == .roundedRectangle else { return 0 }
@@ -340,7 +390,9 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
         shape: SourceShape,
         cornerRadius: CGFloat = 0,
         isVisible: Bool = true,
-        isMirrored: Bool = false
+        isMirrored: Bool = false,
+        shadow: SourceShadowSnapshot? = nil,
+        opacity: CGFloat? = nil
     ) {
         self.centerX = centerX
         self.centerY = centerY
@@ -350,6 +402,8 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
         self.cornerRadius = cornerRadius
         self.isVisible = isVisible
         self.isMirrored = isMirrored
+        self.shadow = shadow
+        self.opacity = opacity
     }
 
     func validated() -> SourcePlacementSnapshot {
@@ -364,8 +418,17 @@ struct SourcePlacementSnapshot: Codable, Equatable, Sendable {
             shape: shape,
             cornerRadius: min(max(cornerRadius, 0), 0.5),
             isVisible: isVisible,
-            isMirrored: isMirrored
+            isMirrored: isMirrored,
+            shadow: shadow?.validated(),
+            opacity: opacity.map { min(max($0, 0), 1) }
         )
+    }
+
+    func validated(on canvas: CaptureCanvasSnapshot) -> SourcePlacementSnapshot {
+        let value = validated()
+        return value.shape == .circle
+            ? value.applying(aspectPreset: .square, on: canvas)
+            : value
     }
 
     func applying(
@@ -478,7 +541,8 @@ enum SourcePlacementManipulator {
             shape: placement.shape,
             cornerRadius: placement.cornerRadius,
             isVisible: placement.isVisible,
-            isMirrored: placement.isMirrored
+            isMirrored: placement.isMirrored,
+            shadow: placement.shadow
         ).validated()
     }
 
@@ -539,6 +603,38 @@ enum SourcePlacementManipulator {
     }
 }
 
+struct ImageOverlaySnapshot: Codable, Equatable, Identifiable, Sendable {
+    var id: UUID
+    var name: String
+    var filePath: String
+    var placement: SourcePlacementSnapshot
+    var opacity: CGFloat
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        filePath: String,
+        placement: SourcePlacementSnapshot,
+        opacity: CGFloat = 1
+    ) {
+        self.id = id
+        self.name = name
+        self.filePath = filePath
+        self.placement = placement
+        self.opacity = opacity
+    }
+
+    func validated() -> ImageOverlaySnapshot {
+        ImageOverlaySnapshot(
+            id: id,
+            name: String(name.prefix(80)),
+            filePath: filePath,
+            placement: placement.validated(),
+            opacity: min(max(opacity, 0), 1)
+        )
+    }
+}
+
 struct CursorTreatmentSnapshot: Codable, Equatable, Sendable {
     var scale: CGFloat
     var highlightsClicks: Bool
@@ -547,7 +643,7 @@ struct CursorTreatmentSnapshot: Codable, Equatable, Sendable {
     var resolvedShowsShortcutKeys: Bool { showsShortcutKeys ?? false }
 
     init(
-        scale: CGFloat = 1.5,
+        scale: CGFloat = 1,
         highlightsClicks: Bool = true,
         showsShortcutKeys: Bool = false
     ) {
@@ -573,9 +669,14 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
     var camera: SourcePlacementSnapshot
     var cursor: CursorTreatmentSnapshot
     var cameraBackground: CameraBackgroundSnapshot? = nil
+    var imageOverlays: [ImageOverlaySnapshot]? = nil
 
     var resolvedCameraBackground: CameraBackgroundSnapshot {
         (cameraBackground ?? .off).validated()
+    }
+
+    var resolvedImageOverlays: [ImageOverlaySnapshot] {
+        (imageOverlays ?? []).map { $0.validated() }
     }
 
     var resolvedName: String {
@@ -600,17 +701,19 @@ struct CapturePresentationSnapshot: Codable, Equatable, Sendable {
             isMirrored: true
         ),
         cursor: CursorTreatmentSnapshot()
-    )
+    ).validated()
 
     func validated() -> CapturePresentationSnapshot {
-        CapturePresentationSnapshot(
+        let canvas = canvas.validated()
+        return CapturePresentationSnapshot(
             name: name.map { String($0.prefix(80)) },
-            canvas: canvas.validated(),
+            canvas: canvas,
             framing: framing.validated(),
-            screen: screen.validated(),
-            camera: camera.validated(),
+            screen: screen.validated(on: canvas),
+            camera: camera.validated(on: canvas),
             cursor: cursor.validated(),
-            cameraBackground: cameraBackground?.validated()
+            cameraBackground: cameraBackground?.validated(),
+            imageOverlays: imageOverlays?.map { $0.validated() }
         )
     }
 }

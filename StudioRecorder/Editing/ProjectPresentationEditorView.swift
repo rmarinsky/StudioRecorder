@@ -133,10 +133,16 @@ struct ProjectPresentationEditorView: View {
                     valueText: String(format: "%.0f%%", placement.wrappedValue.effectiveCornerRadius * 100)
                 )
             }
-            labeledSlider("Width", value: placement.width, range: 0.08...1)
-            labeledSlider("Height", value: placement.height, range: 0.08...1)
-            labeledSlider("Horizontal", value: placement.centerX)
-            labeledSlider("Vertical", value: placement.centerY)
+            if placement.wrappedValue.shape == .circle {
+                labeledSlider("Size", value: circleSizeBinding(for: placement), range: 0.08...1)
+            } else {
+                labeledSlider("Width", value: placement.width, range: 0.08...1)
+                labeledSlider("Height", value: placement.height, range: 0.08...1)
+            }
+            if selectedSource == .screen {
+                labeledSlider("Horizontal", value: placement.centerX)
+                labeledSlider("Vertical", value: placement.centerY)
+            }
             if includesMirror {
                 Toggle("Flip horizontally", isOn: placement.isMirrored)
             }
@@ -170,10 +176,26 @@ struct ProjectPresentationEditorView: View {
             set: { shape in
                 var value = placement.wrappedValue
                 value.shape = shape
+                if shape == .circle {
+                    value = value.validated(on: presentation.canvas)
+                }
                 if shape == .roundedRectangle, value.cornerRadius == 0 {
                     value.cornerRadius = 0.12
                 }
                 placement.wrappedValue = value
+            }
+        )
+    }
+
+    private func circleSizeBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<CGFloat> {
+        Binding(
+            get: { placement.wrappedValue.width },
+            set: { size in
+                var value = placement.wrappedValue
+                value.width = size
+                placement.wrappedValue = value.validated(on: presentation.canvas)
             }
         )
     }
@@ -385,6 +407,17 @@ private struct RecordedProgramCanvas: View {
         let placement = presentation[keyPath: keyPath]
         let frame = sourceFrame(placement, in: canvasSize)
 
+        if selectedSource == .camera {
+            sourceShape(for: placement, size: frame.size)
+                .fill(Color.white.opacity(0.001))
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .contentShape(sourceShape(for: placement, size: frame.size))
+                .gesture(dragGesture(for: \.camera, in: canvasSize, state: $cameraDrag))
+                .accessibilityLabel("Move camera on canvas")
+                .accessibilityHint("Drag to reposition the camera.")
+        }
+
         sourceShape(for: placement, size: frame.size)
             .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
             .frame(width: frame.width, height: frame.height)
@@ -443,6 +476,7 @@ private struct RecordedProgramCanvas: View {
                 )
             }
             .onEnded { _ in
+                presentation = presentation.validated()
                 resizeStart = nil
                 activeResizeHandle = nil
             }
@@ -477,7 +511,7 @@ private struct RecordedProgramCanvas: View {
         case .roundedRectangle:
             AnyShape(RoundedRectangle(cornerRadius: placement.effectiveCornerRadius * min(size.width, size.height)))
         case .circle:
-            AnyShape(Ellipse())
+            AnyShape(Circle())
         }
     }
 

@@ -5,11 +5,21 @@ import XCTest
 final class LiveSourceRecoveryPolicyTests: XCTestCase {
     private let screen = LiveSourceID.screen(displayID: 7)
 
-    func testOnlyAStalledScreenRequestsAutomaticRecovery() {
+    func testStalledCaptureSourcesRequestTheirOwningIngressRecovery() {
         var policy = LiveSourceRecoveryPolicy()
 
-        XCTAssertNil(policy.decision(for: snapshot(.camera, .stalled), at: 1))
-        XCTAssertNil(policy.decision(for: snapshot(.microphone, .stalled), at: 2))
+        XCTAssertEqual(
+            policy.decision(for: snapshot(.camera, .stalled), at: 1),
+            .restartCamera(source: .camera, attempt: 1, maximumAttempts: 2)
+        )
+
+        policy.reset()
+        XCTAssertEqual(
+            policy.decision(for: snapshot(.microphone, .stalled), at: 2),
+            .restartScreen(source: .microphone, attempt: 1, maximumAttempts: 2)
+        )
+
+        policy.reset()
         XCTAssertNil(policy.decision(for: snapshot(screen, .waiting), at: 3))
         XCTAssertNil(policy.decision(for: snapshot(screen, .active), at: 4))
         XCTAssertEqual(
@@ -56,6 +66,30 @@ final class LiveSourceRecoveryPolicyTests: XCTestCase {
         )
     }
 
+    func testExhaustedSourceDoesNotStarveAnotherStalledSource() {
+        var policy = LiveSourceRecoveryPolicy(maximumAttempts: 1, cooldown: 0)
+        let bothStalled = LiveSourceHealthSnapshot(entries: [
+            LiveSourceHealthEntry(source: .camera, state: .stalled, secondsSinceLastSample: nil),
+            LiveSourceHealthEntry(source: .microphone, state: .stalled, secondsSinceLastSample: nil),
+            LiveSourceHealthEntry(source: screen, state: .stalled, secondsSinceLastSample: nil),
+        ])
+
+        XCTAssertEqual(
+            policy.decision(for: bothStalled, at: 1),
+            .restartCamera(source: .camera, attempt: 1, maximumAttempts: 1)
+        )
+        policy.complete(source: .camera, at: 2)
+        XCTAssertEqual(
+            policy.decision(for: bothStalled, at: 3),
+            .restartScreen(source: .microphone, attempt: 1, maximumAttempts: 1)
+        )
+        policy.complete(source: .microphone, at: 4)
+        XCTAssertNil(
+            policy.decision(for: bothStalled, at: 5),
+            "Screen, system audio, and microphone share one bounded ingress budget."
+        )
+    }
+
     func testScreenIngressRestartResumesExistingStreamBeforeRebuilding() async throws {
         var events: [String] = []
         try await LiveScreenIngressRestartExecutor().restart(
@@ -95,6 +129,11 @@ final class LiveSourceRecoveryPolicyTests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("rebuild detail"))
         }
+    }
+
+    func testCameraRecoveryPreservesASessionThatOwnsTheLocalMovieOutput() {
+        XCTAssertFalse(LiveCameraRecoveryPolicy.shouldRebuildSession(hasActiveMovieOutput: true))
+        XCTAssertTrue(LiveCameraRecoveryPolicy.shouldRebuildSession(hasActiveMovieOutput: false))
     }
 
     private func snapshot(

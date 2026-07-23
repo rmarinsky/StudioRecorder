@@ -79,6 +79,7 @@ final class LiveSourceHealthMonitor: @unchecked Sendable {
         var expected: Set<LiveSourceID> = []
         var configuredAt: TimeInterval = 0
         var lastSampleAt: [LiveSourceID: TimeInterval] = [:]
+        var invalidatedSources: Set<LiveSourceID> = []
         var stalledSources: Set<LiveSourceID> = []
         var recoveredAt: [LiveSourceID: TimeInterval] = [:]
     }
@@ -113,11 +114,27 @@ final class LiveSourceHealthMonitor: @unchecked Sendable {
     }
 
     func record(_ source: LiveSourceID, at timestamp: TimeInterval) {
+        recordSample(source, at: timestamp)
+    }
+
+    func recordIdle(_ source: LiveSourceID, at timestamp: TimeInterval) {
+        recordSample(source, at: timestamp)
+    }
+
+    func invalidate(_ source: LiveSourceID) {
+        lock.withLock {
+            guard state.expected.contains(source) else { return }
+            state.invalidatedSources.insert(source)
+        }
+    }
+
+    private func recordSample(_ source: LiveSourceID, at timestamp: TimeInterval) {
         guard timestamp.isFinite else { return }
         lock.withLock {
             guard state.expected.contains(source) else { return }
             let timestamp = max(timestamp, state.configuredAt)
             state.lastSampleAt[source] = timestamp
+            state.invalidatedSources.remove(source)
             if state.stalledSources.remove(source) != nil {
                 state.recoveredAt[source] = timestamp
             }
@@ -131,7 +148,7 @@ final class LiveSourceHealthMonitor: @unchecked Sendable {
                 if let lastSample = state.lastSampleAt[source] {
                     let silence = max(timestamp - lastSample, 0)
                     let threshold = source.isAudio ? audioStallThreshold : videoStallThreshold
-                    if silence > threshold {
+                    if state.invalidatedSources.contains(source) || silence > threshold {
                         state.stalledSources.insert(source)
                         state.recoveredAt[source] = nil
                         return LiveSourceHealthEntry(

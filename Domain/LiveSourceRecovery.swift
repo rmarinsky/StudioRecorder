@@ -2,6 +2,7 @@ import Foundation
 
 enum LiveSourceRecoveryDecision: Equatable, Sendable {
     case restartScreen(source: LiveSourceID, attempt: Int, maximumAttempts: Int)
+    case restartCamera(source: LiveSourceID, attempt: Int, maximumAttempts: Int)
 }
 
 enum LiveSourceRecoveryState: Equatable, Sendable {
@@ -37,6 +38,12 @@ struct LiveScreenIngressRestartExecutor {
     }
 }
 
+enum LiveCameraRecoveryPolicy {
+    static func shouldRebuildSession(hasActiveMovieOutput: Bool) -> Bool {
+        !hasActiveMovieOutput
+    }
+}
+
 struct LiveSourceRecoveryPolicy: Sendable {
     let maximumAttempts: Int
     let cooldown: TimeInterval
@@ -45,6 +52,7 @@ struct LiveSourceRecoveryPolicy: Sendable {
     private var attempts = 0
     private var isAttemptInFlight = false
     private var lastCompletedAt: TimeInterval?
+    private var exhaustedSources: [LiveSourceID: TimeInterval] = [:]
 
     init(maximumAttempts: Int = 2, cooldown: TimeInterval = 2) {
         self.maximumAttempts = max(maximumAttempts, 1)
@@ -52,12 +60,18 @@ struct LiveSourceRecoveryPolicy: Sendable {
     }
 
     func exhaustedSource(at timestamp: TimeInterval) -> LiveSourceID? {
-        guard !isAttemptInFlight,
-              attempts >= maximumAttempts,
-              let lastCompletedAt else { return nil }
         let timestamp = timestamp.isFinite ? timestamp : 0
-        guard timestamp - lastCompletedAt >= cooldown else { return nil }
-        return source
+        if !isAttemptInFlight,
+           attempts >= maximumAttempts,
+           let lastCompletedAt,
+           timestamp - lastCompletedAt >= cooldown {
+            return source
+        }
+        return exhaustedSources
+            .filter({ $0.value <= timestamp })
+            .map(\.key)
+            .sorted(by: { $0.id < $1.id })
+            .first
     }
 
     mutating func decision(
@@ -65,31 +79,45 @@ struct LiveSourceRecoveryPolicy: Sendable {
         at timestamp: TimeInterval
     ) -> LiveSourceRecoveryDecision? {
         let timestamp = timestamp.isFinite ? timestamp : 0
-        if snapshot.entries.contains(where: {
-            $0.source.category == .screen && $0.state == .recovered
-        }) {
-            reset()
-            return nil
+        for recovered in snapshot.entries where recovered.state == .recovered {
+            exhaustedSources.removeValue(forKey: recovered.source)
+            if source == recovered.source { resetCurrentSource() }
         }
-        guard let stalledScreen = snapshot.entries.first(where: {
-            $0.source.category == .screen && $0.state == .stalled
+        if let exhausted = exhaustedSource(at: timestamp),
+           snapshot[exhausted]?.state == .stalled {
+            exhaustedSources[exhausted] = lastCompletedAt.map { $0 + cooldown } ?? timestamp
+            if source == exhausted { resetCurrentSource() }
+        }
+        guard let stalledSource = snapshot.entries.first(where: {
+            $0.state == .stalled && !isRecoveryTargetExhausted(for: $0.source)
         })?.source else { return nil }
-        if source != nil, source != stalledScreen {
+        if let source,
+           source != stalledSource,
+           !sharesRecoveryTarget(source, stalledSource) {
             guard !isAttemptInFlight else { return nil }
-            reset()
+            resetCurrentSource()
         }
         guard !isAttemptInFlight,
               attempts < maximumAttempts else { return nil }
         if let lastCompletedAt,
            timestamp - lastCompletedAt < cooldown { return nil }
-        source = stalledScreen
+        source = stalledSource
         attempts += 1
         isAttemptInFlight = true
-        return .restartScreen(
-            source: stalledScreen,
-            attempt: attempts,
-            maximumAttempts: maximumAttempts
-        )
+        switch stalledSource.category {
+        case .camera:
+            return .restartCamera(
+                source: stalledSource,
+                attempt: attempts,
+                maximumAttempts: maximumAttempts
+            )
+        case .screen, .systemAudio, .microphone:
+            return .restartScreen(
+                source: stalledSource,
+                attempt: attempts,
+                maximumAttempts: maximumAttempts
+            )
+        }
     }
 
     mutating func complete(source: LiveSourceID, at timestamp: TimeInterval) {
@@ -100,9 +128,25 @@ struct LiveSourceRecoveryPolicy: Sendable {
     }
 
     mutating func reset() {
+        exhaustedSources.removeAll()
+        resetCurrentSource()
+    }
+
+    private mutating func resetCurrentSource() {
         source = nil
         attempts = 0
         isAttemptInFlight = false
         lastCompletedAt = nil
+    }
+
+    private func isRecoveryTargetExhausted(for candidate: LiveSourceID) -> Bool {
+        exhaustedSources.keys.contains { sharesRecoveryTarget($0, candidate) }
+    }
+
+    private func sharesRecoveryTarget(_ lhs: LiveSourceID, _ rhs: LiveSourceID) -> Bool {
+        if lhs.category == .camera || rhs.category == .camera {
+            return lhs.category == rhs.category
+        }
+        return true
     }
 }

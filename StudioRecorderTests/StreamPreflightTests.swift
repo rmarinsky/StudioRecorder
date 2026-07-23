@@ -111,6 +111,36 @@ final class StreamPreflightTests: XCTestCase {
         XCTAssertEqual(Set(report.warnings.map(\.id)), [.fourKCameraLoad, .uploadHeadroomUnverified])
     }
 
+    func testPreflightUsesThe4K60ProfileAndSelectedAudioBitrate() {
+        let request = StreamPreflightRequest(
+            deliveryMode: .stream,
+            serverURL: "rtmps://a.rtmps.youtube.com/live2",
+            hasStreamKey: true,
+            canvasSize: CGSize(width: 3_840, height: 2_160),
+            frameRate: 60,
+            videoBitRate: 35_000_000,
+            destinationURL: URL(fileURLWithPath: "/tmp/recordings"),
+            capturesSystemAudio: true,
+            capturesMicrophone: false,
+            capturesCamera: false,
+            cameraBackground: .off,
+            audioBitRate: 256_000
+        )
+
+        let report = StreamPreflightEvaluator().evaluate(
+            request: request,
+            environment: StreamPreflightEnvironment(
+                destinationIsWritable: true,
+                availableCapacity: 20_000_000_000,
+                endpoint: .reachable(roundTripMilliseconds: 35)
+            )
+        )
+
+        XCTAssertTrue(report.canStart)
+        XCTAssertFalse(report.checks.contains { [.bitrateOutsideLimit, .bitrateBelowGuidance].contains($0.id) })
+        XCTAssertTrue(report.checks.first { $0.id == .audioConfiguration }?.detail.contains("256 Kbps") == true)
+    }
+
     func testPreflightBlocksAStreamWithoutAnAudioSource() {
         let request = StreamPreflightRequest(
             deliveryMode: .stream,
@@ -169,7 +199,7 @@ final class StreamPreflightTests: XCTestCase {
         XCTAssertEqual(probedURLs, [request.destinationURL])
     }
 
-    func testAdvisoryHTTPSHostFailureDoesNotBlockAValidRTMPSConfiguration() {
+    func testAdvisoryRTMPSTLSFailureDoesNotBlockAValidConfiguration() {
         let request = StreamPreflightRequest(
             deliveryMode: .stream,
             serverURL: "rtmps://a.rtmps.youtube.com/live2",
@@ -195,6 +225,7 @@ final class StreamPreflightTests: XCTestCase {
 
         XCTAssertTrue(report.canStart)
         XCTAssertTrue(report.warnings.contains { $0.id == .endpointUnreachable })
+        XCTAssertFalse(report.checks.description.contains("HTTPS"))
     }
 
     func testRecordAndStreamStorageIncludesEveryRaw4KDisplayAndCamera() {

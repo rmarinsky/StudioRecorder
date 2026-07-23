@@ -3,35 +3,115 @@ import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum StudioCanvasSource: String, Identifiable {
+private enum StudioCanvasSource: Hashable, Identifiable {
     case screen
     case camera
+    case image(UUID)
 
-    var id: String { rawValue }
+    var id: String {
+        switch self {
+        case .screen: "screen"
+        case .camera: "camera"
+        case .image(let id): "image-\(id.uuidString)"
+        }
+    }
 
     var label: String {
         switch self {
         case .screen: "Screen"
         case .camera: "Camera"
+        case .image: "Image"
         }
     }
 }
 
+enum ImageOverlayImportError: LocalizedError {
+    case notPNG
+    case unreadable
+
+    var errorDescription: String? {
+        switch self {
+        case .notPNG: "Choose a PNG image."
+        case .unreadable: "The PNG image could not be read."
+        }
+    }
+}
+
+enum ImageOverlayImporter {
+    static func importPNG(
+        from sourceURL: URL,
+        canvas: CaptureCanvasSnapshot,
+        center: CGPoint = CGPoint(x: 0.5, y: 0.5),
+        destinationDirectory: URL? = nil
+    ) throws -> ImageOverlaySnapshot {
+        guard sourceURL.pathExtension.lowercased() == "png" else {
+            throw ImageOverlayImportError.notPNG
+        }
+        guard let image = NSImage(contentsOf: sourceURL),
+              let representation = image.representations.first,
+              representation.pixelsWide > 0,
+              representation.pixelsHigh > 0 else {
+            throw ImageOverlayImportError.unreadable
+        }
+        let directory = destinationDirectory ?? defaultDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appending(path: "\(UUID().uuidString).png")
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+
+        let width: CGFloat = 0.2
+        let imageAspect = CGFloat(representation.pixelsWide) / CGFloat(representation.pixelsHigh)
+        return ImageOverlaySnapshot(
+            name: sourceURL.deletingPathExtension().lastPathComponent,
+            filePath: destination.path,
+            placement: SourcePlacementSnapshot(
+                centerX: center.x,
+                centerY: center.y,
+                width: width,
+                height: width * canvas.aspectRatio / imageAspect,
+                shape: .rectangle
+            )
+        ).validated()
+    }
+
+    private static var defaultDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support")
+        return base
+            .appending(path: "Studio Recorder", directoryHint: .isDirectory)
+            .appending(path: "Overlays", directoryHint: .isDirectory)
+    }
+}
+
+private enum SidebarDestination: Hashable {
+    case projects
+    case studio
+    case recovery
+}
+
 struct StudioRecorderRootView: View {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
+    @ObservedObject var managedYouTube: YouTubeManagedSessionCoordinator
+    @ObservedObject var sceneLibrary: StudioSceneLibraryStore
     @StateObject private var liveScene = LiveSceneCoordinator()
     @StateObject private var streaming = YouTubeStreamingCoordinator()
     @StateObject private var streamArchive = LiveProgramArchiveCoordinator()
-    @StateObject private var sceneLibrary = StudioSceneLibraryStore()
     @StateObject private var shortcutMonitor = SafeShortcutMonitor()
     @State private var deliveryMode = StreamDeliveryMode.record
     @State private var importedGIFSource: GIFMakerSource?
+    @State private var isCreatingRecording = false
+    @State private var newRecordingName = ""
+    @State private var newRecordingProfileID: UUID?
+    @State private var projectSearchText = ""
+    @FocusState private var isProjectSearchFocused: Bool
     @State private var gifImportError: String?
     @State private var recoveryOperationID: String?
     @State private var recoveryError: String?
     @State private var recoveryTrashCandidate: RecordingProjectSnapshot?
+    @State private var selectedRecoveryProjectID: String?
     @State private var isCapturingSnapshot = false
     @State private var lastSnapshotURL: URL?
     @State private var snapshotError: String?
@@ -40,21 +120,32 @@ struct StudioRecorderRootView: View {
     @State private var streamPreflightReport: StreamPreflightReport?
     @State private var streamPreflightRevision = 0
     @State private var selectedSceneID: UUID?
+    @State private var hasAppliedInitialProfile = false
     @State private var pendingSceneSwitchEvent: StudioSceneSwitchEvent?
     @State private var sceneSwitchError: String?
     @State private var sceneLibraryError: String?
     @State private var sceneRenameDraft = ""
     @State private var isRenamingScene = false
+    @State private var profileNameDraft = ""
+    @State private var profileNameAction: ProfileNameAction?
     @State private var streamingSceneContract: StudioSceneLiveContract?
     @State private var selectedCanvasSource: StudioCanvasSource?
     @State private var isManualZoomActive = false
     @State private var manualZoomRestoreFraming: ScreenFramingSnapshot?
     @State private var manualZoomPointerTracker = ManualZoomPointerTracker()
     @State private var externalPointerMonitor: Any?
+    @State private var isShowingYouTubeAuthorization = false
+    @AppStorage("selectedSettingsTab") private var selectedSettingsTabRaw = SettingsTab.general.rawValue
 
     private let streamPreflightRunner = StreamPreflightRunner()
 
     private let coral = Color(red: 0.90, green: 0.40, blue: 0.36)
+
+    private enum ProfileNameAction: String, Identifiable {
+        case create
+        case rename
+        var id: String { rawValue }
+    }
 
     private var snapshot: StudioRecorderSnapshot { model.snapshot }
     private var sourceHealthSections: [LiveSourceHealthSection] {
@@ -63,7 +154,7 @@ struct StudioRecorderRootView: View {
             sections.append(.init(
                 title: "Recording sources",
                 snapshot: snapshot.sourceHealth,
-                recoveryState: .idle
+                recoveryState: snapshot.sourceRecoveryState
             ))
         }
         if streaming.state.isActive {
@@ -77,57 +168,61 @@ struct StudioRecorderRootView: View {
     }
 
     private var presentedRoot: some View {
-        NavigationSplitView {
-            List(selection: routeSelection) {
-                Section {
-                    Label("Studio Recorder", systemImage: "pause.rectangle.fill")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                        .listRowBackground(Color.clear)
-                }
+        HStack(spacing: 0) {
+            appSidebar
+                .frame(width: 220)
 
-                Section {
-                    Label("Projects", systemImage: "folder")
-                        .tag(MainRoute.projects)
-                    Label("Studio", systemImage: "record.circle")
-                        .tag(MainRoute.studio)
-                    Label("Settings", systemImage: "gearshape")
-                        .tag(MainRoute.settings)
-                }
+            Rectangle()
+                .fill(shellStroke)
+                .frame(width: 1)
 
-                if !snapshot.interruptedProjects.isEmpty {
-                    Section("Attention") {
-                        Label("Recovery", systemImage: "lifepreserver")
-                            .badge(snapshot.interruptedProjects.count)
-                            .tag(MainRoute.recovery)
+            VStack(spacing: 0) {
+                appTopBar
+                Rectangle().fill(shellStroke).frame(height: 1)
+                Group {
+                    switch snapshot.route {
+                    case .projects:
+                        projectsView
+                    case .studio:
+                        studioDestination
+                    case .settings:
+                        SettingsView(
+                            model: model,
+                            preferencesStore: preferencesStore,
+                            streamingSettings: streamingSettings,
+                            managedYouTube: managedYouTube,
+                            embedded: true,
+                            selectedTab: selectedSettingsTab
+                        )
+                    case .recovery:
+                        recoveryView
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(shellContent)
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 210, ideal: 224, max: 260)
-        } detail: {
-            Group {
-                switch snapshot.route {
-                case .projects:
-                    projectsView
-                case .studio:
-                    studioDestination
-                case .settings:
-                    SettingsView(
-                        model: model,
-                        preferencesStore: preferencesStore,
-                        streamingSettings: streamingSettings,
-                        embedded: true
-                    )
-                case .recovery:
-                    recoveryView
-                }
-            }
-            .toolbar { toolbarContent }
         }
+        .background(shellContent)
+        .background(WindowChromeConfigurator())
         .tint(coral)
+        .overlay {
+            if let transition = snapshot.captureTransitionPresentation {
+                CaptureTransitionOverlay(presentation: transition)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(100)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: snapshot.captureTransitionPresentation)
         .sheet(item: $importedGIFSource) { source in
             GIFMakerView(source: source) { importedGIFSource = nil }
+        }
+        .sheet(isPresented: $isCreatingRecording) {
+            newRecordingSheet
+        }
+        .sheet(isPresented: $isShowingYouTubeAuthorization) {
+            YouTubeAuthorizationDisclosureView {
+                Task { await managedYouTube.connect(clientID: streamingSettings.oauthClientID) }
+            }
         }
         .alert("Video Could Not Be Opened", isPresented: gifImportErrorPresented) {
             Button("OK", role: .cancel) { gifImportError = nil }
@@ -162,6 +257,22 @@ struct StudioRecorderRootView: View {
         } message: {
             Text("The new name is saved to this scene preset.")
         }
+        .alert(
+            profileNameAction == .create ? "New Profile" : "Rename Profile",
+            isPresented: Binding(
+                get: { profileNameAction != nil },
+                set: { if !$0 { profileNameAction = nil } }
+            )
+        ) {
+            TextField("Profile name", text: $profileNameDraft)
+            Button("Cancel", role: .cancel) { profileNameAction = nil }
+            Button(profileNameAction == .create ? "Create" : "Rename", action: commitProfileName)
+                .disabled(profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text(profileNameAction == .create
+                ? "The new profile starts from the current profile's scenes and capture settings."
+                : "Scenes and capture settings stay unchanged.")
+        }
         .confirmationDialog(
             "Move this recording project to Trash?",
             isPresented: recoveryTrashConfirmationPresented,
@@ -177,10 +288,162 @@ struct StudioRecorderRootView: View {
         }
     }
 
+    private var shellContent: Color {
+        colorScheme == .dark
+            ? Color(red: 0.075, green: 0.078, blue: 0.082)
+            : Color(red: 0.955, green: 0.945, blue: 0.925)
+    }
+
+    private var shellPanel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.105, green: 0.110, blue: 0.114)
+            : Color(red: 0.925, green: 0.915, blue: 0.895)
+    }
+
+    private var shellRaised: Color {
+        colorScheme == .dark
+            ? Color(red: 0.145, green: 0.150, blue: 0.154)
+            : Color.white.opacity(0.72)
+    }
+
+    private var shellStroke: Color {
+        colorScheme == .dark ? Color.white.opacity(0.075) : Color.black.opacity(0.09)
+    }
+
+    private var appSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "recordingtape.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(coral)
+                Text("Studio Recorder")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .padding(.top, 46)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 20)
+
+            VStack(spacing: 5) {
+                sidebarButton("Projects", icon: "square.stack", route: .projects)
+                sidebarButton("Studio", icon: "record.circle", route: .studio)
+                if !snapshot.interruptedProjects.isEmpty {
+                    sidebarButton(
+                        "Recovery",
+                        icon: "lifepreserver",
+                        route: .recovery,
+                        badge: snapshot.interruptedProjects.count
+                    )
+                }
+            }
+            .padding(.horizontal, 10)
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("LOCAL-FIRST MEDIA")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Text("Recoverable by default")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 14)
+
+            Button {
+                openWindow(id: "settings")
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 12)
+        }
+        .background(shellPanel)
+    }
+
+    private func sidebarButton(
+        _ title: String,
+        icon: String,
+        route: MainRoute,
+        badge: Int? = nil
+    ) -> some View {
+        let isSelected = snapshot.route == route
+        return Button {
+            resetManualZoomIfNeeded()
+            model.send(.selectRoute(route))
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isSelected ? coral : Color.secondary)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                Spacer()
+                if let badge {
+                    Text("\(badge)")
+                        .font(.system(size: 9, weight: .bold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .contentShape(Rectangle())
+            .background(isSelected ? shellRaised : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+    }
+
+    private var appTopBar: some View {
+        ZStack {
+            Text(routeTitle)
+                .font(.system(size: 12, weight: .semibold))
+
+            HStack(spacing: 8) {
+                Spacer()
+                if snapshot.route == .projects {
+                    Button { openVideoForGIF() } label: {
+                        Label("Video to GIF", systemImage: "photo.stack")
+                    }
+                        .buttonStyle(.bordered)
+                    Button { beginNewRecording() } label: {
+                        Label("New Recording", systemImage: "record.circle")
+                    }
+                        .buttonStyle(.borderedProminent)
+                        .tint(coral)
+                } else if snapshot.route == .studio {
+                    HStack(spacing: 6) {
+                        Circle().fill(statusColor).frame(width: 6, height: 6)
+                        Text(snapshot.captureState.label)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .frame(height: 52)
+        .background(shellPanel)
+        .simultaneousGesture(WindowDragGesture())
+    }
+
     private var lifecycleRoot: some View {
         presentedRoot
         .task {
             await model.launch()
+            await managedYouTube.reconcile(clientID: streamingSettings.oauthClientID)
+            if managedYouTube.isAuthorized, managedYouTube.pendingSession == nil {
+                await managedYouTube.refreshUpcomingBroadcasts(clientID: streamingSettings.oauthClientID)
+            }
             configureShortcutMonitor()
             await updateLiveScene(for: snapshot.route)
         }
@@ -192,7 +455,7 @@ struct StudioRecorderRootView: View {
             if route != .studio {
                 resetManualZoomIfNeeded()
                 if streaming.state.isActive {
-                    streaming.stop()
+                    stopYouTubeStream()
                     Task { await liveScene.setStreamPipeline(nil, audio: nil) }
                 }
             }
@@ -200,7 +463,10 @@ struct StudioRecorderRootView: View {
             updateShortcutMonitor()
             Task { await updateLiveScene(for: route) }
         }
-        .onChange(of: snapshot.captureState) { _, state in
+        .onChange(of: snapshot.captureState) { previousState, state in
+            if state == .recording, previousState != .recording, previousState != .paused {
+                openWindow(id: "recording-controls")
+            }
             if !isDeliveryActive {
                 switch state {
                 case .ready, .failed:
@@ -211,9 +477,19 @@ struct StudioRecorderRootView: View {
             }
             updateExternalPointerMonitor()
             updateSourceHealthMonitoring()
+            if !isDeliveryActive, streaming.state.hasFailed {
+                streamingSceneContract = nil
+                Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+            }
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.studioDraft?.cameraDeviceID) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
+        }
+        .onChange(of: snapshot.studioDraft?.cameraOrientation) { _, _ in
+            Task { await updateLiveScene(for: snapshot.route) }
+        }
+        .onChange(of: snapshot.studioDraft?.frameRate) { _, _ in
             Task { await updateLiveScene(for: snapshot.route) }
         }
         .onChange(of: snapshot.studioDraft?.presentation.cameraBackground) { _, _ in
@@ -221,6 +497,13 @@ struct StudioRecorderRootView: View {
         }
         .onChange(of: snapshot.studioDraft?.presentation) { _, presentation in
             if let presentation {
+                let sourceState = snapshot.studioDraft.map(StudioSceneSourceState.init(draft:))
+                if let scene = sceneLibrary.scenes.first(where: {
+                    $0.presentation.validated() == presentation.validated()
+                        && ($0.sources == nil || $0.sources == sourceState)
+                }) {
+                    selectedSceneID = scene.id
+                }
                 if pendingSceneSwitchEvent?.presentation != presentation {
                     liveScene.replaceProgramPresentationImmediately(presentation)
                     Task { await streaming.pipeline.updatePresentation(presentation) }
@@ -247,20 +530,63 @@ struct StudioRecorderRootView: View {
 
     private var preflightObservedRoot: some View {
         lifecycleRoot
-        .onChange(of: snapshot.studioDraft) { _, _ in
+        .onChange(of: snapshot.studioDraft) { _, draft in
             invalidateStreamPreflight()
             updateSourceHealthMonitoring()
+            guard let draft else { return }
+            if !hasAppliedInitialProfile {
+                hasAppliedInitialProfile = true
+                applyActiveProfile()
+            } else {
+                persistActiveProfileConfiguration(from: draft)
+            }
         }
         .onChange(of: deliveryMode) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.serverURL) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.streamKey) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.videoBitRate) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: streamingSettings.audioBitRate) { _, _ in invalidateStreamPreflight() }
+        .onChange(of: streamingSettings.usesManagedYouTube) { _, usesManagedYouTube in
+            streamingSettings.save()
+            invalidateStreamPreflight()
+            if usesManagedYouTube, managedYouTube.isAuthorized {
+                Task {
+                    await managedYouTube.refreshUpcomingBroadcasts(
+                        clientID: streamingSettings.oauthClientID
+                    )
+                }
+            }
+        }
         .onChange(of: streaming.state) { _, state in
             updateExternalPointerMonitor()
             updateSourceHealthMonitoring()
+            if state == .live, streamingSettings.usesManagedYouTube {
+                managedYouTube.beginActivation(clientID: streamingSettings.oauthClientID)
+            }
+            if state.hasFailed, streamingSettings.usesManagedYouTube {
+                managedYouTube.pauseMonitoring()
+            }
             guard !state.isActive else { return }
+            if LiveStreamRetryPolicy.canRetry(
+                streamState: state,
+                captureState: snapshot.captureState
+            ) {
+                return
+            }
             if !isLocalRecordingActive { resetManualZoomIfNeeded() }
             streamingSceneContract = nil
+            Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+        }
+        .onChange(of: managedYouTube.state) { _, state in
+            guard streaming.state.isActive else { return }
+            if case .failed = state {
+                streaming.stop()
+                Task { await liveScene.setStreamPipeline(nil, audio: nil) }
+            }
+        }
+        .onChange(of: managedYouTube.pendingSession) { previous, current in
+            guard previous != nil, current == nil, streaming.state.isActive else { return }
+            streaming.stop()
             Task { await liveScene.setStreamPipeline(nil, audio: nil) }
         }
         .onChange(of: streamArchive.state) { _, state in
@@ -288,7 +614,7 @@ struct StudioRecorderRootView: View {
     var body: some View {
         preflightObservedRoot
         .onDisappear {
-            streaming.stop()
+            stopYouTubeStream()
             liveScene.monitorSourceHealth([])
             Task {
                 await liveScene.setStreamPipeline(nil, audio: nil)
@@ -300,15 +626,48 @@ struct StudioRecorderRootView: View {
             shortcutMonitor.refreshAccess()
             Task { await model.appBecameActive() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .studioRecorderNewRecording)) { _ in
+            model.send(.selectRoute(.projects))
+            beginNewRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .studioRecorderFindProjects)) { _ in
+            model.send(.selectRoute(.projects))
+            isProjectSearchFocused = true
+        }
     }
 
-    private var routeSelection: Binding<MainRoute?> {
+    private var selectedSettingsTab: SettingsTab {
+        SettingsTab(rawValue: selectedSettingsTabRaw) ?? .general
+    }
+
+    private var profileSelection: Binding<UUID> {
         Binding(
-            get: { snapshot.route },
-            set: { route in
-                if let route {
-                    if route != .studio { resetManualZoomIfNeeded() }
-                    model.send(.selectRoute(route))
+            get: { sceneLibrary.activeProfileID },
+            set: { id in applyProfile(id) }
+        )
+    }
+
+    private var sidebarSelection: Binding<SidebarDestination?> {
+        Binding(
+            get: {
+                switch snapshot.route {
+                case .projects: .projects
+                case .studio: .studio
+                case .recovery: .recovery
+                case .settings: nil
+                }
+            },
+            set: { destination in
+                guard let destination else { return }
+                switch destination {
+                case .projects:
+                    resetManualZoomIfNeeded()
+                    model.send(.selectRoute(.projects))
+                case .studio:
+                    model.send(.selectRoute(.studio))
+                case .recovery:
+                    resetManualZoomIfNeeded()
+                    model.send(.selectRoute(.recovery))
                 }
             }
         )
@@ -338,11 +697,153 @@ struct StudioRecorderRootView: View {
                 }
 
                 Button {
-                    model.send(.newRecording)
+                    beginNewRecording()
                 } label: {
                     Label("New Recording", systemImage: "plus")
                 }
             }
+        }
+    }
+
+    private var newRecordingSheet: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("New Recording")
+                    .font(.title2.weight(.semibold))
+                Text("Name the session, then choose the profile that defines its format, sources, scenes, and retention.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("SESSION NAME")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    TextField("Product walkthrough", text: $newRecordingName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("RECORDING PROFILE")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("Reusable setup")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(sceneLibrary.profiles) { profile in
+                                profileChoice(profile)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 285)
+                }
+            }
+            .padding(24)
+
+            Divider()
+
+            HStack {
+                Button("Manage Profiles") {
+                    isCreatingRecording = false
+                    model.send(.selectRoute(.studio))
+                }
+                Spacer()
+                Button("Cancel") { isCreatingRecording = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create Studio Session", action: createNamedRecording)
+                    .buttonStyle(.borderedProminent)
+                    .tint(coral)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(
+                        newRecordingName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || newRecordingProfileID == nil
+                    )
+            }
+            .padding(18)
+        }
+        .frame(width: 620, height: 520)
+    }
+
+    private func profileChoice(_ profile: StudioRecordingProfile) -> some View {
+        let isSelected = newRecordingProfileID == profile.id
+        let canvas = profile.scenes.first?.presentation.canvas ?? CaptureCanvasSnapshot()
+        return Button {
+            newRecordingProfileID = profile.id
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? coral.opacity(0.16) : Color.secondary.opacity(0.10))
+                        .frame(width: 54, height: 42)
+                    Image(systemName: canvas.height > canvas.width ? "rectangle.portrait" : "rectangle")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(isSelected ? coral : Color.secondary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(profile.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(canvas.width) × \(canvas.height)  ·  \(profile.configuration.frameRate) fps  ·  \(profile.scenes.count) scene\(profile.scenes.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(profile.configuration.retentionPolicy.label + socialGuideSuffix(profile.configuration.socialGuide))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? coral : Color.secondary.opacity(0.5))
+            }
+            .padding(12)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isSelected ? coral.opacity(0.07) : Color.secondary.opacity(0.045))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? coral.opacity(0.7) : Color.secondary.opacity(0.12), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func socialGuideSuffix(_ guide: StudioSocialGuide) -> String {
+        guide == .off ? "" : "  ·  \(guide.label) guides"
+    }
+
+    private func beginNewRecording() {
+        newRecordingName = ""
+        newRecordingProfileID = sceneLibrary.activeProfileID
+        isCreatingRecording = true
+    }
+
+    private func createNamedRecording() {
+        let name = newRecordingName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let profileID = newRecordingProfileID else { return }
+        do {
+            try sceneLibrary.selectProfile(profileID)
+            model.send(.newRecording)
+            hasAppliedInitialProfile = true
+            applyActiveProfile()
+            model.send(.setDraftRecordingName(name))
+            isCreatingRecording = false
+        } catch {
+            sceneLibraryError = error.localizedDescription
         }
     }
 
@@ -396,7 +897,7 @@ struct StudioRecorderRootView: View {
     private var routeTitle: String {
         switch snapshot.route {
         case .projects: "Projects"
-        case .settings: "Settings"
+        case .settings: selectedSettingsTab.title
         case .recovery: "Recovery"
         case .studio: "Studio"
         }
@@ -411,22 +912,38 @@ struct StudioRecorderRootView: View {
                 )
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {
-                ContentUnavailableView {
-                    Label("No projects yet", systemImage: "record.circle")
-                } description: {
-                    Text("Each recording becomes a recoverable package with raw tracks and an append-only journal.")
-                } actions: {
-                    Button("New Recording") { model.send(.newRecording) }
+                VStack(spacing: 20) {
+                    Image(systemName: "rectangle.stack.badge.plus")
+                        .font(.system(size: 42, weight: .light))
+                        .foregroundStyle(coral)
+                    VStack(spacing: 7) {
+                        Text("Create your first recording")
+                            .font(.title2.weight(.semibold))
+                        Text("Choose a reusable profile, prepare scenes and sources, then record when the studio is ready.")
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 440)
+                    }
+                    Button("New Recording", action: beginNewRecording)
                         .buttonStyle(.borderedProminent)
                         .tint(coral)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Your projects").font(.largeTitle.weight(.semibold))
-                            Text("Retained source media stays recoverable. Layout and cuts remain non-destructive.")
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 24) {
+                        HStack(alignment: .top, spacing: 24) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Projects")
+                                    .font(.largeTitle.weight(.semibold))
+                                Text("Recordings, retained source tracks, and non-destructive edits.")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            TextField("Search projects", text: $projectSearchText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 230)
+                                .focused($isProjectSearchFocused)
                         }
 
                         if !snapshot.interruptedProjects.isEmpty {
@@ -451,32 +968,98 @@ struct StudioRecorderRootView: View {
                             .foregroundStyle(.orange)
                         }
 
-                        Text("Recent recordings")
-                            .font(.headline)
-                            .padding(.top, 2)
+                        if let featuredProject = filteredProjects.first {
+                            featuredProjectCard(featuredProject)
 
-                        VStack(spacing: 0) {
-                            ForEach(Array(snapshot.projects.enumerated()), id: \.element.id) { index, project in
-                                Button {
-                                    model.send(.openProject(project.id))
-                                } label: {
-                                    ProjectRow(project: project)
-                                        .contentShape(Rectangle())
+                            if filteredProjects.count > 1 {
+                                Text("Recent recordings")
+                                    .font(.headline)
+
+                                VStack(spacing: 0) {
+                                    ForEach(Array(filteredProjects.dropFirst().enumerated()), id: \.element.id) { index, project in
+                                        Button {
+                                            model.send(.openProject(project.id))
+                                        } label: {
+                                            ProjectRow(project: project)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        if index < filteredProjects.count - 2 {
+                                            Divider().padding(.leading, 108)
+                                        }
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                if index < snapshot.projects.count - 1 {
-                                    Divider().padding(.leading, 108)
-                                }
+                                .padding(.horizontal, 14)
+                                .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
                             }
+                        } else {
+                            ContentUnavailableView.search(text: projectSearchText)
                         }
-                        .padding(.horizontal, 14)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .padding(24)
+                    .padding(28)
                 }
                 .navigationTitle("Projects")
             }
         }
+    }
+
+    private var filteredProjects: [RecordingProjectSnapshot] {
+        let query = projectSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return snapshot.projects }
+        return snapshot.projects.filter { project in
+            projectTitle(project).localizedCaseInsensitiveContains(query)
+                || project.captureProfile.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func featuredProjectCard(_ project: RecordingProjectSnapshot) -> some View {
+        HStack(spacing: 22) {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(coral.opacity(0.16))
+                .aspectRatio(16 / 9, contentMode: .fit)
+                .frame(width: 270)
+                .overlay {
+                    Image(systemName: project.lifecycle == .finalized ? "play.rectangle.fill" : "waveform.badge.exclamationmark")
+                        .font(.system(size: 38, weight: .light))
+                        .foregroundStyle(project.lifecycle == .finalized ? coral : Color.orange)
+                }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("LATEST PROJECT")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(projectTitle(project))
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(2)
+                Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s")  ·  \(project.captureProfile)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 4)
+                HStack {
+                    Button("Open Project") { model.send(.openProject(project.id)) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(coral)
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([project.rootURL])
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            Spacer()
+        }
+        .padding(18)
+        .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.secondary.opacity(0.11), lineWidth: 1)
+        }
+    }
+
+    private func projectTitle(_ project: RecordingProjectSnapshot) -> String {
+        project.recordingName ?? project.presentation?.resolvedName ?? "Untitled Recording"
     }
 
     @ViewBuilder
@@ -633,10 +1216,45 @@ struct StudioRecorderRootView: View {
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text(snapshot.studioDraft?.presentation.resolvedName ?? "Scene 1")
-                            .font(.headline)
+                        Image(systemName: "person.crop.rectangle.stack")
+                            .foregroundStyle(.secondary)
+                            .help("Recording profile")
+                        Picker("Profile", selection: profileSelection) {
+                            ForEach(sceneLibrary.profiles) { profile in
+                                Text(profile.name).tag(profile.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 210)
+                        .disabled(isDeliveryActive || isCaptureTransitioning || isPreparingProgram)
+                        Menu {
+                            Button("New Profile…", systemImage: "plus") {
+                                profileNameDraft = ""
+                                profileNameAction = .create
+                            }
+                            Button("Rename Profile…", systemImage: "pencil") {
+                                profileNameDraft = sceneLibrary.activeProfile?.name ?? ""
+                                profileNameAction = .rename
+                            }
+                            Button("Duplicate Profile", systemImage: "plus.square.on.square", action: duplicateActiveProfile)
+                            Divider()
+                            Button("Delete Profile", systemImage: "trash", role: .destructive, action: deleteActiveProfile)
+                                .disabled(sceneLibrary.profiles.count <= 1)
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.button)
+                        .disabled(isDeliveryActive || isCaptureTransitioning || isPreparingProgram)
+                        Label(
+                            snapshot.studioDraft?.presentation.resolvedName ?? "Scene 1",
+                            systemImage: "film"
+                        )
+                        .font(.headline)
                         Spacer()
-                        Text("\(canvasWidth) × \(canvasHeight)  ·  30 fps")
+                        Label(
+                            "\(canvasWidth) × \(canvasHeight)  ·  \(snapshot.studioDraft?.frameRate ?? 30) fps",
+                            systemImage: "aspectratio"
+                        )
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -655,6 +1273,8 @@ struct StudioRecorderRootView: View {
                         onDuplicate: duplicateSelectedScene,
                         onMoveEarlier: { moveSelectedScene(by: -1) },
                         onMoveLater: { moveSelectedScene(by: 1) },
+                        onTransitionEffect: setSelectedSceneTransitionEffect,
+                        onTransitionDuration: setSelectedSceneTransitionDuration,
                         onDelete: deleteSelectedScene
                     )
                     LiveProgramPreview(
@@ -663,19 +1283,28 @@ struct StudioRecorderRootView: View {
                         cameraImage: liveScene.cameraImage,
                         selectedDisplayName: selectedDisplayName,
                         selectedDisplayID: primarySelectedDisplayID,
+                        frameRate: snapshot.studioDraft?.frameRate ?? 30,
                         screenPreviewError: liveScene.screenPreviewError,
                         isRecording: snapshot.captureState == .recording,
                         isPaused: snapshot.captureState == .paused,
+                        recordedDuration: formattedRecordedDuration,
                         shortcutLabel: shortcutMonitor.visibleLabel,
+                        socialGuide: snapshot.studioDraft?.socialGuide ?? .off,
                         presentation: programPresentationBinding,
                         selectedSource: $selectedCanvasSource,
-                        isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
-                            || isPreparingProgram
+                        isLocked: isPresentationEditingLocked
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .task(id: primarySelectedDisplayID) {
-                            guard let primarySelectedDisplayID else { return }
-                            await liveScene.startScreenPreview(for: primarySelectedDisplayID)
+                        .task(id: previewDisplayID) {
+                            if let previewDisplayID {
+                                await liveScene.startScreenPreview(
+                                    for: previewDisplayID,
+                                    frameRate: snapshot.studioDraft?.frameRate ?? 30,
+                                    preservingLastFrame: isDeliveryActive
+                                )
+                            } else {
+                                await liveScene.stopScreenPreview()
+                            }
                         }
                 }
                 .padding(20)
@@ -701,6 +1330,22 @@ struct StudioRecorderRootView: View {
                         get: { snapshot.capturesCamera },
                         set: { model.send(.setCapturesCamera($0)) }
                     ),
+                    cameraOrientation: Binding(
+                        get: { snapshot.studioDraft?.cameraOrientation ?? .automatic },
+                        set: { model.send(.setDraftCameraOrientation($0)) }
+                    ),
+                    cameraSyncOffset: Binding(
+                        get: {
+                            guard let draft = snapshot.studioDraft,
+                                  let id = draft.cameraDeviceID else { return 0 }
+                            return CGFloat(draft.cameraSyncOffsets[id] ?? 0)
+                        },
+                        set: { model.send(.setDraftCameraSyncOffset(TimeInterval($0))) }
+                    ),
+                    socialGuide: Binding(
+                        get: { snapshot.studioDraft?.socialGuide ?? .off },
+                        set: { model.send(.setDraftSocialGuide($0)) }
+                    ),
                     capturesMicrophone: Binding(
                         get: { snapshot.capturesMicrophone },
                         set: { model.send(.setCapturesMicrophone($0)) }
@@ -722,7 +1367,14 @@ struct StudioRecorderRootView: View {
                         get: { snapshot.studioDraft?.excludeStudioRecorderAudio ?? true },
                         set: { model.send(.setDraftExcludeStudioRecorderAudio($0)) }
                     ),
-                    codecPolicy: snapshot.studioDraft?.codecPolicy ?? .automatic,
+                    codecPolicy: Binding(
+                        get: { snapshot.studioDraft?.codecPolicy ?? .automatic },
+                        set: { model.send(.setDraftCodecPolicy($0)) }
+                    ),
+                    frameRate: Binding(
+                        get: { snapshot.studioDraft?.frameRate ?? 30 },
+                        set: { model.send(.setDraftFrameRate($0)) }
+                    ),
                     retentionPolicy: Binding(
                         get: { snapshot.studioDraft?.retentionPolicy ?? .editableTracks },
                         set: { model.send(.setDraftRetentionPolicy($0)) }
@@ -732,10 +1384,11 @@ struct StudioRecorderRootView: View {
                     hasShortcutMonitoringAccess: shortcutMonitor.hasGlobalAccess,
                     onRequestShortcutMonitoringAccess: shortcutMonitor.requestGlobalAccess,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
-                        || isPreparingProgram
+                        || isPreparingProgram,
+                    isPresentationLocked: isPresentationEditingLocked
                 )
                 .frame(width: 304)
-                .background(.bar)
+                .background(shellPanel)
             }
 
             Divider()
@@ -750,6 +1403,9 @@ struct StudioRecorderRootView: View {
                     .labelsHidden()
                     .frame(width: 286)
                     .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram)
+                    if deliveryMode.includesStreaming, !streaming.state.isActive {
+                        streamDestinationControls
+                    }
                     Label(streaming.state.label, systemImage: streaming.state == .live ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                         .font(.caption)
                         .foregroundStyle(streaming.state == .live ? .red : .secondary)
@@ -758,6 +1414,27 @@ struct StudioRecorderRootView: View {
                         Label("Local recording continues", systemImage: "record.circle")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
+                    }
+                    if LiveStreamRetryPolicy.canRetry(
+                        streamState: streaming.state,
+                        captureState: snapshot.captureState
+                    ) {
+                        Button("Retry YouTube") {
+                            Task { await retryYouTubeDuringRecording() }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isRunningStreamPreflight || isPreparingProgram)
+                    }
+                    if streamingSettings.usesManagedYouTube {
+                        Label(managedYouTube.state.label, systemImage: "checkmark.icloud")
+                            .font(.caption2)
+                            .foregroundStyle(managedYouTube.state == .live ? .green : .secondary)
+                        if let serverHealth = managedYouTube.serverHealth {
+                            Text(youtubeServerHealthSummary(serverHealth))
+                                .font(.caption2)
+                                .foregroundStyle(serverHealth.status == .bad ? .orange : .secondary)
+                        }
                     }
                     if snapshot.captureState == .paused {
                         Label(
@@ -797,11 +1474,6 @@ struct StudioRecorderRootView: View {
                             }
                         }
                             .frame(width: 286, alignment: .leading)
-                    }
-                    if deliveryMode.includesStreaming, streamConfiguration == nil {
-                        Text("Add the YouTube RTMPS key in Settings → Streaming")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
                     }
                     if deliveryMode.includesStreaming, !streaming.state.isActive {
                         StreamPreflightSummaryView(
@@ -894,7 +1566,7 @@ struct StudioRecorderRootView: View {
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
-            .background(.bar)
+            .background(shellPanel)
         }
         .navigationTitle("Studio")
     }
@@ -913,12 +1585,17 @@ struct StudioRecorderRootView: View {
             return
         }
 
-        if let primarySelectedDisplayID {
-            await liveScene.startScreenPreview(for: primarySelectedDisplayID)
+        if let previewDisplayID {
+            await liveScene.startScreenPreview(
+                for: previewDisplayID,
+                frameRate: snapshot.studioDraft?.frameRate ?? 30
+            )
         }
         liveScene.setCameraBackground(
             snapshot.studioDraft?.presentation.resolvedCameraBackground ?? .off
         )
+        liveScene.selectCameraOrientation(snapshot.studioDraft?.cameraOrientation ?? .automatic)
+        liveScene.selectCameraFrameRate(snapshot.studioDraft?.frameRate ?? 30)
 
         if LiveScenePolicy.shouldRunDraftCamera(route: route, captureState: snapshot.captureState),
            snapshot.capturesCamera,
@@ -935,25 +1612,90 @@ struct StudioRecorderRootView: View {
             if snapshot.interruptedProjects.isEmpty {
                 ContentUnavailableView("No recovery needed", systemImage: "checkmark.shield", description: Text("All discovered projects closed cleanly."))
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
+                HSplitView {
+                    VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Recovery Review")
+                            Text("Recovery")
                                 .font(.title2.weight(.semibold))
-                            Text("Studio Recorder found projects that did not close cleanly. Recover keeps only verified playable tracks; unavailable files and the original diagnostics are never silently discarded.")
+                            Text("Interrupted sessions")
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        .padding(18)
+                        Divider()
 
-                        ForEach(snapshot.interruptedProjects) { project in
-                            recoveryCard(project)
+                        ScrollView {
+                            LazyVStack(spacing: 6) {
+                                ForEach(snapshot.interruptedProjects) { project in
+                                    let isSelected = selectedRecoveryProject?.id == project.id
+                                    Button {
+                                        selectedRecoveryProjectID = project.id
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(projectTitle(project))
+                                                .font(.subheadline.weight(.semibold))
+                                                .lineLimit(1)
+                                            Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                            Label(
+                                                "\(recoveryPlayableCount(project)) playable track\(recoveryPlayableCount(project) == 1 ? "" : "s")",
+                                                systemImage: project.lifecycle == .unreadable
+                                                    ? "exclamationmark.octagon.fill" : "lifepreserver.fill"
+                                            )
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(.orange)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(11)
+                                        .background(
+                                            isSelected ? shellRaised : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 9)
+                                        )
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 9)
+                                                .stroke(isSelected ? Color.accentColor.opacity(0.45) : shellStroke, lineWidth: 1)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(10)
                         }
                     }
-                    .padding(24)
-                    .frame(maxWidth: 900, alignment: .leading)
+                    .frame(minWidth: 240, idealWidth: 270, maxWidth: 320)
+                    .background(shellPanel)
+
+                    if let project = selectedRecoveryProject {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 16) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Recovery Review")
+                                        .font(.title2.weight(.semibold))
+                                    Text("Recover keeps verified playable tracks. Unavailable media and original diagnostics are never silently discarded.")
+                                        .foregroundStyle(.secondary)
+                                }
+                                recoveryCard(project)
+                            }
+                            .padding(24)
+                            .frame(maxWidth: 760, alignment: .leading)
+                        }
+                        .background(shellContent)
+                    }
+                }
+                .onAppear {
+                    if selectedRecoveryProject == nil {
+                        selectedRecoveryProjectID = snapshot.interruptedProjects.first?.id
+                    }
                 }
             }
         }
         .navigationTitle("Recovery")
+    }
+
+    private var selectedRecoveryProject: RecordingProjectSnapshot? {
+        snapshot.interruptedProjects.first { $0.id == selectedRecoveryProjectID }
+            ?? snapshot.interruptedProjects.first
     }
 
     private func recoveryCard(_ project: RecordingProjectSnapshot) -> some View {
@@ -967,7 +1709,7 @@ struct StudioRecorderRootView: View {
                     .font(.title2)
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(project.presentation?.resolvedName ?? "Interrupted Recording")
+                    Text(project.recordingName ?? project.presentation?.resolvedName ?? "Interrupted Recording")
                         .font(.headline)
                     Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption)
@@ -1132,7 +1874,9 @@ struct StudioRecorderRootView: View {
     }
 
     private var isDeliveryActive: Bool {
-        isLocalRecordingActive || streaming.state.isActive
+        isLocalRecordingActive
+            || streaming.state.isActive
+            || (streaming.state.hasFailed && managedYouTube.pendingSession != nil)
     }
 
     private var isLocalRecordingActive: Bool {
@@ -1147,9 +1891,17 @@ struct StudioRecorderRootView: View {
         !snapshot.isCaptureCommandInFlight && !isCaptureTransitioning
     }
 
+    private var isPresentationEditingLocked: Bool {
+        guard !snapshot.isCaptureCommandInFlight, !isPreparingProgram else { return true }
+        return switch snapshot.captureState {
+        case .ready, .recording, .paused: false
+        case .preparing, .stopping, .failed: true
+        }
+    }
+
     private var formattedRecordedDuration: String {
         let seconds = max(Int(snapshot.recordedDuration.rounded(.down)), 0)
-        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        return String(format: "%02d:%02d:%02d", seconds / 3600, (seconds / 60) % 60, seconds % 60)
     }
 
     private var streamArchiveColor: Color {
@@ -1181,6 +1933,21 @@ struct StudioRecorderRootView: View {
         snapshot.availableDisplays.first(where: { snapshot.selectedDisplayIDs.contains($0.id) })?.id
     }
 
+    /// A camera-only stream still needs a raw screen stream as its frame clock. The
+    /// presentation keeps that screen hidden, so it never becomes part of Program.
+    private var previewDisplayID: UInt32? {
+        primarySelectedDisplayID ?? (streaming.state.isActive || isPreparingProgram
+            ? streamingDisplayID(for: snapshot.studioDraft)
+            : nil)
+    }
+
+    private func streamingDisplayID(for draft: StudioDraft?) -> UInt32? {
+        guard let draft else { return nil }
+        let candidates = draft.armedDisplayIDs ?? draft.defaultDisplayIDs
+        return snapshot.availableDisplays.first(where: { candidates.contains($0.id) })?.id
+            ?? snapshot.availableDisplays.first?.id
+    }
+
     private var selectedDisplayName: String {
         snapshot.availableDisplays.first(where: { $0.id == primarySelectedDisplayID })?.title ?? "Selected display"
     }
@@ -1191,7 +1958,7 @@ struct StudioRecorderRootView: View {
     private var presentationBinding: Binding<CapturePresentationSnapshot> {
         Binding(
             get: { snapshot.studioDraft?.presentation ?? .default },
-            set: { model.send(.setDraftPresentation($0)) }
+            set: { applyPresentationEdit($0) }
         )
     }
 
@@ -1202,8 +1969,18 @@ struct StudioRecorderRootView: View {
                     ? (liveScene.programPresentation ?? snapshot.studioDraft?.presentation ?? .default)
                     : (snapshot.studioDraft?.presentation ?? .default)
             },
-            set: { model.send(.setDraftPresentation($0)) }
+            set: { applyPresentationEdit($0) }
         )
+    }
+
+    private func applyPresentationEdit(_ presentation: CapturePresentationSnapshot) {
+        if let incompatibility = liveSceneContract?.incompatibility(for: presentation) {
+            sceneSwitchError = incompatibility.message
+            return
+        }
+        if model.send(.setDraftPresentation(presentation)) == .ignored {
+            sceneSwitchError = "This session cannot change the scene presentation right now."
+        }
     }
 
     private var manualZoomBaseFraming: ScreenFramingSnapshot? {
@@ -1269,6 +2046,21 @@ struct StudioRecorderRootView: View {
         }
         guard externalPointerMonitor == nil else { return }
         let pointerTracker = manualZoomPointerTracker
+        let armedDisplayIDs = snapshot.studioDraft?.armedDisplayIDs ?? snapshot.selectedDisplayIDs
+        let capturedDisplays = NSScreen.screens.compactMap { screen -> CapturedDisplay? in
+            guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                  armedDisplayIDs.contains(id) else { return nil }
+            return CapturedDisplay(id: id, frame: screen.frame)
+        }
+        if snapshot.studioDraft?.presentation.framing.mode == .followCursor {
+            pointerTracker.configureViewportPlanner(
+                displays: capturedDisplays,
+                outputSize: snapshot.studioDraft?.presentation.canvas.pixelSize ?? CGSize(width: 1_920, height: 1_080)
+            )
+        } else {
+            pointerTracker.configureViewportPlanner(displays: [], outputSize: .zero)
+        }
+        let model = model
         externalPointerMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.mouseMoved, .leftMouseDragged]
         ) { _ in
@@ -1278,6 +2070,15 @@ struct StudioRecorderRootView: View {
                 return
             }
             pointerTracker.update(point, for: displayID)
+            if let decision = pointerTracker.viewportDecision(
+                cursor: point,
+                at: ProcessInfo.processInfo.systemUptime
+            ) {
+                Task { @MainActor in
+                    guard model.snapshot.selectedDisplayIDs != [decision.displayID] else { return }
+                    model.send(.setActiveFollowCursorDisplay(decision.displayID))
+                }
+            }
         }
     }
 
@@ -1319,8 +2120,109 @@ struct StudioRecorderRootView: View {
         snapshot.studioDraft?.destination.warning == .unwritable ? .red : .secondary
     }
 
+    @ViewBuilder
+    private var streamDestinationControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if streamingSettings.usesManagedYouTube {
+                if managedYouTube.isAuthorized {
+                    Label("Connected to YouTube", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                    HStack(spacing: 6) {
+                        Picker("Broadcast", selection: $managedYouTube.selectedBroadcastID) {
+                            Text("Create new private event").tag(Optional<String>.none)
+                            ForEach(managedYouTube.upcomingBroadcasts) { broadcast in
+                                Text(broadcastPickerLabel(broadcast))
+                                    .tag(Optional(broadcast.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(managedYouTube.pendingSession != nil || managedYouTube.isLoadingBroadcasts)
+
+                        Button {
+                            Task {
+                                await managedYouTube.refreshUpcomingBroadcasts(
+                                    clientID: streamingSettings.oauthClientID
+                                )
+                            }
+                        } label: {
+                            if managedYouTube.isLoadingBroadcasts {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Refresh scheduled YouTube broadcasts")
+                        .disabled(managedYouTube.isLoadingBroadcasts || managedYouTube.pendingSession != nil)
+                    }
+                    if let broadcastListError = managedYouTube.broadcastListError {
+                        Text(broadcastListError)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    } else if managedYouTube.upcomingBroadcasts.isEmpty,
+                              !managedYouTube.isLoadingBroadcasts {
+                        Text("No scheduled broadcasts found. A private event will be created.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !streamingSettings.isManagedYouTubeConfigured {
+                    Button("Open Streaming Settings…") {
+                        UserDefaults.standard.set(SettingsTab.streaming.rawValue, forKey: "selectedSettingsTab")
+                        openWindow(id: "settings")
+                    }
+                    Text("YouTube connection is not configured in this build.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else {
+                    Button {
+                        isShowingYouTubeAuthorization = true
+                    } label: {
+                        if managedYouTube.state == .authorizing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Connect YouTube", systemImage: "person.crop.circle.badge.plus")
+                        }
+                    }
+                    .disabled(managedYouTube.state == .authorizing)
+                    if case .failed(let message) = managedYouTube.state {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else {
+                Text("Custom stream key")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    SecureField("YouTube stream key", text: $streamingSettings.streamKey)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Save") { streamingSettings.save() }
+                        .disabled(streamingSettings.streamKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Text(
+                    streamingSettings.credentialError
+                        ?? "Save this key to macOS Keychain. The RTMPS server stays in Streaming Settings."
+                )
+                    .font(.caption2)
+                    .foregroundStyle(streamingSettings.credentialError == nil ? Color.secondary : Color.orange)
+            }
+        }
+        .controlSize(.small)
+        .frame(width: 286, alignment: .leading)
+        .disabled(isLocalRecordingActive || isPreparingProgram || managedYouTube.pendingSession != nil)
+    }
+
+    private func broadcastPickerLabel(_ broadcast: YouTubeScheduledBroadcast) -> String {
+        "\(broadcast.title) · \(broadcast.scheduledStartTime.formatted(date: .abbreviated, time: .shortened)) · \(broadcast.privacyStatus.capitalized)"
+    }
+
     private var streamConfiguration: YouTubeStreamConfiguration? {
-        streamingSettings.configuration(
+        if streamingSettings.usesManagedYouTube { return managedYouTube.configuration }
+        return streamingSettings.configuration(
             canvasSize: CGSize(width: canvasWidth, height: canvasHeight),
             frameRate: snapshot.studioDraft?.frameRate ?? 30
         )
@@ -1330,10 +2232,13 @@ struct StudioRecorderRootView: View {
         guard let draft = snapshot.studioDraft else { return nil }
         return StreamPreflightRequest(
             deliveryMode: deliveryMode,
-            serverURL: streamingSettings.serverURL,
-            hasStreamKey: !streamingSettings.streamKey
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .isEmpty,
+            serverURL: streamingSettings.usesManagedYouTube
+                ? YouTubeStreamingSettingsStore.defaultServerURL
+                : streamingSettings.serverURL,
+            hasStreamKey: streamingSettings.usesManagedYouTube
+                ? managedYouTube.isAuthorized
+                    && streamingSettings.isManagedYouTubeConfigured
+                : !streamingSettings.streamKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             canvasSize: draft.presentation.canvas.pixelSize,
             frameRate: draft.frameRate,
             videoBitRate: streamingSettings.videoBitRate,
@@ -1345,6 +2250,7 @@ struct StudioRecorderRootView: View {
             selectedDisplaySizes: snapshot.availableDisplays
                 .filter { draft.selectedDisplayIDs.contains($0.id) }
                 .map(\.pixelSize),
+            audioBitRate: streamingSettings.audioBitRate,
             revision: streamPreflightRevision
         )
     }
@@ -1369,16 +2275,33 @@ struct StudioRecorderRootView: View {
         return .secondary
     }
 
+    private func youtubeServerHealthSummary(_ health: YouTubeRemoteHealth) -> String {
+        if let issue = health.issues.first {
+            return "YouTube: \(health.status.rawValue) · \(issue.reason ?? issue.type)"
+        }
+        return "YouTube: \(health.status.rawValue)"
+    }
+
+    private func stopYouTubeStream() {
+        let shouldCompleteManagedEvent = managedYouTube.pendingSession != nil
+            && (streaming.state.isActive || streaming.state.hasFailed)
+        let clientID = streamingSettings.oauthClientID
+        streaming.stop {
+            guard shouldCompleteManagedEvent else { return }
+            Task { await managedYouTube.complete(clientID: clientID) }
+        }
+    }
+
     private func updateSourceHealthMonitoring() {
         guard streaming.state.isActive, let draft = snapshot.studioDraft else {
             liveScene.monitorSourceHealth([])
             return
         }
-        guard let primarySelectedDisplayID else {
+        guard let previewDisplayID else {
             liveScene.monitorSourceHealth([])
             return
         }
-        var expected: Set<LiveSourceID> = [.screen(displayID: primarySelectedDisplayID)]
+        var expected: Set<LiveSourceID> = [.screen(displayID: previewDisplayID)]
         if draft.capturesCamera { expected.insert(.camera) }
         if streaming.state.isActive {
             if draft.capturesSystemAudio { expected.insert(.systemAudio) }
@@ -1393,8 +2316,8 @@ struct StudioRecorderRootView: View {
             if isLocalRecordingActive {
                 model.send(.toggleRecording)
             }
-            if streaming.state.isActive {
-                streaming.stop()
+            if streaming.state.isActive || streaming.state.hasFailed {
+                stopYouTubeStream()
                 Task { await liveScene.setStreamPipeline(nil, audio: nil) }
             }
             return
@@ -1404,95 +2327,176 @@ struct StudioRecorderRootView: View {
 
     @MainActor
     private func startDelivery() async {
-        guard snapshot.route == .studio,
-              let draft = snapshot.studioDraft else { return }
+        guard snapshot.route == .studio else { return }
+        armActiveProfileSources()
+        guard let draft = snapshot.studioDraft else { return }
         if deliveryMode.includesStreaming {
-            guard let report = await runStreamPreflight(),
-                  report.canStart,
-                  snapshot.route == .studio,
-                  let streamConfiguration else { return }
-            isPreparingProgram = true
-            defer { isPreparingProgram = false }
-            let audio = LiveStreamAudioConfiguration(
-                capturesSystemAudio: draft.capturesSystemAudio,
-                capturesMicrophone: draft.capturesMicrophone,
-                microphoneDeviceID: draft.microphoneDeviceID,
-                excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
-            )
-            let requiresCamera = draft.capturesCamera && draft.presentation.camera.isVisible
-            liveScene.beginProgramPresentation(draft.presentation)
-            await streaming.pipeline.prepare(
-                configuration: streamConfiguration,
-                presentation: draft.presentation,
-                includesCursor: draft.includeCursor,
-                requiresCamera: requiresCamera
-            )
-            await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
-            do {
-                guard let primarySelectedDisplayID else {
-                    throw LiveProgramReadinessError.screenUnavailable
-                }
-                try await liveScene.awaitProgramReady(
-                    displayID: primarySelectedDisplayID,
-                    presentation: draft.presentation,
-                    requiresCamera: requiresCamera
-                )
-            } catch {
-                await cancelPreparedStream()
-                streamPreflightReport = report.replacingProgramReadiness(
-                    state: .blocked,
-                    detail: error.localizedDescription
-                )
-                return
-            }
-            guard snapshot.route == .studio,
-                  snapshot.studioDraft == draft,
-                  deliveryMode.includesStreaming else {
-                await cancelPreparedStream()
-                streamPreflightReport = report.replacingProgramReadiness(
-                    state: .blocked,
-                    detail: "The scene changed during preparation. Review it and start again."
-                )
-                return
-            }
-            streamPreflightReport = report.replacingProgramReadiness(
-                state: .passed,
-                detail: "A current screen frame and every visible camera source rendered with this scene before publishing."
-            )
-            let localArchive: LiveProgramArchiveSession?
-            if deliveryMode == .stream {
-                guard let request = model.makeCaptureRequest(retentionPolicy: .programOnly),
-                      let archive = streamArchive.start(
-                        request: request,
-                        streamConfiguration: streamConfiguration,
-                        audioConfiguration: audio
-                      ) else {
-                    await cancelPreparedStream()
-                    return
-                }
-                localArchive = archive
-            } else {
-                localArchive = nil
-            }
-            streamingSceneContract = StudioSceneLiveContract(
-                initialPresentation: draft.presentation,
-                capturesCamera: draft.capturesCamera,
-                recordsCursorTelemetry: draft.includeCursor || draft.presentation.framing.mode == .followCursor
-            )
-            shortcutMonitor.clearVisibleShortcut()
-            streaming.start(
-                configuration: streamConfiguration,
-                presentation: draft.presentation,
-                includesCursor: draft.includeCursor,
-                audioConfiguration: audio,
-                localArchive: localArchive
-            )
+            guard await prepareAndStartStream(
+                draft: draft,
+                createsLocalArchive: deliveryMode == .stream
+            ) else { return }
         }
         if deliveryMode.includesRecording {
             shortcutMonitor.clearVisibleShortcut()
             model.useCameraPreviewSessionForRecording(liveScene.cameraSession)
             model.send(.toggleRecording)
+            if let projectID = snapshot.activeCaptureRequest?.id,
+               streamingSettings.usesManagedYouTube {
+                await managedYouTube.associateLocalProject(projectID)
+            }
         }
+    }
+
+    @MainActor
+    private func prepareAndStartStream(
+        draft: StudioDraft,
+        createsLocalArchive: Bool
+    ) async -> Bool {
+        guard let report = await runStreamPreflight(),
+              report.canStart,
+              snapshot.route == .studio else { return false }
+        let streamConfiguration: YouTubeStreamConfiguration
+        let localArchiveRequest = createsLocalArchive
+            ? model.makeCaptureRequest(retentionPolicy: .programOnly)
+            : nil
+        if createsLocalArchive, localArchiveRequest == nil { return false }
+        if streamingSettings.usesManagedYouTube {
+            guard managedYouTube.isAuthorized else { return false }
+            do {
+                streamConfiguration = try await managedYouTube.prepareConfiguration(
+                    clientID: streamingSettings.oauthClientID,
+                    canvasSize: draft.presentation.canvas.pixelSize,
+                    frameRate: draft.frameRate,
+                    videoBitRate: streamingSettings.videoBitRate,
+                    audioBitRate: streamingSettings.audioBitRate,
+                    localProjectID: localArchiveRequest?.id,
+                    deliveryMode: deliveryMode
+                )
+            } catch {
+                managedYouTube.reportFailure(error.localizedDescription)
+                return false
+            }
+        } else {
+            guard let manualConfiguration = self.streamConfiguration else { return false }
+            streamConfiguration = manualConfiguration
+        }
+        isPreparingProgram = true
+        defer { isPreparingProgram = false }
+        let audio = LiveStreamAudioConfiguration(
+            capturesSystemAudio: draft.capturesSystemAudio,
+            capturesMicrophone: draft.capturesMicrophone,
+            microphoneDeviceID: draft.microphoneDeviceID,
+            excludesStudioRecorderAudio: draft.excludeStudioRecorderAudio
+        )
+        let requiresCamera = draft.capturesCamera && draft.presentation.camera.isVisible
+        liveScene.beginProgramPresentation(draft.presentation)
+        await streaming.pipeline.prepare(
+            configuration: streamConfiguration,
+            presentation: draft.presentation,
+            includesCursor: draft.includeCursor,
+            requiresCamera: requiresCamera
+        )
+        await liveScene.setStreamPipeline(streaming.pipeline, audio: audio)
+        do {
+            guard let streamingDisplayID = streamingDisplayID(for: draft) else {
+                throw LiveProgramReadinessError.screenUnavailable
+            }
+            await liveScene.startScreenPreview(
+                for: streamingDisplayID,
+                frameRate: draft.frameRate,
+                preservingLastFrame: true
+            )
+            try await liveScene.awaitProgramReady(
+                displayID: streamingDisplayID,
+                presentation: draft.presentation,
+                requiresCamera: requiresCamera
+            )
+        } catch {
+            await cancelPreparedStream()
+            streamPreflightReport = report.replacingProgramReadiness(
+                state: .blocked,
+                detail: error.localizedDescription
+            )
+            return false
+        }
+        guard snapshot.route == .studio,
+              snapshot.studioDraft == draft,
+              deliveryMode.includesStreaming else {
+            await cancelPreparedStream()
+            streamPreflightReport = report.replacingProgramReadiness(
+                state: .blocked,
+                detail: "The scene changed during preparation. Review it and start again."
+            )
+            return false
+        }
+        streamPreflightReport = report.replacingProgramReadiness(
+            state: .passed,
+            detail: "A current screen frame and every visible camera source rendered with this scene before publishing."
+        )
+        let localArchive: LiveProgramArchiveSession?
+        if createsLocalArchive {
+            guard let request = localArchiveRequest,
+                  let archive = streamArchive.start(
+                    request: request,
+                    streamConfiguration: streamConfiguration,
+                    audioConfiguration: audio
+                  ) else {
+                await cancelPreparedStream()
+                return false
+            }
+            localArchive = archive
+        } else {
+            localArchive = nil
+        }
+        streamingSceneContract = StudioSceneLiveContract(
+            initialPresentation: draft.presentation,
+            capturesCamera: draft.capturesCamera,
+            recordsCursorTelemetry: draft.includeCursor || draft.presentation.framing.mode == .followCursor
+        )
+        shortcutMonitor.clearVisibleShortcut()
+        let configurationProvider: LiveProgramPipeline.ConfigurationProvider?
+        if streamingSettings.usesManagedYouTube {
+            let clientID = streamingSettings.oauthClientID
+            configurationProvider = { [managedYouTube] in
+                try await managedYouTube.refreshedConfiguration(
+                    clientID: clientID,
+                    previous: streamConfiguration
+                )
+            }
+        } else {
+            configurationProvider = nil
+        }
+        streaming.start(
+            configuration: streamConfiguration,
+            presentation: draft.presentation,
+            includesCursor: draft.includeCursor,
+            audioConfiguration: audio,
+            localArchive: localArchive,
+            configurationProvider: configurationProvider
+        )
+        return true
+    }
+
+    @MainActor
+    private func retryYouTubeDuringRecording() async {
+        guard LiveStreamRetryPolicy.canRetry(
+            streamState: streaming.state,
+            captureState: snapshot.captureState
+        ), let draft = snapshot.studioDraft else { return }
+        _ = await prepareAndStartStream(draft: draft, createsLocalArchive: false)
+    }
+
+    private func armActiveProfileSources() {
+        guard let draft = snapshot.studioDraft,
+              let profile = sceneLibrary.activeProfile else { return }
+        var displayIDs: Set<UInt32> = []
+        var armsCamera = false
+        for scene in profile.scenes {
+            let sources = scene.sources ?? StudioSceneSourceState(draft: draft)
+            displayIDs.formUnion(sources.selectedDisplayIDs ?? draft.defaultDisplayIDs)
+            armsCamera = armsCamera || sources.capturesCamera
+        }
+        model.send(.setDraftArmedSources(displayIDs: displayIDs, camera: armsCamera))
     }
 
     @MainActor
@@ -1500,9 +2504,10 @@ struct StudioRecorderRootView: View {
         liveScene.cancelProgramPreparation()
         await streaming.pipeline.cancelPreparation()
         await liveScene.setStreamPipeline(nil, audio: nil)
-        if let primarySelectedDisplayID {
+        if let previewDisplayID {
             await liveScene.startScreenPreview(
-                for: primarySelectedDisplayID,
+                for: previewDisplayID,
+                frameRate: snapshot.studioDraft?.frameRate ?? 30,
                 preservingLastFrame: true
             )
         }
@@ -1547,7 +2552,87 @@ struct StudioRecorderRootView: View {
 
     private var isSelectedSceneModified: Bool {
         guard let scene = sceneLibrary.scene(id: selectedSceneID) else { return false }
-        return scene.isModified(comparedTo: snapshot.studioDraft?.presentation)
+        return scene.isModified(
+            comparedTo: snapshot.studioDraft?.presentation,
+            sources: snapshot.studioDraft.map(StudioSceneSourceState.init(draft:)),
+            configuration: snapshot.studioDraft.map(sceneConfiguration(from:))
+        )
+    }
+
+    private func applyProfile(_ id: UUID) {
+        do {
+            try sceneLibrary.selectProfile(id)
+            applyActiveProfile()
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func commitProfileName() {
+        let name = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let action = profileNameAction else { return }
+        do {
+            switch action {
+            case .create:
+                _ = try sceneLibrary.addProfile(named: name)
+                applyActiveProfile()
+            case .rename:
+                try sceneLibrary.renameActiveProfile(name)
+            }
+            profileNameAction = nil
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func duplicateActiveProfile() {
+        guard let active = sceneLibrary.activeProfile else { return }
+        do {
+            _ = try sceneLibrary.addProfile(named: "\(active.name) Copy", duplicating: active)
+            applyActiveProfile()
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func deleteActiveProfile() {
+        do {
+            try sceneLibrary.removeActiveProfile()
+            applyActiveProfile()
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func applyActiveProfile() {
+        guard let profile = sceneLibrary.activeProfile,
+              snapshot.studioDraft != nil else { return }
+        let scene = profile.scenes.first(where: { $0.id == profile.lastSceneID })
+            ?? profile.scenes.first
+        model.send(.applyProfile(profile.configuration, scene))
+        selectedSceneID = scene?.id
+        if let draft = snapshot.studioDraft {
+            do {
+                try sceneLibrary.hydrateLegacySources(using: StudioSceneSourceState(draft: draft))
+            } catch {
+                sceneLibraryError = error.localizedDescription
+            }
+        }
+    }
+
+    private func persistActiveProfileConfiguration(from draft: StudioDraft) {
+        guard let profile = sceneLibrary.activeProfile else { return }
+        let configuration = StudioProfileConfiguration(
+            draft: draft,
+            cameraOrientation: draft.cameraOrientation,
+            socialGuide: draft.socialGuide
+        )
+        guard configuration != profile.configuration else { return }
+        do {
+            try sceneLibrary.updateActiveConfiguration(configuration)
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
     }
 
     private func applyScene(_ scene: StudioScenePreset) {
@@ -1556,7 +2641,7 @@ struct StudioRecorderRootView: View {
             return
         }
         let previousPresentation = snapshot.studioDraft?.presentation ?? scene.presentation
-        guard case .sceneSwitchAccepted(let event) = model.send(.switchScene(scene.presentation)) else {
+        guard case .sceneSwitchAccepted(let event) = model.send(.switchScenePreset(scene)) else {
             sceneSwitchError = "Studio Recorder could not apply this scene to the current session."
             return
         }
@@ -1567,15 +2652,27 @@ struct StudioRecorderRootView: View {
         isManualZoomActive = false
         manualZoomRestoreFraming = nil
         selectedSceneID = scene.id
+        try? sceneLibrary.selectScene(scene.id)
     }
 
     private func saveCurrentScene() {
-        guard let presentation = snapshot.studioDraft?.presentation else { return }
+        guard let draft = snapshot.studioDraft else { return }
         let scene = selectedSceneID.flatMap(sceneLibrary.scene(id:)).map {
-            StudioScenePreset(id: $0.id, presentation: presentation)
-        } ?? StudioScenePreset(presentation: presentation)
+            StudioScenePreset(
+                id: $0.id,
+                presentation: draft.presentation,
+                sources: StudioSceneSourceState(draft: draft),
+                configuration: sceneConfiguration(from: draft),
+                incomingTransition: $0.incomingTransition
+            )
+        } ?? StudioScenePreset(
+            presentation: draft.presentation,
+            sources: StudioSceneSourceState(draft: draft),
+            configuration: sceneConfiguration(from: draft)
+        )
         do {
             try sceneLibrary.save(scene)
+            try sceneLibrary.selectScene(scene.id)
             selectedSceneID = scene.id
         } catch {
             sceneLibraryError = error.localizedDescription
@@ -1583,13 +2680,19 @@ struct StudioRecorderRootView: View {
     }
 
     private func createScene() {
-        guard var presentation = snapshot.studioDraft?.presentation else { return }
+        guard let draft = snapshot.studioDraft else { return }
+        var presentation = draft.presentation
         presentation.name = nextSceneName()
-        let scene = StudioScenePreset(presentation: presentation)
+        let scene = StudioScenePreset(
+            presentation: presentation,
+            sources: StudioSceneSourceState(draft: draft),
+            configuration: sceneConfiguration(from: draft)
+        )
         do {
             try sceneLibrary.save(scene)
+            try sceneLibrary.selectScene(scene.id)
             selectedSceneID = scene.id
-            model.send(.setDraftPresentation(scene.presentation))
+            model.send(.switchScenePreset(scene))
         } catch {
             sceneLibraryError = error.localizedDescription
         }
@@ -1621,11 +2724,17 @@ struct StudioRecorderRootView: View {
         guard let selected = sceneLibrary.scene(id: selectedSceneID) else { return }
         var presentation = selected.presentation
         presentation.name = uniqueSceneName(base: "\(selected.name) Copy")
-        let duplicate = StudioScenePreset(presentation: presentation)
+        let duplicate = StudioScenePreset(
+            presentation: presentation,
+            sources: selected.sources,
+            configuration: selected.configuration,
+            incomingTransition: selected.incomingTransition
+        )
         do {
             try sceneLibrary.save(duplicate)
+            try sceneLibrary.selectScene(duplicate.id)
             selectedSceneID = duplicate.id
-            model.send(.setDraftPresentation(duplicate.presentation))
+            model.send(.switchScenePreset(duplicate))
         } catch {
             sceneLibraryError = error.localizedDescription
         }
@@ -1650,12 +2759,40 @@ struct StudioRecorderRootView: View {
         }
     }
 
+    private func setSelectedSceneTransitionEffect(_ effect: StudioSceneTransitionEffect) {
+        guard var scene = sceneLibrary.scene(id: selectedSceneID) else { return }
+        scene.incomingTransition.effect = effect
+        do {
+            try sceneLibrary.save(scene)
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
+    private func setSelectedSceneTransitionDuration(_ duration: TimeInterval) {
+        guard var scene = sceneLibrary.scene(id: selectedSceneID) else { return }
+        scene.incomingTransition.duration = duration
+        do {
+            try sceneLibrary.save(scene)
+        } catch {
+            sceneLibraryError = error.localizedDescription
+        }
+    }
+
     private func uniqueSceneName(base: String) -> String {
         let usedNames = Set(sceneLibrary.scenes.map(\.name))
         guard usedNames.contains(base) else { return base }
         var index = 2
         while usedNames.contains("\(base) \(index)") { index += 1 }
         return "\(base) \(index)"
+    }
+
+    private func sceneConfiguration(from draft: StudioDraft) -> StudioProfileConfiguration {
+        StudioProfileConfiguration(
+            draft: draft,
+            cameraOrientation: draft.cameraOrientation,
+            socialGuide: draft.socialGuide
+        )
     }
 
     private func nextSceneName() -> String {
@@ -1731,6 +2868,65 @@ struct StudioRecorderRootView: View {
     }
 }
 
+private struct CaptureTransitionOverlay: View {
+    let presentation: CaptureTransitionPresentation
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.38)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 16) {
+                    if presentation.kind == .preparing {
+                        ProgressView()
+                            .controlSize(.large)
+                    } else {
+                        Image(systemName: "externaldrive.badge.timemachine")
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .symbolEffect(.pulse)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(presentation.title)
+                            .font(.system(size: 17, weight: .semibold))
+                        Text(presentation.detail)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let progress = presentation.progress {
+                    VStack(spacing: 7) {
+                        ProgressView(value: progress)
+                            .progressViewStyle(.linear)
+                        HStack {
+                            Text("Keep Studio Recorder open")
+                            Spacer()
+                            Text("\(Int((progress * 100).rounded()))%")
+                                .monospacedDigit()
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(24)
+            .frame(width: 370)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10))
+            }
+            .shadow(color: .black.opacity(0.28), radius: 30, y: 16)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(presentation.title). \(presentation.detail)")
+            .accessibilityValue(presentation.progress.map { "\(Int(($0 * 100).rounded())) percent" } ?? "In progress")
+        }
+    }
+}
+
 private struct ProjectRow: View {
     let project: RecordingProjectSnapshot
 
@@ -1741,7 +2937,7 @@ private struct ProjectRow: View {
                 .frame(width: 92, height: 54)
                 .overlay(Image(systemName: statusIcon).foregroundStyle(statusColor))
             VStack(alignment: .leading, spacing: 4) {
-                Text(project.presentation?.resolvedName ?? "Scene 1")
+                Text(project.recordingName ?? project.presentation?.resolvedName ?? "Untitled Recording")
                     .fontWeight(.medium)
                 Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s") · \(project.captureProfile)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1796,6 +2992,15 @@ private struct StudioInspector: View {
         var id: String { rawValue }
     }
 
+    private enum QuickSettings: String, Identifiable {
+        case canvas
+        case elements
+        case capture
+        case resilience
+
+        var id: String { rawValue }
+    }
+
     let displays: [AvailableDisplay]
     @Binding var selectedDisplayIDs: Set<UInt32>
     let microphones: [AvailableMicrophone]
@@ -1803,175 +3008,125 @@ private struct StudioInspector: View {
     let cameras: [AvailableCamera]
     @Binding var selectedCameraID: String?
     @Binding var capturesCamera: Bool
+    @Binding var cameraOrientation: StudioCameraOrientation
+    @Binding var cameraSyncOffset: CGFloat
+    @Binding var socialGuide: StudioSocialGuide
     @Binding var capturesMicrophone: Bool
     @Binding var microphoneDeviceID: String?
     let microphoneFallback: MicrophoneFallback?
     @Binding var includeCursor: Bool
     @Binding var excludeStudioRecorder: Bool
     @Binding var excludeStudioRecorderAudio: Bool
-    let codecPolicy: RecordingCodecPolicy
+    @Binding var codecPolicy: RecordingCodecPolicy
+    @Binding var frameRate: Int
     @Binding var retentionPolicy: MediaRetentionPolicy
     @Binding var presentation: CapturePresentationSnapshot
     @Binding var selectedCanvasSource: StudioCanvasSource?
     let hasShortcutMonitoringAccess: Bool
     let onRequestShortcutMonitoringAccess: () -> Void
     let isLocked: Bool
+    let isPresentationLocked: Bool
     @State private var activeSourceSettings: SourceSettings?
+    @State private var activeQuickSettings: QuickSettings?
+    @State private var overlayImportError: String?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                inspectorHeader("Sources")
-                VStack(spacing: 0) {
-                    sourceSettingsButton(
-                        .screens,
-                        title: "Screens",
-                        detail: screenSourceSummary,
-                        icon: "display.2"
-                    )
-                    sourceDivider
-                    sourceSettingsButton(
-                        .camera,
-                        title: "Camera",
-                        detail: capturesCamera ? selectedCameraName : "Off",
-                        icon: "video"
-                    )
-                    sourceDivider
-                    sourceSettingsButton(
-                        .microphone,
-                        title: "Microphone & audio",
-                        detail: audioSourceSummary,
-                        icon: "waveform",
-                        showsWarning: microphoneSourceNeedsAttention
-                    )
-                }
-                .background(Color.primary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.primary.opacity(0.075), lineWidth: 1)
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("Studio setup")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 52)
 
-                Divider().padding(.top, 4)
-                inspectorHeader("Canvas & Framing")
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Output", selection: canvasPresetBinding) {
-                        ForEach(CaptureCanvasPreset.allCases) { preset in
-                            Text(preset.label).tag(Optional(preset))
-                        }
-                        Divider()
-                        Text("Custom").tag(Optional<CaptureCanvasPreset>.none)
-                    }
+            Divider()
+            inspectorHeader("Sources")
+            VStack(spacing: 0) {
+                sourceSettingsButton(
+                    .screens,
+                    title: "Screens",
+                    detail: screenSourceSummary,
+                    icon: "display.2"
+                )
+                sourceDivider
+                sourceSettingsButton(
+                    .camera,
+                    title: "Camera",
+                    detail: capturesCamera ? selectedCameraName : "Off",
+                    icon: "video.fill"
+                )
+                sourceDivider
+                sourceSettingsButton(
+                    .microphone,
+                    title: "Microphone & audio",
+                    detail: audioSourceSummary,
+                    icon: "mic.fill",
+                    showsWarning: microphoneSourceNeedsAttention
+                )
+            }
+            .background(Color.primary.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.075), lineWidth: 1)
+            }
+            .padding(.horizontal, 10)
 
-                    if presentation.canvas.preset == nil {
-                        HStack(spacing: 8) {
-                            TextField("Width", value: canvasWidthBinding, format: .number)
-                            Text("×").foregroundStyle(.secondary)
-                            TextField("Height", value: canvasHeightBinding, format: .number)
-                        }
-                        .textFieldStyle(.roundedBorder)
-                    }
+            inspectorHeader("Quick setup")
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                quickSettingsButton(
+                    .canvas,
+                    title: "Canvas",
+                    detail: presentation.canvas.preset?.label ?? "Custom",
+                    icon: "aspectratio"
+                )
+                quickSettingsButton(
+                    .elements,
+                    title: "Elements",
+                    detail: presentation.resolvedImageOverlays.isEmpty
+                        ? "None"
+                        : "\(presentation.resolvedImageOverlays.count) added",
+                    icon: "photo.on.rectangle.angled"
+                )
+                quickSettingsButton(
+                    .capture,
+                    title: "Capture",
+                    detail: "\(frameRate) fps",
+                    icon: "cursorarrow.motionlines"
+                )
+                quickSettingsButton(
+                    .resilience,
+                    title: "Safety",
+                    detail: retentionPolicy == .editableTracks ? "Editable tracks" : "Program only",
+                    icon: "externaldrive.badge.checkmark"
+                )
+            }
+            .padding(.horizontal, 10)
 
-                    Picker("Screen", selection: framingModeBinding) {
-                        ForEach(ScreenFramingMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
+            Spacer(minLength: 12)
 
-                    if presentation.framing.mode != .fullDisplay {
-                        labeledSlider(
-                            "Zoom",
-                            value: framingScaleBinding,
-                            range: 0.15...1,
-                            valueText: String(format: "%.1f×", 1 / presentation.framing.scale)
-                        )
-                        labeledSlider("Horizontal", value: framingCenterXBinding, range: 0...1)
-                        labeledSlider("Vertical", value: framingCenterYBinding, range: 0...1)
-                        if presentation.framing.mode == .followCursor {
-                            Text("Follow Cursor records scene motion while the full raw display remains recoverable.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Text("Canvas and framing are saved in every scene; source placement stays independently editable.")
-                        .font(.caption2)
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recoverable capture")
+                        .font(.caption.weight(.semibold))
+                    Text("\(frameRate) fps · \(codecPolicy == .automatic ? "HEVC / H.264" : "H.264")")
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                .disabled(isLocked)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 12)
-
-                Divider().padding(.top, 4)
-                inspectorHeader("Capture")
-                contractRow("Frame rate", value: "30 fps")
-                contractRow("Codec", value: codecPolicy == .automatic ? "HEVC · H.264 fallback" : "H.264")
-                Toggle("Include cursor", isOn: $includeCursor)
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                if includeCursor {
-                    VStack(alignment: .leading, spacing: 8) {
-                        labeledSlider(
-                            "Export cursor size",
-                            value: cursorScaleBinding,
-                            range: 1...4,
-                            valueText: String(format: "%.1f×", presentation.cursor.scale)
-                        )
-                        Toggle("Highlight clicks", isOn: cursorClickBinding)
-                        Text("Cursor size and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                }
-                Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                if presentation.cursor.resolvedShowsShortcutKeys {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if !hasShortcutMonitoringAccess {
-                            Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                            Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(isLocked)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                }
-                Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
-                    .disabled(isLocked)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-
-                Divider().padding(.top, 4)
-                inspectorHeader("Resilience")
-                Picker("After recording", selection: $retentionPolicy) {
-                    ForEach(MediaRetentionPolicy.allCases) { policy in
-                        Text(policy.label).tag(policy)
-                    }
-                }
-                .disabled(isLocked)
-                .padding(.horizontal, 14)
-                Text(retentionPolicy == .editableTracks
-                    ? "Keeps screen and camera tracks independently editable."
-                    : "Finishes one composed MOV, verifies it, then removes independent raw tracks.")
-                    .font(.caption2)
-                    .foregroundStyle(retentionPolicy == .programOnly ? .orange : .secondary)
-                    .padding(.horizontal, 14)
-                Text("Raw tracks and an append-only journal are written into one recoverable project package.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.bottom, 18)
+                Spacer()
             }
+            .padding(12)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .padding(10)
         }
         .onChange(of: capturesCamera) { _, enabled in
             if enabled, !cameras.isEmpty {
@@ -1985,6 +3140,255 @@ private struct StudioInspector: View {
                 selectedCanvasSource = nil
             }
         }
+        .alert("Couldn’t Add PNG", isPresented: Binding(
+            get: { overlayImportError != nil },
+            set: { if !$0 { overlayImportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { overlayImportError = nil }
+        } message: {
+            Text(overlayImportError ?? "Unknown error")
+        }
+    }
+
+    private func quickSettingsButton(
+        _ settings: QuickSettings,
+        title: String,
+        detail: String,
+        icon: String
+    ) -> some View {
+        let isPresented = Binding(
+            get: { activeQuickSettings == settings },
+            set: { if !$0 { activeQuickSettings = nil } }
+        )
+
+        return Button {
+            activeSourceSettings = nil
+            activeQuickSettings = settings
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: icon)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Spacer()
+                    Image(systemName: isLocked ? "lock.fill" : "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+            .background(
+                activeQuickSettings == settings
+                    ? Color.accentColor.opacity(0.13)
+                    : Color.primary.opacity(0.04),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(detail)")
+        .popover(isPresented: isPresented, arrowEdge: .trailing) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Label(title, systemImage: icon)
+                        .font(.headline)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 16)
+                        .padding(.bottom, 10)
+                    quickSettingsPanel(settings)
+                }
+            }
+            .frame(width: 380)
+            .frame(maxHeight: 620)
+        }
+    }
+
+    @ViewBuilder
+    private func quickSettingsPanel(_ settings: QuickSettings) -> some View {
+        switch settings {
+        case .canvas:
+            canvasAndFramingControls
+        case .elements:
+            imageElementsControls
+        case .capture:
+            captureControls
+        case .resilience:
+            resilienceControls
+        }
+    }
+
+    private var canvasAndFramingControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Output", selection: canvasPresetBinding) {
+                ForEach(CaptureCanvasPreset.allCases) { preset in
+                    Text(preset.label).tag(Optional(preset))
+                }
+                Divider()
+                Text("Custom").tag(Optional<CaptureCanvasPreset>.none)
+            }
+            .disabled(isLocked)
+
+            if presentation.canvas.preset == nil {
+                HStack(spacing: 8) {
+                    TextField("Width", value: canvasWidthBinding, format: .number)
+                    Text("×").foregroundStyle(.secondary)
+                    TextField("Height", value: canvasHeightBinding, format: .number)
+                }
+                .textFieldStyle(.roundedBorder)
+                .disabled(isLocked)
+            }
+
+            Picker("Screen", selection: framingModeBinding) {
+                ForEach(ScreenFramingMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .disabled(isPresentationLocked)
+
+            if presentation.framing.mode != .fullDisplay {
+                labeledSlider(
+                    "Zoom",
+                    value: framingScaleBinding,
+                    range: 0.15...1,
+                    valueText: String(format: "%.1f×", 1 / presentation.framing.scale)
+                )
+                .disabled(isPresentationLocked)
+                labeledSlider("Horizontal", value: framingCenterXBinding, range: 0...1)
+                    .disabled(isPresentationLocked)
+                labeledSlider("Vertical", value: framingCenterYBinding, range: 0...1)
+                    .disabled(isPresentationLocked)
+                if presentation.framing.mode == .followCursor {
+                    Text("Follow Cursor records scene motion while the full raw display remains recoverable.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text("Canvas and framing are saved in every scene; source placement stays independently editable.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Picker("Safe-area guide", selection: $socialGuide) {
+                ForEach(StudioSocialGuide.allCases) { guide in
+                    Text(guide.label).tag(guide)
+                }
+            }
+            .disabled(isLocked)
+            Text("Guides are preview-only and never appear in recordings or exports.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private var imageElementsControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button("Add PNG…", systemImage: "photo.badge.plus", action: addImageOverlay)
+                .disabled(isPresentationLocked)
+            if presentation.resolvedImageOverlays.isEmpty {
+                Text("Add a transparent logo or graphic, or drop a PNG onto the canvas.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(presentation.resolvedImageOverlays) { overlay in
+                    imageOverlayControls(overlay)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private var captureControls: some View {
+        Picker("Frame rate", selection: $frameRate) {
+            ForEach(CaptureDefaults.supportedFrameRates, id: \.self) { frameRate in
+                Text("\(frameRate) fps").tag(frameRate)
+            }
+        }
+        .pickerStyle(.menu)
+        .disabled(isLocked)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        Picker("Codec", selection: $codecPolicy) {
+            Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
+            Text("H.264").tag(RecordingCodecPolicy.h264)
+        }
+        .disabled(isLocked)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        Toggle("Include cursor", isOn: $includeCursor)
+            .disabled(isLocked)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+        if includeCursor {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Highlight clicks", isOn: cursorClickBinding)
+                Text("The normal-size cursor and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(isLocked)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+        }
+        Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
+            .disabled(isLocked)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+        if presentation.cursor.resolvedShowsShortcutKeys {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if !hasShortcutMonitoringAccess {
+                    Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isLocked)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+        }
+        Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+            .disabled(isLocked)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    private var resilienceControls: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Picker("After recording", selection: $retentionPolicy) {
+                ForEach(MediaRetentionPolicy.allCases) { policy in
+                    Text(policy.label).tag(policy)
+                }
+            }
+            .disabled(isLocked)
+            .padding(.horizontal, 14)
+            Text(retentionPolicy == .editableTracks
+                ? "Keeps screen and camera tracks independently editable."
+                : "Finishes one composed MOV, verifies it, then removes independent raw tracks.")
+                .font(.caption2)
+                .foregroundStyle(retentionPolicy == .programOnly ? .orange : .secondary)
+                .padding(.horizontal, 14)
+            Text("Raw tracks and an append-only journal are written into one recoverable project package.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 14).padding(.bottom, 18)
+        }
     }
 
     private func sourceSettingsButton(
@@ -1995,6 +3399,7 @@ private struct StudioInspector: View {
         showsWarning: Bool = false
     ) -> some View {
         let isActive = activeSourceSettings == settings
+        let isPanelLocked = settings == .microphone ? isLocked : isPresentationLocked
         let isCanvasSelected = canvasSource(for: settings).map { $0 == selectedCanvasSource } ?? false
         let backgroundColor = isActive ? Color.accentColor.opacity(0.13) : Color.clear
         let isPresented = Binding(
@@ -2035,20 +3440,20 @@ private struct StudioInspector: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
                 }
-                Image(systemName: isLocked ? "lock.fill" : "slider.horizontal.3")
+                Image(systemName: isPanelLocked ? "lock.fill" : "slider.horizontal.3")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
                     .frame(width: 32, height: 32)
                     .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
             }
             .padding(.horizontal, 12)
-            .frame(minHeight: 68)
+            .frame(minHeight: 60)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title), \(detail)")
-        .accessibilityHint(isLocked ? "View locked settings" : "Opens \(settingsTitle(settings))")
+        .accessibilityHint(isPanelLocked ? "View locked settings" : "Opens \(settingsTitle(settings))")
         .background(backgroundColor)
         .popover(
             isPresented: isPresented,
@@ -2099,21 +3504,50 @@ private struct StudioInspector: View {
                         }
                     }
                     .frame(minHeight: 44)
+                    .disabled(isLocked)
                 }
                 Divider()
                 sourceLayoutControls(placement: screenPlacementBinding)
+                    .disabled(isPresentationLocked)
 
             case .camera:
                 Toggle("Use camera", isOn: $capturesCamera)
-                    .disabled(cameras.isEmpty)
+                    .disabled(cameras.isEmpty || isLocked)
                 if capturesCamera, !cameras.isEmpty {
                     Picker("Device", selection: $selectedCameraID) {
                         ForEach(cameras) { camera in
                             Text(camera.name).tag(Optional(camera.id))
                         }
                     }
+                    .disabled(isLocked)
+                    Picker("Orientation", selection: $cameraOrientation) {
+                        ForEach(StudioCameraOrientation.allCases) { orientation in
+                            Text(orientation.label).tag(orientation)
+                        }
+                    }
+                    .disabled(isLocked)
+                    Button("Native Video Effects…", systemImage: "camera.filters") {
+                        AVCaptureDevice.showSystemUserInterface(.videoEffects)
+                    }
+                    .disabled(isLocked)
+                    Text(cameraOrientation == .portrait
+                        ? "Requests a true 90° camera output instead of center-cropping landscape video."
+                        : "Automatic preserves the camera's native orientation.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    labeledSlider(
+                        "A/V calibration",
+                        value: $cameraSyncOffset,
+                        range: -0.5...0.5,
+                        valueText: "\(Int((cameraSyncOffset * 1_000).rounded())) ms"
+                    )
+                    .disabled(isLocked)
+                    Text("Adjust only after a clap test. The value is saved for this camera and added to host-clock alignment.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Divider()
                     sourceLayoutControls(placement: cameraPlacementBinding, includesMirror: true)
+                        .disabled(isPresentationLocked)
                 } else if cameras.isEmpty {
                     Text("No camera is currently available.")
                         .font(.caption).foregroundStyle(.orange)
@@ -2121,21 +3555,23 @@ private struct StudioInspector: View {
 
             case .microphone:
                 Toggle("Use microphone", isOn: $capturesMicrophone)
+                    .disabled(isLocked)
                 if capturesMicrophone {
                     Picker("Device", selection: $microphoneDeviceID) {
                         ForEach(microphones) { microphone in
                             Text(microphone.name).tag(Optional(microphone.id))
                         }
                     }
-                    .disabled(microphones.isEmpty)
+                    .disabled(microphones.isEmpty || isLocked)
                     microphoneAvailabilityMessage
                 }
                 Divider()
                 Toggle("Capture system audio", isOn: $capturesSystemAudio)
+                    .disabled(isLocked)
                 Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
+                    .disabled(isLocked)
             }
         }
-        .disabled(isLocked)
     }
 
     @ViewBuilder
@@ -2282,15 +3718,48 @@ private struct StudioInspector: View {
                     valueText: String(format: "%.0f%%", placement.wrappedValue.effectiveCornerRadius * 100)
                 )
             }
-            labeledSlider("Width", value: placement.width, range: 0.08...1)
-            labeledSlider("Height", value: placement.height, range: 0.08...1)
-            labeledSlider("Horizontal", value: placement.centerX, range: 0...1)
-            labeledSlider("Vertical", value: placement.centerY, range: 0...1)
+            if placement.wrappedValue.shape == .circle {
+                labeledSlider("Size", value: circleSizeBinding(for: placement), range: 0.08...1)
+            } else {
+                labeledSlider("Width", value: placement.width, range: 0.08...1)
+                labeledSlider("Height", value: placement.height, range: 0.08...1)
+            }
+            if !includesMirror {
+                labeledSlider("Horizontal", value: placement.centerX, range: 0...1)
+                labeledSlider("Vertical", value: placement.centerY, range: 0...1)
+            }
             if includesMirror {
                 Toggle("Mirror camera", isOn: placement.isMirrored)
             }
+            Divider().padding(.vertical, 2)
+            Toggle("Shadow", isOn: shadowEnabledBinding(for: placement))
         }
         .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private func imageOverlayControls(_ overlay: ImageOverlaySnapshot) -> some View {
+        let item = imageOverlayBinding(overlay)
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Visible", isOn: item.placement.isVisible)
+                labeledSlider("Opacity", value: item.opacity, range: 0...1)
+                labeledSlider("Width", value: item.placement.width, range: 0.08...1)
+                labeledSlider("Height", value: item.placement.height, range: 0.08...1)
+                labeledSlider("Horizontal", value: item.placement.centerX, range: 0...1)
+                labeledSlider("Vertical", value: item.placement.centerY, range: 0...1)
+                Button("Remove", systemImage: "trash", role: .destructive) {
+                    presentation.imageOverlays = presentation.resolvedImageOverlays.filter { $0.id != overlay.id }
+                    if selectedCanvasSource == .image(overlay.id) { selectedCanvasSource = nil }
+                }
+                .disabled(isPresentationLocked)
+            }
+            .disabled(isPresentationLocked)
+            .padding(.top, 6)
+        } label: {
+            Label(overlay.name, systemImage: "photo")
+                .lineLimit(1)
+        }
     }
 
     private func labeledSlider(
@@ -2319,10 +3788,26 @@ private struct StudioInspector: View {
             set: { shape in
                 var value = placement.wrappedValue
                 value.shape = shape
+                if shape == .circle {
+                    value = value.validated(on: presentation.canvas)
+                }
                 if shape == .roundedRectangle, value.cornerRadius == 0 {
                     value.cornerRadius = 0.12
                 }
                 placement.wrappedValue = value
+            }
+        )
+    }
+
+    private func circleSizeBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<CGFloat> {
+        Binding(
+            get: { placement.wrappedValue.width },
+            set: { size in
+                var value = placement.wrappedValue
+                value.width = size
+                placement.wrappedValue = value.validated(on: presentation.canvas)
             }
         )
     }
@@ -2338,6 +3823,48 @@ private struct StudioInspector: View {
                 placement.wrappedValue = value
             }
         )
+    }
+
+    private func shadowEnabledBinding(
+        for placement: Binding<SourcePlacementSnapshot>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { placement.wrappedValue.shadow != nil },
+            set: { enabled in
+                var value = placement.wrappedValue
+                value.shadow = enabled ? (value.shadow ?? SourceShadowSnapshot()) : nil
+                placement.wrappedValue = value
+            }
+        )
+    }
+
+    private func imageOverlayBinding(_ overlay: ImageOverlaySnapshot) -> Binding<ImageOverlaySnapshot> {
+        Binding(
+            get: { presentation.resolvedImageOverlays.first { $0.id == overlay.id } ?? overlay },
+            set: { updated in
+                var overlays = presentation.resolvedImageOverlays
+                guard let index = overlays.firstIndex(where: { $0.id == overlay.id }) else { return }
+                overlays[index] = updated.validated()
+                presentation.imageOverlays = overlays
+            }
+        )
+    }
+
+    private func addImageOverlay() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        do {
+            let overlay = try ImageOverlayImporter.importPNG(
+                from: sourceURL,
+                canvas: presentation.canvas
+            )
+            presentation.imageOverlays = presentation.resolvedImageOverlays + [overlay]
+            selectedCanvasSource = .image(overlay.id)
+        } catch {
+            overlayImportError = error.localizedDescription
+        }
     }
 
     private var canvasPresetBinding: Binding<CaptureCanvasPreset?> {
@@ -2477,10 +4004,6 @@ private struct StudioInspector: View {
         presentation.cameraBackground = background.validated()
     }
 
-    private var cursorScaleBinding: Binding<CGFloat> {
-        Binding(get: { presentation.cursor.scale }, set: { presentation.cursor.scale = $0 })
-    }
-
     private var cursorClickBinding: Binding<Bool> {
         Binding(get: { presentation.cursor.highlightsClicks }, set: { presentation.cursor.highlightsClicks = $0 })
     }
@@ -2535,10 +4058,13 @@ private struct LiveProgramPreview: View {
     let cameraImage: NSImage?
     let selectedDisplayName: String
     let selectedDisplayID: UInt32?
+    let frameRate: Int
     let screenPreviewError: String?
     let isRecording: Bool
     let isPaused: Bool
+    let recordedDuration: String
     let shortcutLabel: String?
+    let socialGuide: StudioSocialGuide
     @Binding var presentation: CapturePresentationSnapshot
     @Binding var selectedSource: StudioCanvasSource?
     let isLocked: Bool
@@ -2546,6 +4072,11 @@ private struct LiveProgramPreview: View {
     @GestureState private var screenDrag: CGSize = .zero
     @GestureState private var cameraDrag: CGSize = .zero
     @State private var resizeSession: ResizeSession?
+    @State private var imageDragID: UUID?
+    @State private var imageDrag: CGSize = .zero
+    @State private var isImageDropTargeted = false
+    @State private var imageDropError: String?
+    @State private var cursorFollowMotion = CursorFollowMotion(initialCenter: CGPoint(x: 0.5, y: 0.5))
     @FocusState private var isStageFocused: Bool
 
     var body: some View {
@@ -2554,6 +4085,7 @@ private struct LiveProgramPreview: View {
                 RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.78))
                 if let screenImage {
                     trackedScreenPreview(image: screenImage)
+                        .opacity(presentation.screen.resolvedOpacity)
                         .frame(
                             width: proxy.size.width * presentation.screen.width,
                             height: proxy.size.height * presentation.screen.height
@@ -2565,6 +4097,7 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.screen.height
                             )
                         ))
+                        .sourceShadow(presentation.screen.shadow, canvasSize: proxy.size)
                         .position(
                             x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
                             y: proxy.size.height * presentation.screen.centerY + screenDrag.height
@@ -2591,13 +4124,16 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.screen.height
                             )
                         ))
-                        .onTapGesture { select(.screen) }
+                        .onTapGesture(count: 2) { select(.screen) }
                         .gesture(screenDragGesture(in: proxy.size))
                         .position(
                             x: proxy.size.width * presentation.screen.centerX + screenDrag.width,
                             y: proxy.size.height * presentation.screen.centerY + screenDrag.height
                         )
                         .accessibilityLabel("Screen source on canvas")
+                } else if selectedDisplayID == nil {
+                    Color.clear
+                        .accessibilityLabel("Camera-only canvas")
                 } else if let screenPreviewError {
                     VStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -2624,6 +4160,7 @@ private struct LiveProgramPreview: View {
 
                 if let cameraSession, presentation.camera.isVisible {
                     cameraPreview(session: cameraSession)
+                        .opacity(presentation.camera.resolvedOpacity)
                         .scaleEffect(x: presentation.camera.isMirrored ? -1 : 1, y: 1)
                         .frame(
                             width: proxy.size.width * presentation.camera.width,
@@ -2636,6 +4173,7 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.camera.height
                             )
                         ))
+                        .sourceShadow(presentation.camera.shadow, canvasSize: proxy.size)
                         .position(
                             x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
                             y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
@@ -2663,13 +4201,17 @@ private struct LiveProgramPreview: View {
                                 height: proxy.size.height * presentation.camera.height
                             )
                         ))
-                        .onTapGesture { select(.camera) }
+                        .onTapGesture(count: 2) { select(.camera) }
                         .gesture(cameraDragGesture(in: proxy.size))
                         .position(
                             x: proxy.size.width * presentation.camera.centerX + cameraDrag.width,
                             y: proxy.size.height * presentation.camera.centerY + cameraDrag.height
                         )
                         .accessibilityLabel("Camera source on canvas")
+                }
+
+                ForEach(presentation.resolvedImageOverlays) { overlay in
+                    imageOverlayLayer(overlay, canvasSize: proxy.size)
                 }
 
                 HStack {
@@ -2683,14 +4225,22 @@ private struct LiveProgramPreview: View {
                 .allowsHitTesting(false)
 
                 if isPaused {
-                    Label("PAUSED", systemImage: "pause.circle.fill")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                    Label("PAUSED · \(recordedDuration)", systemImage: "pause.circle.fill")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.72), in: Capsule())
                         .padding(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .allowsHitTesting(false)
                 } else if isRecording {
-                    Label("REC", systemImage: "record.circle.fill")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.red)
+                    Label("RECORDING · \(recordedDuration)", systemImage: "record.circle.fill")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.72), in: Capsule())
                         .padding(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .allowsHitTesting(false)
@@ -2708,6 +4258,10 @@ private struct LiveProgramPreview: View {
 
                 if let shortcutLabel {
                     shortcutOverlay(shortcutLabel, previewSize: proxy.size)
+                }
+
+                if socialGuide != .off {
+                    socialGuideOverlay(socialGuide)
                 }
 
                 if !isLocked, selectedSource == .screen, screenImage != nil {
@@ -2730,6 +4284,40 @@ private struct LiveProgramPreview: View {
                         canvasSize: proxy.size
                     )
                 }
+
+                if !isLocked,
+                   case .image(let id) = selectedSource,
+                   let overlay = presentation.resolvedImageOverlays.first(where: { $0.id == id }),
+                   overlay.placement.isVisible {
+                    sourceSelectionOverlay(
+                        for: .image(id),
+                        placement: overlay.placement,
+                        translation: imageDragID == id ? imageDrag : .zero,
+                        canvasSize: proxy.size
+                    )
+                }
+
+                if isImageDropTargeted {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color.accentColor.opacity(0.08))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                        }
+                        .overlay {
+                            Label("Drop PNG to add it", systemImage: "photo.badge.plus")
+                                .font(.headline)
+                                .padding(12)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .allowsHitTesting(false)
+                }
+            }
+            .dropDestination(for: URL.self) { urls, location in
+                guard let url = urls.first else { return false }
+                return importDroppedImage(url, at: location, canvasSize: proxy.size)
+            } isTargeted: { isTargeted in
+                isImageDropTargeted = isTargeted && !isLocked
             }
         }
         .aspectRatio(presentation.canvas.aspectRatio, contentMode: .fit)
@@ -2742,7 +4330,67 @@ private struct LiveProgramPreview: View {
         .focusEffectDisabled()
         .onMoveCommand(perform: nudgeSelectedSource)
         .accessibilityLabel("Live selected screen and camera preview")
-        .accessibilityHint("Click a source to select it. Drag to move, use its corner handles to resize, or use the arrow keys to nudge.")
+        .accessibilityHint("Double-click a source to select it. Drag to move, use its corner handles to resize, use the arrow keys to nudge, or drop a PNG to add it.")
+        .alert("Couldn’t Add PNG", isPresented: Binding(
+            get: { imageDropError != nil },
+            set: { if !$0 { imageDropError = nil } }
+        )) {
+            Button("OK", role: .cancel) { imageDropError = nil }
+        } message: {
+            Text(imageDropError ?? "Unknown error")
+        }
+    }
+
+    private func importDroppedImage(_ url: URL, at location: CGPoint, canvasSize: CGSize) -> Bool {
+        guard !isLocked, canvasSize.width > 0, canvasSize.height > 0 else { return false }
+        do {
+            let overlay = try ImageOverlayImporter.importPNG(
+                from: url,
+                canvas: presentation.canvas,
+                center: CGPoint(
+                    x: location.x / canvasSize.width,
+                    y: location.y / canvasSize.height
+                )
+            )
+            presentation.imageOverlays = presentation.resolvedImageOverlays + [overlay]
+            selectedSource = .image(overlay.id)
+            return true
+        } catch {
+            imageDropError = error.localizedDescription
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private func imageOverlayLayer(_ overlay: ImageOverlaySnapshot, canvasSize: CGSize) -> some View {
+        if let image = NSImage(contentsOfFile: overlay.filePath), overlay.placement.isVisible {
+            let size = CGSize(
+                width: canvasSize.width * overlay.placement.width,
+                height: canvasSize.height * overlay.placement.height
+            )
+            let translation = imageDragID == overlay.id ? imageDrag : .zero
+            ZStack {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .opacity(overlay.opacity)
+                    .allowsHitTesting(false)
+                Rectangle()
+                    .fill(Color.white.opacity(0.001))
+                    .contentShape(Rectangle())
+            }
+            .frame(width: size.width, height: size.height)
+            .clipShape(sourceShape(for: overlay.placement, size: size))
+            .sourceShadow(overlay.placement.shadow, canvasSize: canvasSize)
+            .position(
+                x: canvasSize.width * overlay.placement.centerX + translation.width,
+                y: canvasSize.height * overlay.placement.centerY + translation.height
+            )
+            .onTapGesture(count: 2) { select(.image(overlay.id)) }
+            .gesture(imageOverlayDragGesture(overlay, canvasSize: canvasSize))
+            .accessibilityLabel("\(overlay.name) image element")
+            .accessibilityHint("Double-click to select, then drag to move.")
+        }
     }
 
     private func shortcutOverlay(_ label: String, previewSize: CGSize) -> some View {
@@ -2769,6 +4417,29 @@ private struct LiveProgramPreview: View {
             .accessibilityLabel("Shortcut \(label)")
     }
 
+    private func socialGuideOverlay(_ guide: StudioSocialGuide) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.white.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
+                .padding(.horizontal, guide == .tikTok ? 18 : 14)
+                .padding(.top, guide == .tikTok ? 62 : 48)
+                .padding(.bottom, guide == .tikTok ? 112 : 86)
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.black.opacity(0.35))
+                        .frame(width: guide == .tikTok ? 52 : 44, height: guide == .tikTok ? 168 : 136)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, guide == .tikTok ? 88 : 70)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
     @ViewBuilder
     private func cameraPreview(session: AVCaptureSession) -> some View {
         if presentation.resolvedCameraBackground.mode == .off {
@@ -2787,38 +4458,60 @@ private struct LiveProgramPreview: View {
     @ViewBuilder
     private func trackedScreenPreview(image: NSImage) -> some View {
         if presentation.framing.mode == .followCursor {
-            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+            TimelineView(.animation(minimumInterval: 1.0 / Double(max(frameRate, 1)))) { context in
+                let target = followCursorTarget()
                 CroppedScreenPreview(
                     image: image,
-                    canvas: presentation.canvas,
-                    framing: followCursorFraming()
+                    viewportSize: screenViewportSize,
+                    framing: followCursorFraming(center: cursorFollowMotion.center ?? target)
                 )
+                .onChange(of: context.date) { _, date in
+                    guard let target else { return }
+                    cursorFollowMotion.update(target: target, at: date.timeIntervalSinceReferenceDate)
+                }
+            }
+            .onChange(of: selectedDisplayID) { _, _ in
+                cursorFollowMotion.reset(to: CGPoint(x: 0.5, y: 0.5))
             }
         } else {
             CroppedScreenPreview(
                 image: image,
-                canvas: presentation.canvas,
+                viewportSize: screenViewportSize,
                 framing: presentation.framing
             )
         }
     }
 
-    private func followCursorFraming() -> ScreenFramingSnapshot {
+    private var screenViewportSize: CGSize {
+        CGSize(
+            width: presentation.canvas.pixelSize.width * presentation.screen.width,
+            height: presentation.canvas.pixelSize.height * presentation.screen.height
+        )
+    }
+
+    private func followCursorTarget() -> CGPoint? {
         guard let selectedDisplayID,
               let screen = NSScreen.screens.first(where: {
                   ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
                       == selectedDisplayID
               }) else {
-            var fallback = presentation.framing
-            fallback.mode = .fixedRegion
-            return fallback
+            return nil
         }
         let cursor = NSEvent.mouseLocation
         let frame = screen.frame
+        guard frame.contains(cursor) else { return nil }
+        return CGPoint(
+            x: (cursor.x - frame.minX) / frame.width,
+            y: 1 - (cursor.y - frame.minY) / frame.height
+        )
+    }
+
+    private func followCursorFraming(center: CGPoint?) -> ScreenFramingSnapshot {
+        let center = center ?? CGPoint(x: presentation.framing.centerX, y: presentation.framing.centerY)
         return ScreenFramingSnapshot(
             mode: .fixedRegion,
-            centerX: (cursor.x - frame.minX) / frame.width,
-            centerY: 1 - (cursor.y - frame.minY) / frame.height,
+            centerX: center.x,
+            centerY: center.y,
             scale: presentation.framing.scale
         ).validated()
     }
@@ -2835,8 +4528,7 @@ private struct LiveProgramPreview: View {
             canvasSize: canvasSize
         )
         return ZStack {
-            Color.clear.allowsHitTesting(false)
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
+            sourceShape(for: placement, size: frame.size)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
                 .frame(width: frame.width, height: frame.height)
                 .position(x: frame.midX, y: frame.midY)
@@ -2869,13 +4561,15 @@ private struct LiveProgramPreview: View {
     }
 
     private func resizeHandle(_ handle: SourceResizeHandle) -> some View {
-        Circle()
-            .fill(.background)
-            .frame(width: 11, height: 11)
-            .overlay {
-                Circle().stroke(Color.accentColor, lineWidth: 2)
-            }
+        Rectangle()
+            .fill(Color.white.opacity(0.001))
             .frame(width: 28, height: 28)
+            .overlay {
+                Circle()
+                    .fill(.background)
+                    .overlay { Circle().stroke(Color.accentColor, lineWidth: 2) }
+                    .frame(width: 11, height: 11)
+            }
             .contentShape(Rectangle())
             .accessibilityLabel(handle.accessibilityLabel)
             .accessibilityHint("Drag to resize the selected source.")
@@ -2917,8 +4611,7 @@ private struct LiveProgramPreview: View {
     ) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard !isLocked else { return }
-                select(source)
+                guard !isLocked, selectedSource == source else { return }
                 if resizeSession?.source != source || resizeSession?.handle != handle {
                     resizeSession = ResizeSession(source: source, handle: handle, placement: placement)
                 }
@@ -2934,7 +4627,7 @@ private struct LiveProgramPreview: View {
                 )
             }
             .onEnded { _ in
-                guard !isLocked else { return }
+                guard !isLocked, selectedSource == source else { return }
                 presentation = presentation.validated()
                 resizeSession = nil
             }
@@ -2946,6 +4639,8 @@ private struct LiveProgramPreview: View {
             presentation.screen = placement
         case .camera:
             presentation.camera = placement
+        case .image(let id):
+            updateImageOverlay(id) { $0.placement = placement }
         }
     }
 
@@ -2961,6 +4656,8 @@ private struct LiveProgramPreview: View {
             screenImage != nil && presentation.screen.isVisible
         case .camera:
             cameraSession != nil && presentation.camera.isVisible
+        case .image(let id):
+            presentation.resolvedImageOverlays.contains { $0.id == id && $0.placement.isVisible }
         }
     }
 
@@ -2975,6 +4672,9 @@ private struct LiveProgramPreview: View {
         var placement: SourcePlacementSnapshot = switch selectedSource {
         case .screen: presentation.screen
         case .camera: presentation.camera
+        case .image(let id):
+            presentation.resolvedImageOverlays.first { $0.id == id }?.placement
+                ?? SourcePlacementSnapshot(centerX: 0.5, centerY: 0.5, width: 0.2, shape: .rectangle)
         }
         switch direction {
         case .left: placement.centerX -= horizontalStep
@@ -2987,6 +4687,14 @@ private struct LiveProgramPreview: View {
         presentation = presentation.validated()
     }
 
+    private func updateImageOverlay(_ id: UUID, update: (inout ImageOverlaySnapshot) -> Void) {
+        var overlays = presentation.resolvedImageOverlays
+        guard let index = overlays.firstIndex(where: { $0.id == id }) else { return }
+        update(&overlays[index])
+        overlays[index] = overlays[index].validated()
+        presentation.imageOverlays = overlays
+    }
+
     private func sourceShape(for placement: SourcePlacementSnapshot, size: CGSize) -> AnyShape {
         switch placement.shape {
         case .rectangle:
@@ -2994,14 +4702,14 @@ private struct LiveProgramPreview: View {
         case .roundedRectangle:
             AnyShape(RoundedRectangle(cornerRadius: placement.effectiveCornerRadius * min(size.width, size.height)))
         case .circle:
-            AnyShape(Ellipse())
+            AnyShape(Circle())
         }
     }
 
     private func screenDragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .updating($screenDrag) { value, state, _ in
-                guard !isLocked else { return }
+                guard !isLocked, selectedSource == .screen else { return }
                 let moved = SourcePlacementManipulator.moved(
                     presentation.screen,
                     translation: value.translation,
@@ -3012,9 +4720,8 @@ private struct LiveProgramPreview: View {
                     height: (moved.centerY - presentation.screen.centerY) * size.height
                 )
             }
-            .onChanged { _ in select(.screen) }
             .onEnded { value in
-                guard !isLocked, size.width > 0, size.height > 0 else { return }
+                guard !isLocked, selectedSource == .screen, size.width > 0, size.height > 0 else { return }
                 presentation.screen = SourcePlacementManipulator.moved(
                     presentation.screen,
                     translation: value.translation,
@@ -3027,7 +4734,7 @@ private struct LiveProgramPreview: View {
     private func cameraDragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .updating($cameraDrag) { value, state, _ in
-                guard !isLocked else { return }
+                guard !isLocked, selectedSource == .camera else { return }
                 let moved = SourcePlacementManipulator.moved(
                     presentation.camera,
                     translation: value.translation,
@@ -3038,9 +4745,8 @@ private struct LiveProgramPreview: View {
                     height: (moved.centerY - presentation.camera.centerY) * size.height
                 )
             }
-            .onChanged { _ in select(.camera) }
             .onEnded { value in
-                guard !isLocked, size.width > 0, size.height > 0 else { return }
+                guard !isLocked, selectedSource == .camera, size.width > 0, size.height > 0 else { return }
                 presentation.camera = SourcePlacementManipulator.moved(
                     presentation.camera,
                     translation: value.translation,
@@ -3048,6 +4754,56 @@ private struct LiveProgramPreview: View {
                 )
                 presentation = presentation.validated()
             }
+    }
+
+    private func imageOverlayDragGesture(
+        _ overlay: ImageOverlaySnapshot,
+        canvasSize: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                guard !isLocked, selectedSource == .image(overlay.id) else { return }
+                imageDragID = overlay.id
+                let moved = SourcePlacementManipulator.moved(
+                    overlay.placement,
+                    translation: value.translation,
+                    canvasSize: canvasSize
+                )
+                imageDrag = CGSize(
+                    width: (moved.centerX - overlay.placement.centerX) * canvasSize.width,
+                    height: (moved.centerY - overlay.placement.centerY) * canvasSize.height
+                )
+            }
+            .onEnded { value in
+                defer {
+                    imageDragID = nil
+                    imageDrag = .zero
+                }
+                guard !isLocked,
+                      selectedSource == .image(overlay.id),
+                      canvasSize.width > 0,
+                      canvasSize.height > 0 else { return }
+                updateImageOverlay(overlay.id) {
+                    $0.placement = SourcePlacementManipulator.moved(
+                        overlay.placement,
+                        translation: value.translation,
+                        canvasSize: canvasSize
+                    )
+                }
+                presentation = presentation.validated()
+            }
+    }
+}
+
+private extension View {
+    func sourceShadow(_ shadow: SourceShadowSnapshot?, canvasSize: CGSize) -> some View {
+        let shadow = shadow?.validated()
+        return self.shadow(
+            color: .black.opacity(Double(shadow?.opacity ?? 0)),
+            radius: (shadow?.radius ?? 0) * min(canvasSize.width, canvasSize.height),
+            x: (shadow?.offsetX ?? 0) * canvasSize.width,
+            y: (shadow?.offsetY ?? 0) * canvasSize.height
+        )
     }
 }
 
@@ -3066,6 +4822,8 @@ private struct SceneSwitcherBar: View {
     let onDuplicate: () -> Void
     let onMoveEarlier: () -> Void
     let onMoveLater: () -> Void
+    let onTransitionEffect: (StudioSceneTransitionEffect) -> Void
+    let onTransitionDuration: (TimeInterval) -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -3082,13 +4840,27 @@ private struct SceneSwitcherBar: View {
                     .controlSize(.regular)
                     .disabled(!canManage)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
-                            sceneButton(scene, index: index)
-                        }
+                Menu {
+                    ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                        sceneMenuButton(scene, index: index)
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isLive ? "dot.radiowaves.left.and.right" : "film.stack")
+                            .foregroundStyle(isLive ? .red : Color.accentColor)
+                        Text(selectedScene?.name ?? "Choose scene")
+                            .lineLimit(1)
+                        if isModified {
+                            Circle().fill(.orange).frame(width: 6, height: 6)
+                        }
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(minWidth: 190, minHeight: 32, alignment: .leading)
                 }
+                .menuStyle(.button)
+                .disabled(!canSwitch)
             }
 
             Spacer(minLength: 0)
@@ -3118,6 +4890,36 @@ private struct SceneSwitcherBar: View {
 
                 if selectedSceneID != nil {
                     Menu {
+                        if let selectedScene {
+                            Menu("Incoming Transition") {
+                                ForEach(StudioSceneTransitionEffect.allCases) { effect in
+                                    Button {
+                                        onTransitionEffect(effect)
+                                    } label: {
+                                        if selectedScene.incomingTransition.effect == effect {
+                                            Label(effect.label, systemImage: "checkmark")
+                                        } else {
+                                            Text(effect.label)
+                                        }
+                                    }
+                                }
+                                if selectedScene.incomingTransition.effect != .cut {
+                                    Divider()
+                                    ForEach([0.15, 0.3, 0.5, 0.75, 1.0], id: \.self) { duration in
+                                        Button {
+                                            onTransitionDuration(duration)
+                                        } label: {
+                                            if abs(selectedScene.incomingTransition.duration - duration) < 0.001 {
+                                                Label("\(duration.formatted()) s", systemImage: "checkmark")
+                                            } else {
+                                                Text("\(duration.formatted()) s")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Divider()
                         Button("Rename Scene…", systemImage: "pencil", action: onRename)
                         Button("Duplicate Scene", systemImage: "plus.square.on.square", action: onDuplicate)
                         Divider()
@@ -3134,7 +4936,7 @@ private struct SceneSwitcherBar: View {
                     .menuStyle(.button)
                     .controlSize(.regular)
                 }
-            } else {
+            } else if isLive {
                 Label("ON AIR", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.red)
@@ -3145,7 +4947,7 @@ private struct SceneSwitcherBar: View {
         }
         .frame(minHeight: 50)
         .padding(.horizontal, 12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
@@ -3155,6 +4957,41 @@ private struct SceneSwitcherBar: View {
 
     private var selectedSceneIndex: Int? {
         scenes.firstIndex { $0.id == selectedSceneID }
+    }
+
+    private var selectedScene: StudioScenePreset? {
+        scenes.first { $0.id == selectedSceneID }
+    }
+
+    private func sceneMenuTitle(_ scene: StudioScenePreset, index: Int) -> String {
+        let shortcut = index < 9 ? "  ·  ⌥\(index + 1)" : ""
+        let state = scene.id == selectedSceneID && isModified ? "  ·  Modified" : ""
+        return scene.name + state + shortcut
+    }
+
+    @ViewBuilder
+    private func sceneMenuButton(_ scene: StudioScenePreset, index: Int) -> some View {
+        let button = Button {
+            onSelect(scene)
+        } label: {
+            if scene.id == selectedSceneID {
+                Label(sceneMenuTitle(scene, index: index), systemImage: "checkmark")
+            } else if incompatibility(scene) != nil {
+                Label(sceneMenuTitle(scene, index: index), systemImage: "lock.fill")
+            } else {
+                Text(sceneMenuTitle(scene, index: index))
+            }
+        }
+        .disabled(incompatibility(scene) != nil || !canSwitch)
+
+        if index < 9 {
+            button.keyboardShortcut(
+                KeyEquivalent(Character(String(index + 1))),
+                modifiers: [.option]
+            )
+        } else {
+            button
+        }
     }
 
     @ViewBuilder
@@ -3311,10 +5148,10 @@ private struct LiveSourceHealthView: View {
         switch recoveryState {
         case .idle:
             nil
-        case .restarting(_, let attempt, let maximumAttempts):
-            ("Restarting live screen · attempt \(attempt)/\(maximumAttempts)", "arrow.clockwise", false)
-        case .waitingForSamples(_, let attempt, let maximumAttempts):
-            ("Screen restarted · verifying frames (\(attempt)/\(maximumAttempts))", "hourglass", false)
+        case .restarting(let source, let attempt, let maximumAttempts):
+            ("Restarting \(source.label) · attempt \(attempt)/\(maximumAttempts)", "arrow.clockwise", false)
+        case .waitingForSamples(let source, let attempt, let maximumAttempts):
+            ("\(source.label) restarted · verifying samples (\(attempt)/\(maximumAttempts))", "hourglass", false)
         case .failed(_, let message):
             (message, "exclamationmark.triangle.fill", true)
         }
@@ -3466,7 +5303,7 @@ private struct StreamPreflightSummaryView: View {
 
 private struct CroppedScreenPreview: View {
     let image: NSImage
-    let canvas: CaptureCanvasSnapshot
+    let viewportSize: CGSize
     let framing: ScreenFramingSnapshot
 
     var body: some View {
@@ -3494,8 +5331,27 @@ private struct CroppedScreenPreview: View {
         }
         return CaptureGeometryPlanner.sourceRect(
             displaySize: sourceSize,
-            canvasSize: canvas.pixelSize,
+            canvasSize: viewportSize,
             framing: framing
         )
+    }
+}
+
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { configure(view.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        window?.titlebarAppearsTransparent = true
+        window?.titleVisibility = .hidden
+        window?.isMovableByWindowBackground = false
+        window?.styleMask.insert(.fullSizeContentView)
     }
 }

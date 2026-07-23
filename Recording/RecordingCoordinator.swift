@@ -5,6 +5,16 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
+enum RecordingOutputFinalizationPolicy {
+    static func isUsable(
+        isReadable: Bool,
+        duration: TimeInterval,
+        videoTrackCount: Int
+    ) -> Bool {
+        isReadable && duration.isFinite && duration > 0 && videoTrackCount > 0
+    }
+}
+
 struct AvailableDisplay: Identifiable, Equatable {
     let id: UInt32
     let title: String
@@ -28,6 +38,16 @@ enum RecordingState: Equatable {
         case .stopping: "Finishing files"
         case .failed(let message): message
         }
+    }
+}
+
+struct RecordingFinalizationProgress: Equatable {
+    let fraction: Double
+    let phase: String
+
+    init(fraction: Double, phase: String) {
+        self.fraction = min(max(fraction, 0), 1)
+        self.phase = phase
     }
 }
 
@@ -120,12 +140,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
     @Published private(set) var finalizationWarning: String?
+    @Published private(set) var finalizationProgress: RecordingFinalizationProgress?
     @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
+    @Published private(set) var sourceRecoveryState = LiveSourceRecoveryState.idle
 
     private struct Capture {
         let displayID: UInt32
         let stream: SCStream
         let output: SCRecordingOutput
+        let outputURL: URL
+        let filter: SCContentFilter
+        let configuration: SCStreamConfiguration
     }
 
     private let projectStore = RecordingProjectStore()
@@ -137,6 +162,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var audioStemFailureReported = false
     private var durationTask: Task<Void, Never>?
     private var sourceHealthTask: Task<Void, Never>?
+    private var sourceRecoveryTask: Task<Void, Never>?
+    private var sourceRecoveryPolicy = LiveSourceRecoveryPolicy()
     private var cursorTelemetryTask: Task<Void, Never>?
     private var studioSceneTimeline: StudioSceneTimeline?
     private var safeShortcutTimeline = SafeShortcutTimeline()
@@ -244,6 +271,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         state = .preparing
         terminalFailure = nil
         finalizationWarning = nil
+        finalizationProgress = nil
         recordingStartedAt = nil
         recordingStartedHostTime = nil
         recordingStartedAtByDisplayID = [:]
@@ -253,6 +281,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         hasAuthoritativeRecordingStart = false
         recordingPauseTimeline = RecordingPauseTimeline()
         safeShortcutTimeline = SafeShortcutTimeline()
+        sourceRecoveryTask?.cancel()
+        sourceRecoveryTask = nil
+        sourceRecoveryPolicy.reset()
+        sourceRecoveryState = .idle
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
         }
@@ -261,7 +293,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             let content = try await SCShareableContent.current
             let displaysByID = Dictionary(uniqueKeysWithValues: content.displays.map { ($0.displayID, $0) })
             let selected = request.displaySources.compactMap { displaysByID[$0.id] }
-            guard selected.count == request.displaySources.count, !selected.isEmpty else {
+            guard selected.count == request.displaySources.count,
+                  !selected.isEmpty || request.camera != nil else {
                 state = .failed("A selected display is no longer available. Refresh sources before recording.")
                 return
             }
@@ -288,7 +321,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 ))
                 audioStemSession.install(writer, projectID: project.id)
             }
-            studioSceneTimeline = StudioSceneTimeline(initialPresentation: request.presentation)
+            studioSceneTimeline = StudioSceneTimeline(
+                initialPresentation: request.presentation,
+                displayID: request.profile.programDisplayID
+            )
             if let studioSceneTimeline {
                 try projectStore.writeStudioSceneTimeline(studioSceneTimeline, in: project)
             }
@@ -337,13 +373,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         space: cursorCaptureSpace(for: display, request: request)
                     )
                 }
-                captures[display.displayID] = Capture(displayID: display.displayID, stream: stream, output: output)
+                captures[display.displayID] = Capture(
+                    displayID: display.displayID,
+                    stream: stream,
+                    output: output,
+                    outputURL: outputURL,
+                    filter: filter,
+                    configuration: configuration
+                )
             }
 
-            for capture in captures.values {
-                try await capture.stream.startCapture()
-                startedOutputIDs.insert(ObjectIdentifier(capture.output))
-            }
             if let camera = request.camera {
                 guard let outputURL = projectStore.rawTrackURL(for: "camera", in: project) else {
                     throw CameraTrackRecorderError.outputUnavailable
@@ -359,6 +398,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     try await recorder.start(
                         deviceID: camera.id,
                         outputURL: outputURL,
+                        orientation: request.profile.resolvedCameraOrientation,
+                        frameRate: request.profile.frameRate,
                         existingSession: cameraPreviewSession
                     )
                 } catch {
@@ -371,6 +412,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 }
                 cameraRecorder = recorder
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
+            }
+            for capture in captures.values {
+                try await capture.stream.startCapture()
+                startedOutputIDs.insert(ObjectIdentifier(capture.output))
             }
 
             recordedDuration = 0
@@ -443,11 +488,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         guard state == .recording || state == .paused else { return }
         isTearingDown = true
         state = .stopping
+        updateFinalizationProgress(0.04, "Stopping capture sources…")
         durationTask?.cancel()
         durationTask = nil
         stopCursorTelemetry()
         let stopErrors = await stopCaptures()
         let stoppedAt = ProcessInfo.processInfo.systemUptime
+        updateFinalizationProgress(0.22, "Finalizing media tracks…")
 
         if let reason = terminalFailure ?? stopErrors.first {
             await completeInterruptedTeardown(reason: reason)
@@ -456,6 +503,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
         if let activeProject, let activeCaptureRequest {
             do {
+                updateFinalizationProgress(0.28, "Preparing saved recording…")
                 try persistCursorTelemetry(in: activeProject)
                 try persistShortcutTelemetry(in: activeProject)
                 let pauseEditTimelines = try await makePauseEditTimelines(
@@ -485,7 +533,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                             project: activeProject,
                             request: activeCaptureRequest
                         )
-                    })
+                    }),
+                    progress: { [weak self] fraction, phase in
+                        self?.updateFinalizationProgress(0.30 + fraction * 0.62, phase)
+                    }
                 )
             } catch {
                 do {
@@ -498,10 +549,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
         }
 
+        updateFinalizationProgress(0.96, "Refreshing Projects…")
         clearCaptureState()
         state = .ready
         await refreshProjects()
         isTearingDown = false
+        finalizationProgress = nil
+    }
+
+    private func updateFinalizationProgress(_ fraction: Double, _ phase: String) {
+        finalizationProgress = RecordingFinalizationProgress(fraction: fraction, phase: phase)
     }
 
     private func makeStreamConfiguration(
@@ -579,7 +636,60 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     sourceHealthMonitor.record(.camera, at: now)
                 }
                 sourceHealth = sourceHealthMonitor.snapshot(at: now)
+                considerSourceRecovery(sourceHealth, at: now)
             }
+        }
+    }
+
+    private func considerSourceRecovery(
+        _ snapshot: LiveSourceHealthSnapshot,
+        at timestamp: TimeInterval
+    ) {
+        if snapshot.entries.contains(where: {
+            $0.source.category == .screen && $0.state == .recovered
+        }) {
+            sourceRecoveryState = .idle
+        }
+        guard sourceRecoveryTask == nil,
+              case let .restartScreen(source, attempt, maximumAttempts)? = sourceRecoveryPolicy.decision(
+                for: snapshot,
+                at: timestamp
+              ),
+              let discriminator = source.discriminator,
+              let displayID = UInt32(discriminator),
+              let capture = captures[displayID] else { return }
+
+        sourceRecoveryState = .restarting(
+            source: source,
+            attempt: attempt,
+            maximumAttempts: maximumAttempts
+        )
+        sourceRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do {
+                try await capture.stream.updateContentFilter(capture.filter)
+                try await capture.stream.updateConfiguration(capture.configuration)
+            } catch {
+                failure = error.localizedDescription
+            }
+            sourceRecoveryPolicy.complete(
+                source: source,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            if let failure {
+                sourceRecoveryState = .failed(
+                    source: source,
+                    message: "Screen refresh attempt \(attempt) of \(maximumAttempts) failed. Recording continues with the last good frame. \(failure)"
+                )
+            } else {
+                sourceRecoveryState = .waitingForSamples(
+                    source: source,
+                    attempt: attempt,
+                    maximumAttempts: maximumAttempts
+                )
+            }
+            sourceRecoveryTask = nil
         }
     }
 
@@ -597,11 +707,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         guard contract.incompatibility(for: event.presentation) == nil else { return false }
         if acceptedSceneSwitchIDs.contains(event.id) { return true }
         var timeline = studioSceneTimeline
-            ?? StudioSceneTimeline(initialPresentation: request.presentation)
+            ?? StudioSceneTimeline(
+                initialPresentation: request.presentation,
+                displayID: request.profile.programDisplayID
+            )
         timeline.append(
             event.presentation,
             at: event.sourceTime(since: recordingStartedHostTime),
-            kind: event.kind
+            kind: event.kind,
+            transition: event.transition,
+            displayID: event.displayID
         )
         do {
             try projectStore.writeStudioSceneTimeline(timeline, in: project)
@@ -720,12 +835,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         pendingOutputIDs = Set(activeCaptures.map(\.output).map(ObjectIdentifier.init))
             .intersection(startedOutputIDs)
         var errors: [String] = []
+        var streamStopFailures: [UInt32: String] = [:]
 
         for capture in activeCaptures {
             do {
                 try await capture.stream.stopCapture()
             } catch {
-                errors.append(error.localizedDescription)
+                streamStopFailures[capture.displayID] = error.localizedDescription
             }
         }
         if let cameraRecorder {
@@ -747,9 +863,52 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
         await finishAudioStems()
         if await waitForPendingOutputs() {
-            errors.append("Timed out while finalizing one or more recording outputs.")
+            let unusableDisplayIDs = await reconcileReadableOutputsAfterTimeout()
+            if !unusableDisplayIDs.isEmpty {
+                errors.append(
+                    "Timed out while finalizing screen output for display \(unusableDisplayIDs.sorted().map(String.init).joined(separator: ", "))."
+                )
+            }
+        }
+        for capture in activeCaptures {
+            guard let stopFailure = streamStopFailures[capture.displayID] else { continue }
+            if await isUsableOutput(capture) {
+                if startedOutputIDs.contains(ObjectIdentifier(capture.output)), let activeProject {
+                    try? projectStore.markFinished(displayID: capture.displayID, in: activeProject)
+                }
+                finishOutput(capture.output)
+            } else {
+                errors.append(stopFailure)
+            }
         }
         return errors
+    }
+
+    private func reconcileReadableOutputsAfterTimeout() async -> [UInt32] {
+        guard let project = activeProject else { return captures.keys.sorted() }
+        var unusableDisplayIDs: [UInt32] = []
+        for capture in captures.values where pendingOutputIDs.contains(ObjectIdentifier(capture.output)) {
+            guard await isUsableOutput(capture) else {
+                unusableDisplayIDs.append(capture.displayID)
+                continue
+            }
+            try? projectStore.markFinished(displayID: capture.displayID, in: project)
+            finishOutput(capture.output)
+        }
+        pendingOutputIDs.removeAll()
+        return unusableDisplayIDs
+    }
+
+    private func isUsableOutput(_ capture: Capture) async -> Bool {
+        let asset = AVURLAsset(url: capture.outputURL)
+        let isReadable = (try? await asset.load(.isReadable)) == true
+        let duration = (try? await asset.load(.duration).seconds) ?? 0
+        let videoTrackCount = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
+        return RecordingOutputFinalizationPolicy.isUsable(
+            isReadable: isReadable,
+            duration: duration,
+            videoTrackCount: videoTrackCount
+        )
     }
 
     private func finishAudioStems() async {
@@ -825,7 +984,6 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     private func timeOutPendingOutputs() {
         guard !pendingOutputIDs.isEmpty else { return }
-        pendingOutputIDs.removeAll()
         outputCompletion?.resume(returning: true)
         outputCompletion = nil
     }
@@ -852,11 +1010,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
         state = .failed(reason)
         isTearingDown = false
+        finalizationProgress = nil
     }
 
     private func clearCaptureState() {
         sourceHealthTask?.cancel()
         sourceHealthTask = nil
+        sourceRecoveryTask?.cancel()
+        sourceRecoveryTask = nil
+        sourceRecoveryPolicy.reset()
+        sourceRecoveryState = .idle
         sourceHealthMonitor.configure(expected: [], at: ProcessInfo.processInfo.systemUptime)
         sourceHealth = .empty
         healthSourceLock.withLock { healthSourceByStreamID.removeAll() }
@@ -980,13 +1143,19 @@ extension RecordingCoordinator: SCStreamOutput {
                 let frameInfo = attachments.first,
                 let displayTime = (frameInfo[.displayTime] as? NSNumber)?.uint64Value,
                 let statusRawValue = (frameInfo[.status] as? NSNumber)?.intValue,
-                let status = SCFrameStatus(rawValue: statusRawValue),
-                status == .complete || status == .idle else {
+                let status = SCFrameStatus(rawValue: statusRawValue) else {
                     return
                 }
                 if let source = healthSourceLock.withLock({ healthSourceByStreamID[streamID] }) {
-                    sourceHealthMonitor.record(source, at: ProcessInfo.processInfo.systemUptime)
+                    if status == .idle {
+                        sourceHealthMonitor.recordIdle(source, at: ProcessInfo.processInfo.systemUptime)
+                    } else if status == .complete {
+                        sourceHealthMonitor.record(source, at: ProcessInfo.processInfo.systemUptime)
+                    } else {
+                        sourceHealthMonitor.invalidate(source)
+                    }
                 }
+                guard status == .complete || status == .idle else { return }
                 if let writer = audioStemSession.writer(for: streamID) {
                     if status == .complete {
                         _ = try writer.establishTimeline(at: sampleBuffer.presentationTimeStamp)

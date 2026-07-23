@@ -94,6 +94,44 @@ final class CursorViewportPlannerTests: XCTestCase {
         XCTAssertEqual(aligned.time, 0, accuracy: 0.001)
     }
 
+    func testCursorTimelineOnlyRecordsTheDisplayContainingTheCursor() throws {
+        let synchronizer = CursorFrameSynchronizer(historyLimit: 8)
+        let firstStream = NSObject()
+        let secondStream = NSObject()
+        let firstStreamID = ObjectIdentifier(firstStream)
+        let secondStreamID = ObjectIdentifier(secondStream)
+        synchronizer.register(
+            streamID: firstStreamID,
+            space: CursorCaptureSpace(
+                displayID: 1,
+                visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800)
+            )
+        )
+        synchronizer.register(
+            streamID: secondStreamID,
+            space: CursorCaptureSpace(
+                displayID: 2,
+                visibleFrame: CGRect(x: 1_000, y: 0, width: 1_000, height: 800)
+            )
+        )
+        synchronizer.record(
+            CursorHostSample(
+                hostTime: 100,
+                location: CGPoint(x: 500, y: 400),
+                isPrimaryButtonDown: false
+            )
+        )
+
+        _ = synchronizer.alignFrame(streamID: firstStreamID, hostTime: 100)
+        _ = synchronizer.alignFrame(streamID: secondStreamID, hostTime: 100)
+
+        let samples = synchronizer.timelineSamples()
+        XCTAssertEqual(samples.count, 1)
+        let sample = try XCTUnwrap(samples.first)
+        XCTAssertEqual(sample.displayID, 1)
+        XCTAssertEqual(sample.normalizedX, 0.5, accuracy: 0.001)
+    }
+
     func testRecordedCursorTimelineReturnsTheScenePositionAtPlaybackTime() throws {
         let timeline = CursorSceneTimeline(samples: [
             CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.15, normalizedY: 0.4, isPrimaryButtonDown: false),
@@ -132,5 +170,112 @@ final class CursorViewportPlannerTests: XCTestCase {
         XCTAssertEqual(centered.viewport.midX, 1920, accuracy: 0.1)
         XCTAssertGreaterThan(moved.viewport.midX, centered.viewport.midX)
         XCTAssertLessThanOrEqual(moved.viewport.maxX, display.frame.maxX)
+    }
+
+    func testFollowMotionApproachesTargetWithoutOvershootingOrTrailing() {
+        var motion = CursorFollowMotion(responseDuration: 0.4)
+        _ = motion.update(target: CGPoint(x: 0, y: 0), at: 0)
+
+        var previous = CGPoint.zero
+        for frame in 1...60 {
+            let next = motion.update(
+                target: CGPoint(x: 1, y: 1),
+                at: Double(frame) / 60
+            )
+            XCTAssertGreaterThanOrEqual(next.x, previous.x)
+            XCTAssertGreaterThanOrEqual(next.y, previous.y)
+            XCTAssertLessThanOrEqual(next.x, 1)
+            XCTAssertLessThanOrEqual(next.y, 1)
+            previous = next
+        }
+
+        XCTAssertEqual(previous.x, 1, accuracy: 0.001)
+        XCTAssertEqual(previous.y, 1, accuracy: 0.001)
+    }
+
+    func testFollowMotionHasEquivalentTrajectoriesAtThirtyAndSixtyFPS() {
+        func center(after duration: TimeInterval, frameRate: Int) -> CGPoint {
+            var motion = CursorFollowMotion(responseDuration: 0.4)
+            _ = motion.update(target: .zero, at: 0)
+            for frame in 1...Int(duration * Double(frameRate)) {
+                _ = motion.update(
+                    target: CGPoint(x: 1, y: 0.75),
+                    at: Double(frame) / Double(frameRate)
+                )
+            }
+            return motion.center ?? .zero
+        }
+
+        let thirtyFPS = center(after: 0.5, frameRate: 30)
+        let sixtyFPS = center(after: 0.5, frameRate: 60)
+
+        XCTAssertEqual(thirtyFPS.x, sixtyFPS.x, accuracy: 0.0001)
+        XCTAssertEqual(thirtyFPS.y, sixtyFPS.y, accuracy: 0.0001)
+    }
+
+    func testFollowMotionUsesTheWholeIrregularFrameInterval() {
+        var oneLongFrame = CursorFollowMotion(responseDuration: 0.4)
+        _ = oneLongFrame.update(target: .zero, at: 0)
+        let longFrameCenter = oneLongFrame.update(target: CGPoint(x: 1, y: 1), at: 0.2)
+
+        var regularFrames = CursorFollowMotion(responseDuration: 0.4)
+        _ = regularFrames.update(target: .zero, at: 0)
+        for frame in 1...6 {
+            _ = regularFrames.update(
+                target: CGPoint(x: 1, y: 1),
+                at: Double(frame) / 30
+            )
+        }
+
+        XCTAssertEqual(longFrameCenter.x, regularFrames.center?.x ?? 0, accuracy: 0.0001)
+        XCTAssertEqual(longFrameCenter.y, regularFrames.center?.y ?? 0, accuracy: 0.0001)
+    }
+
+    func testFollowMotionResetsOnFirstAndNonMonotonicSamples() {
+        var motion = CursorFollowMotion(initialCenter: CGPoint(x: 0.5, y: 0.5))
+
+        let first = motion.update(target: CGPoint(x: 0.2, y: 0.3), at: 1)
+        XCTAssertEqual(first.x, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(first.y, 0.3, accuracy: 0.0001)
+
+        _ = motion.update(target: CGPoint(x: 0.8, y: 0.9), at: 1.1)
+        XCTAssertFalse(motion.isSettled)
+
+        let repeated = motion.update(target: CGPoint(x: 0.4, y: 0.6), at: 1.1)
+        XCTAssertEqual(repeated.x, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(repeated.y, 0.6, accuracy: 0.0001)
+        XCTAssertTrue(motion.isSettled)
+
+        let backwards = motion.update(target: CGPoint(x: 0.7, y: 0.1), at: 1)
+        XCTAssertEqual(backwards.x, 0.7, accuracy: 0.0001)
+        XCTAssertEqual(backwards.y, 0.1, accuracy: 0.0001)
+        XCTAssertTrue(motion.isSettled)
+    }
+
+    func testFollowMotionResetsAfterAFrameGapOverQuarterSecond() {
+        var motion = CursorFollowMotion()
+        _ = motion.update(target: .zero, at: 0)
+        _ = motion.update(target: CGPoint(x: 1, y: 1), at: 0.1)
+
+        let reset = motion.update(target: CGPoint(x: 0.25, y: 0.75), at: 0.351)
+
+        XCTAssertEqual(reset.x, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(reset.y, 0.75, accuracy: 0.0001)
+        XCTAssertTrue(motion.isSettled)
+    }
+
+    func testFollowMotionResetClearsVelocityAndTiming() {
+        var motion = CursorFollowMotion()
+        _ = motion.update(target: .zero, at: 0)
+        _ = motion.update(target: CGPoint(x: 1, y: 1), at: 0.1)
+
+        motion.reset(to: CGPoint(x: 0.5, y: 0.5))
+
+        XCTAssertEqual(motion.center?.x ?? 0, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(motion.center?.y ?? 0, 0.5, accuracy: 0.0001)
+        XCTAssertTrue(motion.isSettled)
+        let firstAfterReset = motion.update(target: CGPoint(x: 0.1, y: 0.9), at: 10)
+        XCTAssertEqual(firstAfterReset.x, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(firstAfterReset.y, 0.9, accuracy: 0.0001)
     }
 }

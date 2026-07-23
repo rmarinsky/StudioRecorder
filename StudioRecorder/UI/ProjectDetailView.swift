@@ -8,6 +8,8 @@ struct ProjectDetailView: View {
     let project: RecordingProjectSnapshot
     let onClose: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var selectedTrackID: String?
     @State private var programScreenTrackID: String?
     @StateObject private var editSession: ProjectEditSession
@@ -47,35 +49,50 @@ struct ProjectDetailView: View {
 
             if let programScreenTrackURL, FileManager.default.fileExists(atPath: programScreenTrackURL.path) {
                 HStack(alignment: .top, spacing: 0) {
-                    ScrollView {
-                        VStack(spacing: 14) {
+                    VStack(spacing: 0) {
+                        ZStack {
+                            detailContent
                             NativeVideoPlayer(player: editSession.player)
                                 .background(Color.black)
                                 .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
                                 .frame(maxWidth: .infinity)
-                                .frame(maxHeight: 420)
+                                .frame(maxHeight: .infinity)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 12)
                                         .stroke(.primary.opacity(0.10), lineWidth: 0.5)
                                 }
                                 .accessibilityLabel("Composed program preview")
+                                .padding(18)
+                        }
+                        .frame(minHeight: 250, maxHeight: .infinity)
 
+                        Divider()
+
+                        ScrollView {
                             ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
+                                .padding(16)
+                        }
+                        .frame(height: 318)
+                        .background(detailPanel)
 
-                            if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                        if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                            Divider()
+                            HStack {
                                 shareActions(for: selectedTrackURL)
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(detailPanel)
                         }
-                        .padding(22)
-                        .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(detailContent)
 
                     inspector
-                        .frame(width: 300)
+                        .frame(width: 316)
                         .frame(maxHeight: .infinity, alignment: .top)
-                        .background(.bar)
+                        .background(detailPanel)
                 }
             } else {
                 ContentUnavailableView {
@@ -144,7 +161,19 @@ struct ProjectDetailView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.bar)
+        .background(detailPanel)
+    }
+
+    private var detailContent: Color {
+        colorScheme == .dark
+            ? Color(red: 0.045, green: 0.048, blue: 0.052)
+            : Color(red: 0.94, green: 0.935, blue: 0.925)
+    }
+
+    private var detailPanel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.075, green: 0.078, blue: 0.084)
+            : Color(red: 0.975, green: 0.97, blue: 0.96)
     }
 
     private var inspector: some View {
@@ -412,11 +441,17 @@ struct ProjectDetailView: View {
             : ProjectAudioSource.allCases.filter { source in indexedTracks.contains { $0.source == source } }
         return ProjectProgramSources(
             screenURL: project.rootURL.appending(path: screen.relativePath),
+            screenSources: project.tracks.filter { $0.kind == .screen }.map {
+                ProjectScreenSource(
+                    url: project.rootURL.appending(path: $0.relativePath),
+                    displayID: $0.displayID
+                )
+            },
             cameraURL: camera.map { project.rootURL.appending(path: $0.relativePath) },
             audioURL: project.rootURL.appending(path: audioTrack.relativePath),
             audioSourceOrder: audioSourceOrder,
             audioSourceTrackIDs: audioSourceTrackIDs,
-            screenDisplayID: screen.displayID,
+            screenDisplayID: project.programDisplayID ?? screen.displayID,
             cursorTimeline: cursorTimeline,
             shortcutTimeline: shortcutTimeline,
             sceneTimeline: studioSceneTimeline?.hasSceneSwitches == true ? studioSceneTimeline : nil,
@@ -426,9 +461,10 @@ struct ProjectDetailView: View {
                     from: screen.id,
                     to: $0.id,
                     in: projectJournalEvents
-                )
+                ) + project.cameraSyncOffset
             } ?? 0,
-            rendersCursor: project.includesCursor && project.usesCompositedCursor
+            rendersCursor: project.includesCursor && project.usesCompositedCursor,
+            frameRate: project.frameRate
         )
     }
 

@@ -3,7 +3,7 @@ import CoreGraphics
 import Foundation
 import Security
 
-enum StreamDeliveryMode: String, CaseIterable, Identifiable, Sendable {
+enum StreamDeliveryMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case record
     case stream
     case recordAndStream
@@ -28,6 +28,23 @@ struct YouTubeStreamConfiguration: Equatable, Sendable {
     let canvasSize: CGSize
     let frameRate: Int
     let videoBitRate: Int
+    let audioBitRate: Int
+
+    init(
+        serverURL: URL,
+        streamKey: String,
+        canvasSize: CGSize,
+        frameRate: Int,
+        videoBitRate: Int,
+        audioBitRate: Int = 128_000
+    ) {
+        self.serverURL = serverURL
+        self.streamKey = streamKey
+        self.canvasSize = canvasSize
+        self.frameRate = frameRate
+        self.videoBitRate = videoBitRate
+        self.audioBitRate = audioBitRate
+    }
 
     var publishURL: URL? {
         guard serverURL.scheme?.lowercased() == "rtmps",
@@ -120,24 +137,49 @@ final class YouTubeStreamingSettingsStore: ObservableObject {
     static let defaultServerURL = "rtmps://a.rtmps.youtube.com/live2"
     static let serverURLKey = "youtubeStreaming.serverURL"
     static let videoBitRateKey = "youtubeStreaming.videoBitRate"
+    static let audioBitRateKey = "youtubeStreaming.audioBitRate"
+    static let legacyOAuthClientIDKey = "youtubeStreaming.oauthClientID"
+    static let usesManagedYouTubeKey = "youtubeStreaming.usesManagedYouTube"
+    static let bundledOAuthClientIDKey = "GoogleOAuthClientID"
+    static let bundledOAuthClientSecretKey = "GoogleOAuthClientSecret"
 
     @Published var serverURL: String
     @Published var streamKey: String
     @Published var videoBitRate: Int
+    @Published var audioBitRate: Int
+    @Published var usesManagedYouTube: Bool
     @Published private(set) var credentialError: String?
+    let oauthClientID: String
+    let hasOAuthClientSecret: Bool
 
     private let defaults: UserDefaults
     private let credentials: any StreamCredentialStoring
 
     init(
         defaults: UserDefaults = .standard,
-        credentials: any StreamCredentialStoring = KeychainStreamCredentialStore()
+        credentials: any StreamCredentialStoring = KeychainStreamCredentialStore(),
+        bundle: Bundle = .main,
+        bundledOAuthClientID: String? = nil,
+        bundledOAuthClientSecret: String? = nil
     ) {
         self.defaults = defaults
         self.credentials = credentials
         serverURL = defaults.string(forKey: Self.serverURLKey) ?? Self.defaultServerURL
         let savedBitRate = defaults.integer(forKey: Self.videoBitRateKey)
         videoBitRate = savedBitRate > 0 ? savedBitRate : 10_000_000
+        let savedAudioBitRate = defaults.integer(forKey: Self.audioBitRateKey)
+        audioBitRate = savedAudioBitRate > 0 ? savedAudioBitRate : 128_000
+        oauthClientID = (bundledOAuthClientID
+            ?? (bundle.object(forInfoDictionaryKey: Self.bundledOAuthClientIDKey) as? String)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let oauthClientSecret = (bundledOAuthClientSecret
+            ?? (bundle.object(forInfoDictionaryKey: Self.bundledOAuthClientSecretKey) as? String)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        hasOAuthClientSecret = !oauthClientSecret.isEmpty
+        usesManagedYouTube = defaults.object(forKey: Self.usesManagedYouTubeKey) as? Bool ?? true
+        defaults.removeObject(forKey: Self.legacyOAuthClientIDKey)
         do {
             streamKey = try credentials.loadStreamKey() ?? ""
         } catch {
@@ -150,6 +192,10 @@ final class YouTubeStreamingSettingsStore: ObservableObject {
         configuration(canvasSize: CGSize(width: 1_920, height: 1_080), frameRate: 30) != nil
     }
 
+    var isManagedYouTubeConfigured: Bool {
+        !oauthClientID.isEmpty && hasOAuthClientSecret
+    }
+
     func configuration(canvasSize: CGSize, frameRate: Int) -> YouTubeStreamConfiguration? {
         guard let server = URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return nil
@@ -159,7 +205,8 @@ final class YouTubeStreamingSettingsStore: ObservableObject {
             streamKey: streamKey,
             canvasSize: canvasSize,
             frameRate: frameRate,
-            videoBitRate: min(max(videoBitRate, 3_000_000), 40_000_000)
+            videoBitRate: min(max(videoBitRate, 3_000_000), 40_000_000),
+            audioBitRate: min(max(audioBitRate, 128_000), 256_000)
         )
         return configuration.publishURL == nil ? nil : configuration
     }
@@ -167,8 +214,11 @@ final class YouTubeStreamingSettingsStore: ObservableObject {
     func save() {
         serverURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         videoBitRate = min(max(videoBitRate, 3_000_000), 40_000_000)
+        audioBitRate = min(max(audioBitRate, 128_000), 256_000)
         defaults.set(serverURL, forKey: Self.serverURLKey)
         defaults.set(videoBitRate, forKey: Self.videoBitRateKey)
+        defaults.set(audioBitRate, forKey: Self.audioBitRateKey)
+        defaults.set(usesManagedYouTube, forKey: Self.usesManagedYouTubeKey)
         do {
             try credentials.saveStreamKey(streamKey)
             credentialError = nil

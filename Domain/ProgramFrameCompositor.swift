@@ -19,6 +19,7 @@ struct ProgramCursorState: Equatable, Sendable {
 final class ProgramFrameCompositor: @unchecked Sendable {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let cameraBackgroundProcessor: CameraBackgroundProcessor
+    private let overlayImageCache = NSCache<NSString, CIImage>()
 
     init(personQuality: CameraBackgroundProcessor.PersonQuality) {
         cameraBackgroundProcessor = CameraBackgroundProcessor(personQuality: personQuality)
@@ -47,7 +48,7 @@ final class ProgramFrameCompositor: @unchecked Sendable {
                 framing: screenFraming,
                 cursor: cursor,
                 cursorTreatment: presentation.cursor,
-                canvasSize: presentation.canvas.pixelSize,
+                opacity: presentation.screen.resolvedOpacity,
                 canvas: canvas,
                 over: result
             )
@@ -60,7 +61,22 @@ final class ProgramFrameCompositor: @unchecked Sendable {
                 framing: nil,
                 cursor: nil,
                 cursorTreatment: presentation.cursor,
-                canvasSize: presentation.canvas.pixelSize,
+                opacity: presentation.camera.resolvedOpacity,
+                canvas: canvas,
+                over: result
+            )
+        }
+        for overlay in presentation.resolvedImageOverlays {
+            guard overlay.placement.isVisible,
+                  let image = overlayImage(at: overlay.filePath) else { continue }
+            result = compose(
+                image,
+                transform: .identity,
+                placement: overlay.placement,
+                framing: nil,
+                cursor: nil,
+                cursorTreatment: presentation.cursor,
+                opacity: overlay.opacity,
                 canvas: canvas,
                 over: result
             )
@@ -168,7 +184,7 @@ final class ProgramFrameCompositor: @unchecked Sendable {
         framing: ScreenFramingSnapshot?,
         cursor: ProgramCursorState?,
         cursorTreatment: CursorTreatmentSnapshot,
-        canvasSize: CGSize,
+        opacity: CGFloat = 1,
         canvas: CGRect,
         over background: CIImage
     ) -> CIImage {
@@ -177,6 +193,12 @@ final class ProgramFrameCompositor: @unchecked Sendable {
             translationX: -oriented.extent.minX,
             y: -oriented.extent.minY
         ))
+        let target = CGRect(
+            x: canvas.width * placement.centerX - canvas.width * placement.width / 2,
+            y: canvas.height * (1 - placement.centerY) - canvas.height * placement.height / 2,
+            width: canvas.width * placement.width,
+            height: canvas.height * placement.height
+        )
         var cursorPoint = cursor.map {
             CGPoint(
                 x: oriented.extent.width * $0.normalizedX,
@@ -184,19 +206,13 @@ final class ProgramFrameCompositor: @unchecked Sendable {
             )
         }
         if let framing {
-            let rect = cropRect(oriented, canvasSize: canvasSize, framing: framing)
+            let rect = cropRect(oriented, viewportSize: target.size, framing: framing)
             oriented = oriented.cropped(to: rect).transformed(by: CGAffineTransform(
                 translationX: -rect.minX,
                 y: -rect.minY
             ))
             cursorPoint = cursorPoint.map { CGPoint(x: $0.x - rect.minX, y: $0.y - rect.minY) }
         }
-        let target = CGRect(
-            x: canvas.width * placement.centerX - canvas.width * placement.width / 2,
-            y: canvas.height * (1 - placement.centerY) - canvas.height * placement.height / 2,
-            width: canvas.width * placement.width,
-            height: canvas.height * placement.height
-        )
         let scale = max(target.width / oriented.extent.width, target.height / oriented.extent.height)
         var foreground = oriented.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let translation = CGPoint(
@@ -226,52 +242,104 @@ final class ProgramFrameCompositor: @unchecked Sendable {
                 y: 0
             ).scaledBy(x: -1, y: 1).translatedBy(x: -target.midX, y: 0))
         }
-        guard placement.shape != .rectangle else { return foreground.composited(over: background) }
-
-        let mask: CIImage?
-        if placement.shape == .circle {
-            let ellipse = CIFilter.radialGradient()
-            ellipse.center = .zero
-            ellipse.radius0 = 0.499
-            ellipse.radius1 = 0.501
-            ellipse.color0 = .white
-            ellipse.color1 = .clear
-            mask = ellipse.outputImage?
-                .transformed(by: CGAffineTransform(scaleX: target.width, y: target.height))
-                .transformed(by: CGAffineTransform(translationX: target.midX, y: target.midY))
-                .cropped(to: target)
-        } else {
-            let roundedRectangle = CIFilter.roundedRectangleGenerator()
-            roundedRectangle.extent = target
-            roundedRectangle.radius = Float(max(1, placement.effectiveCornerRadius * min(target.width, target.height)))
-            roundedRectangle.color = .white
-            mask = roundedRectangle.outputImage
+        if placement.shape != .rectangle {
+            let mask: CIImage?
+            if placement.shape == .circle {
+                let ellipse = CIFilter.radialGradient()
+                ellipse.center = .zero
+                ellipse.radius0 = 0.499
+                ellipse.radius1 = 0.501
+                ellipse.color0 = .white
+                ellipse.color1 = .clear
+                mask = ellipse.outputImage?
+                    .transformed(by: CGAffineTransform(scaleX: target.width, y: target.height))
+                    .transformed(by: CGAffineTransform(translationX: target.midX, y: target.midY))
+                    .cropped(to: target)
+            } else {
+                let roundedRectangle = CIFilter.roundedRectangleGenerator()
+                roundedRectangle.extent = target
+                roundedRectangle.radius = Float(max(1, placement.effectiveCornerRadius * min(target.width, target.height)))
+                roundedRectangle.color = .white
+                mask = roundedRectangle.outputImage
+            }
+            if let mask {
+                let blend = CIFilter.blendWithMask()
+                blend.inputImage = foreground
+                blend.backgroundImage = CIImage(color: .clear).cropped(to: target)
+                blend.maskImage = mask
+                foreground = blend.outputImage?.cropped(to: target) ?? foreground
+            }
         }
-        guard let mask else { return foreground.composited(over: background) }
-        let blend = CIFilter.blendWithMask()
-        blend.inputImage = foreground.composited(over: background)
-        blend.backgroundImage = background
-        blend.maskImage = mask
-        return blend.outputImage?.cropped(to: canvas) ?? foreground.composited(over: background)
+        foreground = applyingOpacity(opacity, to: foreground)
+        let withShadow = shadowImage(for: foreground, placement: placement, target: target, canvas: canvas)
+            .map { $0.composited(over: background) } ?? background
+        return foreground.composited(over: withShadow).cropped(to: canvas)
+    }
+
+    private func overlayImage(at path: String) -> CIImage? {
+        let key = path as NSString
+        if let cached = overlayImageCache.object(forKey: key) { return cached }
+        guard let image = CIImage(
+            contentsOf: URL(fileURLWithPath: path),
+            options: [.applyOrientationProperty: true]
+        ) else { return nil }
+        overlayImageCache.setObject(image, forKey: key)
+        return image
+    }
+
+    private func applyingOpacity(_ opacity: CGFloat, to image: CIImage) -> CIImage {
+        let opacity = min(max(opacity, 0), 1)
+        guard opacity < 1 else { return image }
+        let filter = CIFilter.colorMatrix()
+        filter.inputImage = image
+        filter.aVector = CIVector(x: 0, y: 0, z: 0, w: opacity)
+        return filter.outputImage ?? image
+    }
+
+    private func shadowImage(
+        for image: CIImage,
+        placement: SourcePlacementSnapshot,
+        target: CGRect,
+        canvas: CGRect
+    ) -> CIImage? {
+        guard let shadow = placement.shadow?.validated(), shadow.opacity > 0 else { return nil }
+        let color = CIFilter.colorMatrix()
+        color.inputImage = image
+        let clearVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        color.rVector = clearVector
+        color.gVector = clearVector
+        color.bVector = clearVector
+        color.aVector = CIVector(x: 0, y: 0, z: 0, w: shadow.opacity)
+        guard var result = color.outputImage else { return nil }
+        let radius = shadow.radius * min(target.width, target.height)
+        if radius > 0 {
+            result = result.applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+        }
+        return result
+            .transformed(by: CGAffineTransform(
+                translationX: shadow.offsetX * canvas.width,
+                y: -shadow.offsetY * canvas.height
+            ))
+            .cropped(to: canvas)
     }
 
     private func cropRect(
         _ image: CIImage,
-        canvasSize: CGSize,
+        viewportSize: CGSize,
         framing: ScreenFramingSnapshot
     ) -> CGRect {
         let extent = image.extent
         guard extent.width > 0,
               extent.height > 0,
-              canvasSize.width > 0,
-              canvasSize.height > 0 else { return extent }
-        let canvasAspect = canvasSize.width / canvasSize.height
+              viewportSize.width > 0,
+              viewportSize.height > 0 else { return extent }
+        let viewportAspect = viewportSize.width / viewportSize.height
         let imageAspect = extent.width / extent.height
         let maximumSize: CGSize
-        if imageAspect >= canvasAspect {
-            maximumSize = CGSize(width: extent.height * canvasAspect, height: extent.height)
+        if imageAspect >= viewportAspect {
+            maximumSize = CGSize(width: extent.height * viewportAspect, height: extent.height)
         } else {
-            maximumSize = CGSize(width: extent.width, height: extent.width / canvasAspect)
+            maximumSize = CGSize(width: extent.width, height: extent.width / viewportAspect)
         }
         let cropSize = CGSize(
             width: maximumSize.width * framing.scale,

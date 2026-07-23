@@ -4,6 +4,46 @@ import XCTest
 @testable import StudioRecorder
 
 final class CapturePresentationTests: XCTestCase {
+    func testPNGImporterCopiesAndPlacesDroppedImageAtItsDropPoint() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let importedDirectory = directory.appending(path: "Imported")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "logo.png")
+        let image = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 200, height: 100))
+        try CIContext().writePNGRepresentation(
+            of: image,
+            to: sourceURL,
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+
+        let overlay = try ImageOverlayImporter.importPNG(
+            from: sourceURL,
+            canvas: CaptureCanvasSnapshot(preset: .fullHD),
+            center: CGPoint(x: 0.25, y: 0.75),
+            destinationDirectory: importedDirectory
+        )
+
+        XCTAssertEqual(overlay.name, "logo")
+        XCTAssertEqual(overlay.placement.centerX, 0.25, accuracy: 0.001)
+        XCTAssertEqual(overlay.placement.centerY, 0.75, accuracy: 0.001)
+        XCTAssertEqual(overlay.placement.width, 0.2, accuracy: 0.001)
+        XCTAssertEqual(overlay.placement.height, 0.178, accuracy: 0.001)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: overlay.filePath))
+    }
+
+    func testPNGImporterRejectsOtherFileTypes() {
+        XCTAssertThrowsError(try ImageOverlayImporter.importPNG(
+            from: URL(fileURLWithPath: "/tmp/logo.jpg"),
+            canvas: CaptureCanvasSnapshot(preset: .fullHD)
+        )) { error in
+            guard case ImageOverlayImportError.notPNG = error else {
+                return XCTFail("Expected a clear PNG-only validation error")
+            }
+        }
+    }
+
     func testLegacyPresentationDefaultsCameraBackgroundToOff() throws {
         let encoded = try JSONEncoder().encode(CapturePresentationSnapshot.default)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -16,7 +56,62 @@ final class CapturePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(decoded.resolvedCameraBackground, .off)
+        XCTAssertTrue(decoded.resolvedImageOverlays.isEmpty)
+        XCTAssertNil(decoded.screen.shadow)
         XCTAssertEqual(decoded.resolvedName, "Scene 1")
+    }
+
+    func testProgramCompositorRendersPNGOverlayAndItsShadow() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let overlayURL = directory.appending(path: "logo.png")
+        let red = CIImage(color: CIColor(red: 1, green: 0, blue: 0)).cropped(
+            to: CGRect(x: 0, y: 0, width: 20, height: 20)
+        )
+        try CIContext().writePNGRepresentation(
+            of: red,
+            to: overlayURL,
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+        presentation.camera.isVisible = false
+        presentation.imageOverlays = [ImageOverlaySnapshot(
+            name: "Logo",
+            filePath: overlayURL.path,
+            placement: SourcePlacementSnapshot(
+                centerX: 0.4,
+                centerY: 0.5,
+                width: 0.2,
+                height: 0.2,
+                shape: .rectangle,
+                shadow: SourceShadowSnapshot(opacity: 1, radius: 0, offsetX: 0.12, offsetY: 0)
+            )
+        )]
+        let output = try pixelBuffer(width: 320, height: 320)
+        ProgramFrameCompositor(personQuality: .export).render(
+            screen: CIImage(color: CIColor(red: 0, green: 0, blue: 1)).cropped(
+                to: CGRect(x: 0, y: 0, width: 320, height: 320)
+            ),
+            camera: nil,
+            presentation: presentation,
+            to: output
+        )
+        let rendered = try XCTUnwrap(CIContext().createCGImage(
+            CIImage(cvPixelBuffer: output),
+            from: CGRect(x: 0, y: 0, width: 320, height: 320)
+        ))
+
+        let logo = try rgba(in: rendered, x: 128, y: 160)
+        let shadow = try rgba(in: rendered, x: 180, y: 160)
+        let background = try rgba(in: rendered, x: 250, y: 160)
+        XCTAssertGreaterThan(logo.red, 200)
+        XCTAssertLessThan(shadow.red, 30)
+        XCTAssertLessThan(shadow.blue, 30)
+        XCTAssertGreaterThan(background.blue, 200)
     }
 
     func testLegacyCursorTreatmentKeepsShortcutDisplayOff() throws {
@@ -229,6 +324,23 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertLessThanOrEqual(region.maxY, 1_440)
         XCTAssertEqual(region.maxX, 3_440, accuracy: 0.001)
         XCTAssertEqual(region.minY, 0, accuracy: 0.001)
+    }
+
+    func testFollowCursorViewportUsesTheResizedScreenLayerAspectAtTheDisplayEdge() {
+        let region = CaptureGeometryPlanner.sourceRect(
+            displaySize: CGSize(width: 3_840, height: 2_160),
+            canvasSize: CGSize(width: 2_700, height: 2_160),
+            framing: ScreenFramingSnapshot(
+                mode: .followCursor,
+                centerX: 0,
+                centerY: 0.5,
+                scale: 0.55
+            )
+        )
+
+        XCTAssertEqual(region.width / region.height, 2_700.0 / 2_160.0, accuracy: 0.001)
+        XCTAssertEqual(region.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(region.midY, 1_080, accuracy: 0.001)
     }
 
     func testManualZoomTargetsTheCursorInsideTheSelectedDisplay() {
@@ -467,6 +579,26 @@ final class CapturePresentationTests: XCTestCase {
         XCTAssertEqual(landscape.matchingAspectPreset(on: CaptureCanvasSnapshot(preset: .verticalHD)), .landscape16x9)
     }
 
+    func testCircleCameraValidatesToASquareInCanvasPixels() {
+        var presentation = CapturePresentationSnapshot.default
+        presentation.camera = SourcePlacementSnapshot(
+            centerX: 0.5,
+            centerY: 0.5,
+            width: 0.4,
+            height: 0.2,
+            shape: .circle
+        )
+
+        let validated = presentation.validated()
+        let canvas = validated.canvas.pixelSize
+
+        XCTAssertEqual(
+            validated.camera.width * canvas.width,
+            validated.camera.height * canvas.height,
+            accuracy: 0.001
+        )
+    }
+
     func testFixedRegionStreamUsesTheCanvasOutputWhileFullDisplayPreservesNativePixels() {
         var presentation = CapturePresentationSnapshot.default
         presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
@@ -506,5 +638,14 @@ final class CapturePresentationTests: XCTestCase {
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         let offset = ((min(max(y, 0), image.height - 1) * image.width) + min(max(x, 0), image.width - 1)) * 4
         return (bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3])
+    }
+
+    private func pixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer),
+            kCVReturnSuccess
+        )
+        return try XCTUnwrap(buffer)
     }
 }

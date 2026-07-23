@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Network
 
 enum StreamPreflightCheckID: String, Equatable, Hashable, Sendable {
     case invalidServer
@@ -46,6 +47,7 @@ struct StreamPreflightRequest: Equatable, Sendable {
     let canvasSize: CGSize
     let frameRate: Int
     let videoBitRate: Int
+    let audioBitRate: Int
     let destinationURL: URL
     let capturesSystemAudio: Bool
     let capturesMicrophone: Bool
@@ -67,6 +69,7 @@ struct StreamPreflightRequest: Equatable, Sendable {
         capturesCamera: Bool,
         cameraBackground: CameraBackgroundSnapshot,
         selectedDisplaySizes: [CGSize] = [],
+        audioBitRate: Int = 128_000,
         revision: Int = 0
     ) {
         self.deliveryMode = deliveryMode
@@ -75,6 +78,7 @@ struct StreamPreflightRequest: Equatable, Sendable {
         self.canvasSize = canvasSize
         self.frameRate = frameRate
         self.videoBitRate = videoBitRate
+        self.audioBitRate = audioBitRate
         self.destinationURL = destinationURL
         self.capturesSystemAudio = capturesSystemAudio
         self.capturesMicrophone = capturesMicrophone
@@ -176,7 +180,7 @@ struct StreamPreflightEvaluator: Sendable {
             checks.append(passed(
                 .audioConfiguration,
                 "Audio ingest",
-                "Enabled sources are mixed into one AAC stereo stream at 128 Kbps."
+                "Enabled sources are mixed into one AAC stereo stream at \(request.audioBitRate / 1_000) Kbps."
             ))
         } else {
             checks.append(blocked(
@@ -233,19 +237,22 @@ struct StreamPreflightEvaluator: Sendable {
             case .unreachable(let message):
                 checks.append(warning(
                     .endpointUnreachable,
-                    "YouTube host check was inconclusive",
-                    "\(message) This HTTPS check is advisory and does not determine RTMPS availability."
+                    "YouTube RTMPS check was inconclusive",
+                    "\(message) The connection check is advisory; ingest still fails closed when streaming starts."
                 ))
             case .notChecked:
                 checks.append(warning(
                     .endpointUnreachable,
-                    "YouTube host was not checked",
-                    "The advisory HTTPS host check did not run; RTMPS will still fail closed if ingest is unavailable."
+                    "YouTube RTMPS host was not checked",
+                    "The advisory TLS check did not run; ingest still fails closed when streaming starts."
                 ))
             }
         }
 
-        let recommendedBitRate = recommendedBitRate(forPixelCount: pixelCount)
+        let recommendedBitRate = recommendedBitRate(
+            forPixelCount: pixelCount,
+            frameRate: request.frameRate
+        )
         let ratio = Double(request.videoBitRate) / Double(recommendedBitRate)
         if ratio < 0.80 || ratio > 1.25 {
             checks.append(blocked(
@@ -310,12 +317,13 @@ struct StreamPreflightEvaluator: Sendable {
         return Int64(bytes.rounded(.up))
     }
 
-    private func recommendedBitRate(forPixelCount pixelCount: Int) -> Int {
-        switch pixelCount {
-        case Self.fourKPixels...: 30_000_000
-        case 3_000_000...: 15_000_000
-        case 1_500_000...: 10_000_000
-        case 800_000...: 4_000_000
+    private func recommendedBitRate(forPixelCount pixelCount: Int, frameRate: Int) -> Int {
+        let isHighFrameRate = frameRate > 30
+        return switch pixelCount {
+        case Self.fourKPixels...: isHighFrameRate ? 35_000_000 : 30_000_000
+        case 3_000_000...: isHighFrameRate ? 24_000_000 : 15_000_000
+        case 1_500_000...: isHighFrameRate ? 12_000_000 : 10_000_000
+        case 800_000...: isHighFrameRate ? 6_000_000 : 4_000_000
         default: 4_000_000
         }
     }
@@ -375,28 +383,54 @@ struct SystemStreamPreflightProbe: StreamPreflightProbing {
     private func inspectEndpoint(_ serverURL: URL?) async -> StreamEndpointReachability {
         guard let serverURL,
               let host = serverURL.host else { return .notChecked }
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = host
-        components.port = serverURL.port
-        components.path = "/"
-        guard let probeURL = components.url else { return .notChecked }
+        let port = serverURL.port ?? 443
+        guard let rawPort = UInt16(exactly: port),
+              let endpointPort = NWEndpoint.Port(rawValue: rawPort) else { return .notChecked }
+        return await RTMPSEndpointProbe(host: host, port: endpointPort).run()
+    }
+}
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.timeoutIntervalForResource = 5
-        let session = URLSession(configuration: configuration)
-        var request = URLRequest(url: probeURL)
-        request.httpMethod = "HEAD"
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        do {
-            _ = try await session.data(for: request)
-            let milliseconds = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
-            return .reachable(roundTripMilliseconds: max(milliseconds, 1))
-        } catch {
-            return .unreachable(error.localizedDescription)
+private final class RTMPSEndpointProbe: @unchecked Sendable {
+    private let connection: NWConnection
+    private let queue = DispatchQueue(label: "StudioRecorder.RTMPSEndpointProbe")
+    private var continuation: CheckedContinuation<StreamEndpointReachability, Never>?
+    private var startedAt = 0.0
+
+    init(host: String, port: NWEndpoint.Port) {
+        connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tls)
+    }
+
+    func run() async -> StreamEndpointReachability {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                self.continuation = continuation
+                startedAt = ProcessInfo.processInfo.systemUptime
+                connection.stateUpdateHandler = { [weak self] state in
+                    guard let self else { return }
+                    switch state {
+                    case .ready:
+                        let milliseconds = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
+                        finish(.reachable(roundTripMilliseconds: max(milliseconds, 1)))
+                    case .failed(let error):
+                        finish(.unreachable(error.localizedDescription))
+                    default:
+                        break
+                    }
+                }
+                connection.start(queue: queue)
+                queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+                    self?.finish(.unreachable("The RTMPS endpoint timed out."))
+                }
+            }
         }
+    }
+
+    private func finish(_ result: StreamEndpointReachability) {
+        guard let continuation else { return }
+        self.continuation = nil
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+        continuation.resume(returning: result)
     }
 }
 

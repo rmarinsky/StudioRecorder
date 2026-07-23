@@ -111,10 +111,14 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let recoveryReport: RecordingProjectRecoveryReport
     let presentation: CapturePresentationSnapshot?
     let primaryAudioDisplayID: UInt32?
+    var recordingName: String? = nil
     var includesCursor = true
     var usesCompositedCursor = false
     var capturesSystemAudio = false
     var capturesMicrophone = false
+    var cameraSyncOffset: TimeInterval = 0
+    var programDisplayID: UInt32? = nil
+    var frameRate = 30
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -816,10 +820,16 @@ final class RecordingProjectStore {
                 presentation: manifest.captureRequest?.presentation,
                 primaryAudioDisplayID: manifest.captureRequest?.audio.primaryAudioDisplayID
                     ?? manifest.primaryAudioDisplayID,
+                recordingName: manifest.captureRequest?.recordingName,
                 includesCursor: manifest.captureRequest?.profile.includeCursor ?? true,
                 usesCompositedCursor: manifest.captureRequest?.profile.resolvedCursorRendering == .composited,
                 capturesSystemAudio: manifest.captureRequest?.audio.capturesSystemAudio ?? false,
-                capturesMicrophone: manifest.captureRequest?.audio.capturesMicrophone ?? false
+                capturesMicrophone: manifest.captureRequest?.audio.capturesMicrophone ?? false,
+                cameraSyncOffset: manifest.captureRequest?.profile.resolvedCameraSyncOffset ?? 0,
+                programDisplayID: manifest.captureRequest?.profile.programDisplayID,
+                frameRate: manifest.captureRequest.map {
+                    CaptureDefaults.supportedFrameRates.contains($0.profile.frameRate) ? $0.profile.frameRate : 30
+                } ?? 30
             )
         }
     }

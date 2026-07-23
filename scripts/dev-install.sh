@@ -17,7 +17,7 @@ fi
 cd "$ROOT"
 xcodegen generate --spec project.yml --project "$ROOT"
 
-xcodebuild \
+XCODEBUILD_ARGS=(
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration Debug \
@@ -25,8 +25,16 @@ xcodebuild \
   -derivedDataPath "$BUILD_DIR" \
   CODE_SIGNING_ALLOWED=NO \
   "PRODUCT_NAME=$DEV_NAME" \
-  "PRODUCT_BUNDLE_IDENTIFIER=$DEV_BUNDLE_ID" \
-  build
+  "PRODUCT_BUNDLE_IDENTIFIER=$DEV_BUNDLE_ID"
+)
+if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
+  XCODEBUILD_ARGS+=("GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID")
+fi
+if [[ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+  XCODEBUILD_ARGS+=("GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET")
+fi
+
+xcodebuild "${XCODEBUILD_ARGS[@]}" build
 
 BUILT_APP="$BUILD_DIR/Build/Products/Debug/$DEV_NAME.app"
 if [[ ! -d "$BUILT_APP" ]]; then

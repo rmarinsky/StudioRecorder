@@ -226,6 +226,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(snapshots[0].lifecycle, .needsRecovery)
         XCTAssertEqual(snapshots[0].sources[0].metadataState, .unknown)
         XCTAssertEqual(snapshots[0].recoveryReport.tracks[0].state, .unknownV1)
+        XCTAssertEqual(snapshots[0].frameRate, 30)
         XCTAssertEqual(try Data(contentsOf: manifestURL), manifestData)
     }
 
@@ -300,7 +301,7 @@ final class RecordingProjectStoreTests: XCTestCase {
                 excludesStudioRecorderAudio: false
             ),
             profile: CaptureProfileSnapshot(
-                frameRate: 30,
+                frameRate: 60,
                 codecPolicy: .h264,
                 includeCursor: false,
                 excludeStudioRecorder: false,
@@ -368,6 +369,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.recoveryReport.tracks.map(\.state), [.finalized, .finalized, .finalized])
         XCTAssertFalse(snapshot.capturesSystemAudio)
         XCTAssertTrue(snapshot.capturesMicrophone)
+        XCTAssertEqual(snapshot.frameRate, 60)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: project.rootURL.appending(path: ProjectAudioStemIndex.filename).path
         ))

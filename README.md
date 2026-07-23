@@ -20,7 +20,7 @@ public brand.
 - marks or resets a pointer-centered 2× manual zoom during recording or streaming with `⌥⌘Z`; the timestamped Scene timeline replays the same crop in project playback, MOV, GIF, and program output, and non-destructive post-record controls can move, retarget, resize, or remove each zoom while the full raw display remains recoverable;
 - keeps the Studio inspector concise with large Screen, Camera, and Microphone & Audio rows that open focused native source-and-layout popovers;
 - removes or blurs the camera background locally with Apple Vision Person detection using Auto, Quality, or Performance processing profiles, or uses adjustable green/blue chroma key while preserving non-key-colored foreground equipment; Auto lowers live mask detail and cadence under load while quality-first export and editable raw camera media remain unchanged;
-- offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; manual RTMPS credentials stay in macOS Keychain, the stream uses the same screen/camera/background/follow compositor as local program output, the stream-only safety archive flattens system and microphone audio into one player-compatible AAC track, and live health shows measured composition FPS, render latency, dropped frames, canvas, and bitrate;
+- offers Record, YouTube Stream, or Record + Stream from the same frozen Scene; managed YouTube mode uses external-browser OAuth, creates and binds a private event, keeps tokens in macOS Keychain, refreshes current primary/backup RTMPS ingestion during reconnect, reconciles an interrupted event on relaunch, reports server-side ingest/broadcast health, and explicitly completes it on Stop; manual RTMPS remains available as a fallback;
 - watches every active recording and streaming source independently—including each selected display, camera, system audio, and microphone—and surfaces warm-up, stalls, and recovery without stopping the capture; combined Record + Stream keeps the two delivery paths visibly separate, while a stalled live-program screen ingress gets up to two bounded in-place/rebuild recovery attempts without disturbing raw recording tracks;
 - primes the real program compositor before publishing: a post-attempt screen frame must render with the exact validated Scene and every visible camera must provide a current frame before YouTube, the stream-only archive, or Record + Stream can start;
 - runs a mandatory local stream preflight before starting: credential shape, output/frame-rate contract, one mixed AAC audio stream, destination writeability, storage reserve, YouTube host reachability, and resolution-specific bitrate guidance; transport status says Sending only after the first configured media packets are submitted and does not claim viewer-visible Live;
@@ -38,7 +38,7 @@ public brand.
 ## Deliberately not claimed as complete
 
 A program movie is composed during playback/export or during safe post-recording finalization when Program movie only is selected. Live and recorded Follow Cursor use the same scene framing and the custom cursor/click renderer. Editable tracks keeps the full display and synchronized system/microphone stems recoverable; Program movie only verifies the expected audio tracks before trading later layout changes for one share-ready file. Quick Edit builds cached source-time waveforms with peak/RMS levels and clipping markers for the system and microphone stems, plus independent source, master, and selected-segment mute/volume, without rewriting retained media. Segment speed and local transcripts remain future slices.
-YouTube streaming now retries an interrupted established connection for at least one minute (ten attempts with bounded backoff), with an honest reconnect state and cancellable Stop behavior. Record + Stream keeps its independent editable recording alive while YouTube reconnects. Stream-only automatically writes the exact composed program to a fragmented local MOV, keeps it running through reconnects, flattens system and microphone audio into one share-ready AAC track, and exposes archive failure separately from RTMPS state; system and microphone inputs are also mixed into the single AAC stream expected by YouTube. Automatic recovery currently covers the separate live-program screen ingress only. Restarting fixed raw screen/camera files or their shared audio stream safely requires segmented track descriptors and stitching first; those stalls remain visible instead of risking the recording. The current preflight verifies local configuration and basic host reachability, not viewer-visible broadcast state or sustained upload capacity. YouTube OAuth/API broadcast health and long horizontal/vertical/4K ingest soak tests remain before streaming is release-ready. Cloud hosting and arbitrary source/device changes during a live session remain out of scope.
+YouTube streaming retries an interrupted established connection for at least one minute (ten attempts with bounded backoff), with an honest reconnect state and cancellable Stop behavior. Managed mode waits for fresh local media before advancing the private preview to viewer-visible live, alternates YouTube's current primary/backup ingestion endpoints, and stops retrying when the remote event is complete or revoked. Record + Stream keeps its independent editable recording alive while YouTube reconnects. Stream-only automatically writes the exact composed program to a fragmented local MOV, keeps it running through reconnects, flattens system and microphone audio into one share-ready AAC track, and exposes archive failure separately from RTMPS state. Automatic recovery covers the live-program screen ingress; fixed raw screen/camera files still remain fail-visible because safe restart requires segmented track descriptors and stitching. Long private horizontal/vertical/4K ingest, network-loss, key-rotation, device-loss, force-quit, and sleep/wake soak evidence still remains before streaming is release-ready. Manual-key mode provides transport recovery only and requires verification in Live Control Room.
 
 ## Build and run
 
@@ -49,6 +49,14 @@ Requirements: Xcode 26.5, XcodeGen, macOS Tahoe 26 on Apple Silicon.
       -destination 'platform=macOS,arch=arm64' build CODE_SIGNING_ALLOWED=NO
 
 On first launch, grant Screen Recording, Microphone, and Camera access in macOS when requested. Use one short recording first and verify the raw `.mov` files and `journal.ndjson` in the project package.
+
+Managed YouTube uses one application-owned OAuth desktop client. Local builds may inject it without writing credentials to the repository:
+
+    GOOGLE_OAUTH_CLIENT_ID='…apps.googleusercontent.com' \
+    GOOGLE_OAUTH_CLIENT_SECRET='…' \
+    ./scripts/dev-install.sh
+
+Without both values, recording and manual RTMPS remain available while managed YouTube is shown as unavailable. OAuth tokens are stored in macOS Keychain; the client secret is never stored with those tokens. Like every native desktop OAuth secret, it is recoverable from a distributed binary and is not treated as a security boundary.
 
 ## Install the DEV app
 
@@ -63,3 +71,23 @@ separate from a future release build.
 
     xcodebuild -project StudioRecorder.xcodeproj -scheme StudioRecorder \
       -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+
+## Releases
+
+CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The release workflow signs an arm64 app with Developer ID, submits it to Apple notarization, staples and validates it, then produces a ZIP and SHA-256 checksum. Manual runs upload an internal validation artifact. A `v*` tag additionally publishes those files as a GitHub release.
+
+Repository variables:
+
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `APPLE_TEAM_ID`
+
+Repository secrets:
+
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `DEVELOPER_ID_CERTIFICATE_P12_BASE64`
+- `DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `APP_STORE_CONNECT_API_KEY_P8_BASE64`
+- `APP_STORE_CONNECT_KEY_ID`
+- `APP_STORE_CONNECT_ISSUER_ID`
+
+Rotate the Google OAuth client secret before the first public build. Product information, privacy terms, and release links are published at [rmarinsky.com.ua/studio-recorder](https://rmarinsky.com.ua/en/studio-recorder/).

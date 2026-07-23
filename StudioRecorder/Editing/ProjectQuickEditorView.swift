@@ -6,6 +6,8 @@ struct ProjectQuickEditorView: View {
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
+    @State private var assistantCommand = ""
+    @State private var assistantMessage: String?
 
     var body: some View {
         Group {
@@ -82,6 +84,8 @@ struct ProjectQuickEditorView: View {
             }
             .buttonStyle(.bordered)
 
+            commandEditor(timeline)
+
             audioEditor(timeline)
             zoomEditor(timeline)
             privacyEditor(timeline)
@@ -130,6 +134,81 @@ struct ProjectQuickEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+        }
+    }
+
+    private func commandEditor(_ timeline: ProjectEditTimeline) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Label("Edit with a command", systemImage: "text.bubble")
+                    .font(.subheadline.weight(.semibold))
+                Text("LOCAL")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                TextField("Try “split here”, “trim before”, “mute segment”, or “undo”", text: $assistantCommand)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { runCommand(timeline) }
+                Button("Apply") { runCommand(timeline) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(assistantCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.isWorking)
+            }
+
+            if let assistantMessage {
+                Text(assistantMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Commands use the same non-destructive timeline actions as the buttons. Transcription, silence detection, and subtitles are not connected yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func runCommand(_ timeline: ProjectEditTimeline) {
+        let command = assistantCommand.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !command.isEmpty else { return }
+        assistantCommand = ""
+
+        if command.contains("split") {
+            assistantMessage = "Splitting at the current playhead."
+            Task { await session.splitAtPlayhead() }
+        } else if command.contains("trim before") || command.contains("remove before") {
+            assistantMessage = "Trimming everything before the current playhead."
+            Task { await session.trimStartAtPlayhead() }
+        } else if command.contains("trim after") || command.contains("remove after") {
+            assistantMessage = "Trimming everything after the current playhead."
+            Task { await session.trimEndAtPlayhead() }
+        } else if command.contains("delete") && command.contains("segment") {
+            assistantMessage = "Deleting the selected segment."
+            Task { await session.deleteSelectedSegment() }
+        } else if command.contains("mute") && command.contains("segment"),
+                  let selectedSegmentID = session.selectedSegmentID {
+            var adjustment = session.segmentAudioAdjustment(for: selectedSegmentID)
+            adjustment.isMuted = true
+            session.updateSegmentAudioAdjustment(adjustment)
+            assistantMessage = "Muted the selected segment in the edit."
+        } else if command == "undo" || command.contains("undo last") {
+            assistantMessage = "Undoing the last edit."
+            Task { await session.undo() }
+        } else if command == "redo" || command.contains("redo last") {
+            assistantMessage = "Redoing the last edit."
+            Task { await session.redo() }
+        } else {
+            assistantMessage = "That command is not available locally yet. Try split, trim before, trim after, delete segment, mute segment, undo, or redo."
         }
     }
 
@@ -778,6 +857,8 @@ private struct ProjectTimelineStrip: View {
     let selectedSegmentID: UUID?
     let onSelect: (UUID) -> Void
 
+    private let timelineAccent = Color(red: 0.95, green: 0.34, blue: 0.31)
+
     var body: some View {
         GeometryReader { proxy in
             let availableWidth = max(proxy.size.width, 1)
@@ -793,7 +874,7 @@ private struct ProjectTimelineStrip: View {
                         onSelect(segment.id)
                     } label: {
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(selectedSegmentID == segment.id ? Color.accentColor : Color.accentColor.opacity(0.45))
+                            .fill(selectedSegmentID == segment.id ? timelineAccent : timelineAccent.opacity(0.34))
                             .overlay {
                                 if width > 72 {
                                     Text("\(index + 1)  ·  \(sourceRange(segment))")
