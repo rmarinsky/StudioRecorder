@@ -22,7 +22,7 @@ jobs:
       GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
