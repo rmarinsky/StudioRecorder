@@ -215,10 +215,10 @@ struct CursorFollowMotion {
     private var velocityY = 0.0
     private let spring: Spring
 
-    init(initialCenter: CGPoint? = nil, responseDuration: TimeInterval = 0.4) {
+    init(initialCenter: CGPoint? = nil, responseDuration: TimeInterval = 0.65) {
         center = initialCenter
         spring = Spring(
-            response: responseDuration.isFinite ? max(responseDuration, 0.001) : 0.4,
+            response: responseDuration.isFinite ? max(responseDuration, 0.001) : 0.65,
             dampingRatio: 1
         )
     }

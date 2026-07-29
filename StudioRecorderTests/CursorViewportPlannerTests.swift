@@ -264,6 +264,22 @@ final class CursorViewportPlannerTests: XCTestCase {
         XCTAssertTrue(motion.isSettled)
     }
 
+    func testDefaultFollowMotionIsSmootherThanTheLegacyResponse() {
+        var smoother = CursorFollowMotion()
+        var legacy = CursorFollowMotion(responseDuration: 0.4)
+        _ = smoother.update(target: .zero, at: 0)
+        _ = legacy.update(target: .zero, at: 0)
+
+        for frame in 1...12 {
+            let timestamp = Double(frame) / 60
+            _ = smoother.update(target: CGPoint(x: 1, y: 1), at: timestamp)
+            _ = legacy.update(target: CGPoint(x: 1, y: 1), at: timestamp)
+        }
+
+        XCTAssertLessThan(smoother.center?.x ?? 0, legacy.center?.x ?? 0)
+        XCTAssertGreaterThan(smoother.center?.x ?? 0, 0)
+    }
+
     func testFollowMotionResetClearsVelocityAndTiming() {
         var motion = CursorFollowMotion()
         _ = motion.update(target: .zero, at: 0)
