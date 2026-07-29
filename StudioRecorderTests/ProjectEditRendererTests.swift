@@ -90,6 +90,33 @@ final class ProjectEditRendererTests: XCTestCase {
         )
     }
 
+    func testUnexpectedRecordingOutputFinishInterruptsAnActiveSession() {
+        XCTAssertTrue(
+            RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: .recording,
+                isTearingDown: false
+            )
+        )
+        XCTAssertTrue(
+            RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: .paused,
+                isTearingDown: false
+            )
+        )
+        XCTAssertFalse(
+            RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: .stopping,
+                isTearingDown: true
+            )
+        )
+        XCTAssertFalse(
+            RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: .ready,
+                isTearingDown: false
+            )
+        )
+    }
+
     func testAudioMixAppliesIndependentSourceGainByPersistentTrackIdentity() throws {
         let composition = AVMutableComposition()
         _ = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: 11))

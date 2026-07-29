@@ -15,6 +15,12 @@ enum RecordingOutputFinalizationPolicy {
     }
 }
 
+enum RecordingOutputCompletionPolicy {
+    static func shouldInterrupt(state: RecordingState, isTearingDown: Bool) -> Bool {
+        !isTearingDown && (state == .recording || state == .paused)
+    }
+}
+
 struct AvailableDisplay: Identifiable, Equatable {
     let id: UInt32
     let title: String
@@ -190,6 +196,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var terminalFailure: String?
     private var configuredProjectDirectories: Set<URL> = []
     private var lastCameraHealthDuration: TimeInterval = 0
+    private var lastStorageCheckAt: TimeInterval = 0
 
     override init() {
         super.init()
@@ -287,6 +294,26 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         sourceRecoveryState = .idle
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
+            let requiredCapacity = RecordingStoragePolicy.requiredCapacity(
+                displaySizes: request.displaySources.map {
+                    CGSize(width: $0.pixelWidth, height: $0.pixelHeight)
+                },
+                canvasSize: request.presentation.canvas.pixelSize,
+                frameRate: request.profile.frameRate,
+                capturesCamera: request.camera != nil
+            )
+            if let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+               !RecordingStoragePolicy.canStart(
+                    availableCapacity: availableCapacity,
+                    requiredCapacity: requiredCapacity
+               ) {
+                state = .failed(
+                    "Not enough free space for this recording. Keep at least "
+                    + ByteCountFormatter.string(fromByteCount: requiredCapacity, countStyle: .file)
+                    + " free."
+                )
+                return
+            }
         }
 
         do {
@@ -637,6 +664,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 }
                 sourceHealth = sourceHealthMonitor.snapshot(at: now)
                 considerSourceRecovery(sourceHealth, at: now)
+                if now - lastStorageCheckAt >= 5 {
+                    lastStorageCheckAt = now
+                    if let destinationURL = activeCaptureRequest?.storage.destinationURL,
+                       let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+                       RecordingStoragePolicy.shouldStop(availableCapacity: availableCapacity) {
+                        await beginInterruptedTeardown(
+                            reason: "Recording stopped before macOS ran out of disk space."
+                        )
+                        return
+                    }
+                }
             }
         }
     }
@@ -1024,6 +1062,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         sourceHealth = .empty
         healthSourceLock.withLock { healthSourceByStreamID.removeAll() }
         lastCameraHealthDuration = 0
+        lastStorageCheckAt = 0
         stopCursorTelemetry()
         cursorSynchronizer.reset()
         captures.removeAll()
@@ -1107,6 +1146,14 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
             try? self.projectStore.markFinished(displayID: capture.displayID, in: project)
             self.finishOutput(recordingOutput)
+            if RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: self.state,
+                isTearingDown: self.isTearingDown
+            ) {
+                await self.beginInterruptedTeardown(
+                    reason: "Screen recording stopped unexpectedly. Check available disk space before trying again."
+                )
+            }
         }
     }
 

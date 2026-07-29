@@ -2,6 +2,43 @@ import CoreGraphics
 import Foundation
 import Network
 
+enum RecordingStoragePolicy {
+    private static let emergencyReserve: Int64 = 2_147_483_648
+    private static let plannedDuration: Int64 = 1_800
+
+    static func requiredCapacity(
+        displaySizes: [CGSize],
+        canvasSize: CGSize,
+        frameRate: Int,
+        capturesCamera: Bool
+    ) -> Int64 {
+        let displayBitRate = displaySizes.reduce(Int64(0)) { total, size in
+            let pixels = max(size.width, 1) * max(size.height, 1)
+            let estimated = Int64((pixels * Double(frameRate) * 0.12).rounded(.up))
+            return total + max(estimated, 8_000_000)
+        }
+        let canvasPixels = max(canvasSize.width, 1) * max(canvasSize.height, 1)
+        let programBitRate: Int64 = canvasPixels >= 3_840 * 2_160 ? 30_000_000 : 10_000_000
+        let cameraBitRate: Int64 = capturesCamera ? 10_000_000 : 0
+        let bytes = Double((displayBitRate + programBitRate + cameraBitRate) * plannedDuration) / 8 * 1.05
+        return Int64(bytes.rounded(.up)) + emergencyReserve
+    }
+
+    static func canStart(availableCapacity: Int64, requiredCapacity: Int64) -> Bool {
+        availableCapacity >= requiredCapacity
+    }
+
+    static func shouldStop(availableCapacity: Int64) -> Bool {
+        availableCapacity <= emergencyReserve
+    }
+
+    static func availableCapacity(at destinationURL: URL) -> Int64? {
+        try? destinationURL.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage
+    }
+}
+
 enum StreamPreflightCheckID: String, Equatable, Hashable, Sendable {
     case invalidServer
     case serverValid
