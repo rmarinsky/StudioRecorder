@@ -53,16 +53,39 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertEqual(
             ProjectProgramExportPolicy.presetName(
                 codecPolicy: .automatic,
-                availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
+                renderSize: CGSize(width: 3_840, height: 2_160),
+                availablePresets: [
+                    AVAssetExportPresetHighestQuality,
+                    AVAssetExportPresetHEVCHighestQuality,
+                    AVAssetExportPresetHEVC3840x2160
+                ]
             ),
-            AVAssetExportPresetHEVCHighestQuality
+            AVAssetExportPresetHEVC3840x2160
         )
         XCTAssertEqual(
             ProjectProgramExportPolicy.presetName(
                 codecPolicy: .h264,
+                renderSize: CGSize(width: 3_840, height: 2_160),
                 availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
             ),
             AVAssetExportPresetHighestQuality
+        )
+    }
+
+    func testProgramRenderCaps4KAt30FPSButPreservesSmaller60FPSOutput() {
+        XCTAssertEqual(
+            ProjectProgramRenderPolicy.frameRate(
+                requested: 60,
+                renderSize: CGSize(width: 3_840, height: 2_160)
+            ),
+            30
+        )
+        XCTAssertEqual(
+            ProjectProgramRenderPolicy.frameRate(
+                requested: 60,
+                renderSize: CGSize(width: 1_920, height: 1_080)
+            ),
+            60
         )
     }
 
