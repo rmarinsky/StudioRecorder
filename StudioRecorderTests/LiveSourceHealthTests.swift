@@ -126,6 +126,14 @@ final class LiveSourceHealthTests: XCTestCase {
     }
 
     func testTerminalStopInvalidatesOnlyTheCurrentScreenStream() {
+        XCTAssertFalse(LiveScreenPreviewFramePolicy.shouldHandleStop(
+            hasStreamContext: true,
+            isCurrentStream: false
+        ))
+        XCTAssertTrue(LiveScreenPreviewFramePolicy.shouldHandleStop(
+            hasStreamContext: true,
+            isCurrentStream: true
+        ))
         XCTAssertTrue(LiveScreenPreviewFramePolicy.shouldInvalidateAfterStop(
             hasCurrentStreamContext: true,
             error: NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.internalError.rawValue)

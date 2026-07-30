@@ -68,6 +68,13 @@ private struct LiveScreenStreamContext: Sendable {
 }
 
 struct LiveScreenPreviewFramePolicy {
+    static func shouldHandleStop(
+        hasStreamContext: Bool,
+        isCurrentStream: Bool
+    ) -> Bool {
+        hasStreamContext && isCurrentStream
+    }
+
     static func shouldAccept(
         status: SCFrameStatus?,
         hasCurrentStreamContext: Bool
@@ -192,6 +199,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
     nonisolated private let programReadinessTracker = LiveProgramReadinessTracker()
     nonisolated(unsafe) private var screenContextByStreamID: [ObjectIdentifier: LiveScreenStreamContext] = [:]
+    nonisolated(unsafe) private var activeScreenStreamID: ObjectIdentifier?
     nonisolated(unsafe) private var nextScreenStreamGeneration: UInt64 = 0
     nonisolated private let screenHealthSourceLock = NSLock()
     nonisolated private let streamCursorSynchronizer = CursorFrameSynchronizer(
@@ -205,6 +213,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     private var sourceRecoveryPolicy = LiveSourceRecoveryPolicy()
     private var sourceRecoveryGeneration: UInt64 = 0
     private var expectedHealthSources: Set<LiveSourceID> = []
+    private var screenPreviewStartGeneration: UInt64 = 0
     private var screenStream: SCStream?
     private var previewedDisplay: SCDisplay?
     private var previewedDisplayID: UInt32?
@@ -223,11 +232,18 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
     ) async {
         let frameRate = CaptureDefaults.supportedFrameRates.contains(frameRate) ? frameRate : 30
         guard previewedDisplayID != displayID || screenStream == nil || screenFrameRate != frameRate else { return }
-        await stopScreenPreview(preservingLastFrame: preservingLastFrame)
+        screenPreviewStartGeneration &+= 1
+        let startGeneration = screenPreviewStartGeneration
+        await stopScreenPreview(
+            preservingLastFrame: preservingLastFrame,
+            invalidatingPendingStart: false
+        )
+        guard startGeneration == screenPreviewStartGeneration else { return }
         screenPreviewError = nil
 
         do {
             let content = try await SCShareableContent.current
+            guard startGeneration == screenPreviewStartGeneration else { return }
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
                 screenPreviewError = "The selected display is no longer available."
                 return
@@ -280,10 +296,14 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             do {
                 try await stream.startCapture()
             } catch {
-                screenHealthSourceLock.withLock {
-                    screenContextByStreamID[ObjectIdentifier(stream)] = nil
-                }
+                retireScreenContext(stream)
+                guard startGeneration == screenPreviewStartGeneration else { return }
                 throw error
+            }
+            guard startGeneration == screenPreviewStartGeneration else {
+                retireScreenContext(stream)
+                try? await stream.stopCapture()
+                return
             }
             screenStream = stream
             previewedDisplay = display
@@ -291,6 +311,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
             screenFrameRate = frameRate
             previewedScreenStreamGeneration = streamContext.generation
         } catch {
+            guard startGeneration == screenPreviewStartGeneration else { return }
             cursorTelemetryTask?.cancel()
             cursorTelemetryTask = nil
             streamCursorSynchronizer.reset()
@@ -298,13 +319,18 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         }
     }
 
-    func stopScreenPreview(preservingLastFrame: Bool = false) async {
+    func stopScreenPreview(
+        preservingLastFrame: Bool = false,
+        invalidatingPendingStart: Bool = true
+    ) async {
+        if invalidatingPendingStart {
+            screenPreviewStartGeneration &+= 1
+        }
         suppressAutomaticScreenRecovery = false
         let stream = screenStream
-        if let stream {
-            screenHealthSourceLock.withLock {
-                screenContextByStreamID[ObjectIdentifier(stream)] = nil
-            }
+        screenHealthSourceLock.withLock {
+            screenContextByStreamID.removeAll(keepingCapacity: true)
+            activeScreenStreamID = nil
         }
         programReadinessTracker.cancel()
         screenStream = nil
@@ -536,9 +562,7 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         programReadinessTracker.cancel()
         try await LiveScreenIngressRestartExecutor().restart(
             resumeExisting: {
-                self.screenHealthSourceLock.withLock {
-                    self.screenContextByStreamID[ObjectIdentifier(stream)] = nil
-                }
+                self.retireScreenContext(stream)
                 try await stream.stopCapture()
                 await self.drainScreenOutputQueue()
                 self.streamCursorSynchronizer.reset()
@@ -609,8 +633,20 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
                 displayID: displayID,
                 generation: nextScreenStreamGeneration
             )
-            screenContextByStreamID[ObjectIdentifier(stream)] = context
+            let streamID = ObjectIdentifier(stream)
+            screenContextByStreamID[streamID] = context
+            activeScreenStreamID = streamID
             return context
+        }
+    }
+
+    nonisolated private func retireScreenContext(_ stream: SCStream) {
+        screenHealthSourceLock.withLock {
+            let streamID = ObjectIdentifier(stream)
+            screenContextByStreamID[streamID] = nil
+            if activeScreenStreamID == streamID {
+                activeScreenStreamID = nil
+            }
         }
     }
 
@@ -962,9 +998,12 @@ extension LiveSceneCoordinator: SCStreamOutput {
         of outputType: SCStreamOutputType
     ) {
         let sampleReceivedAt = ProcessInfo.processInfo.systemUptime
-        let screenContext = outputType == .screen ? screenHealthSourceLock.withLock {
-            screenContextByStreamID[ObjectIdentifier(stream)]
-        } : nil
+        let screenContext: LiveScreenStreamContext? = screenHealthSourceLock.withLock {
+            let streamID = ObjectIdentifier(stream)
+            guard activeScreenStreamID == streamID else { return nil }
+            return screenContextByStreamID[streamID]
+        }
+        guard screenContext != nil else { return }
         let healthSource: LiveSourceID? = switch outputType {
         case .screen: screenContext?.source
         case .audio: .systemAudio
@@ -1142,14 +1181,16 @@ extension LiveSceneCoordinator: SCStreamOutput {
 
 extension LiveSceneCoordinator: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: any Error) {
-        let context = screenHealthSourceLock.withLock {
-            screenContextByStreamID[ObjectIdentifier(stream)]
+        let (context, isCurrentStream) = screenHealthSourceLock.withLock {
+            let streamID = ObjectIdentifier(stream)
+            return (screenContextByStreamID[streamID], activeScreenStreamID == streamID)
         }
-        guard let context else { return }
+        guard LiveScreenPreviewFramePolicy.shouldHandleStop(
+            hasStreamContext: context != nil,
+            isCurrentStream: isCurrentStream
+        ), let context else { return }
         if LiveScreenPreviewFramePolicy.isUserStopped(error) {
-            screenHealthSourceLock.withLock {
-                screenContextByStreamID[ObjectIdentifier(stream)] = nil
-            }
+            retireScreenContext(stream)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.suppressAutomaticScreenRecovery = true
