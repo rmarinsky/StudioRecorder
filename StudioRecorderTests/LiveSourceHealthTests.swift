@@ -142,4 +142,51 @@ final class LiveSourceHealthTests: XCTestCase {
             NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userStopped.rawValue)
         ))
     }
+
+    func testRecordingStartRequiresAFreshCompleteFrameFromEveryDisplay() {
+        let secondDisplay = LiveSourceID.screen(displayID: 9)
+        let gate = RecordingScreenStartGate()
+        gate.configure(expected: [display, secondDisplay], startedAfter: 100)
+
+        gate.record(
+            display,
+            status: .idle,
+            displayTime: 110,
+            isValid: true,
+            hasImageBuffer: false
+        )
+        gate.record(
+            display,
+            status: .complete,
+            displayTime: 99,
+            isValid: true,
+            hasImageBuffer: true
+        )
+        gate.record(
+            display,
+            status: .complete,
+            displayTime: 111,
+            isValid: false,
+            hasImageBuffer: true
+        )
+        XCTAssertFalse(gate.isReady)
+
+        gate.record(
+            display,
+            status: .complete,
+            displayTime: 112,
+            isValid: true,
+            hasImageBuffer: true
+        )
+        XCTAssertFalse(gate.isReady, "Every selected display needs current pixel evidence.")
+
+        gate.record(
+            secondDisplay,
+            status: .complete,
+            displayTime: 113,
+            isValid: true,
+            hasImageBuffer: true
+        )
+        XCTAssertTrue(gate.isReady)
+    }
 }

@@ -183,6 +183,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
     nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
+    nonisolated private let screenStartGate = RecordingScreenStartGate()
     nonisolated(unsafe) private var healthSourceByStreamID: [ObjectIdentifier: LiveSourceID] = [:]
     nonisolated private let healthSourceLock = NSLock()
     nonisolated private let cursorTelemetryQueue = DispatchQueue(
@@ -377,8 +378,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     throw RecordingProjectStoreError.missingTrackDescriptor(displayID: display.displayID)
                 }
                 let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
-                let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-                try stream.addRecordingOutput(output)
+                let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
                 healthSourceLock.withLock {
                     healthSourceByStreamID[ObjectIdentifier(stream)] = .screen(displayID: display.displayID)
@@ -440,8 +440,22 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 cameraRecorder = recorder
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
             }
+            screenStartGate.configure(
+                expected: Set(selected.map { LiveSourceID.screen(displayID: $0.displayID) }),
+                startedAfter: Self.currentHostTime
+            )
             for capture in captures.values {
                 try await capture.stream.startCapture()
+            }
+            guard await waitForFreshScreenFrames() else {
+                let sources = screenStartGate.missingSources.map(\.label).joined(separator: ", ")
+                await beginInterruptedTeardown(
+                    reason: "Recording did not start because \(sources) did not produce a current screen frame. Review the selected display and try again."
+                )
+                return
+            }
+            for capture in captures.values {
+                try capture.stream.addRecordingOutput(capture.output)
                 startedOutputIDs.insert(ObjectIdentifier(capture.output))
             }
 
@@ -648,6 +662,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 )
             }
         }
+    }
+
+    private func waitForFreshScreenFrames(timeout: Duration = .seconds(3)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if screenStartGate.isReady { return true }
+            try? await Task.sleep(for: .milliseconds(25))
+            if Task.isCancelled || isTearingDown { return false }
+        }
+        return screenStartGate.isReady
     }
 
     private func startSourceHealthTimer() {
@@ -1059,6 +1084,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         sourceRecoveryPolicy.reset()
         sourceRecoveryState = .idle
         sourceHealthMonitor.configure(expected: [], at: ProcessInfo.processInfo.systemUptime)
+        screenStartGate.reset()
         sourceHealth = .empty
         healthSourceLock.withLock { healthSourceByStreamID.removeAll() }
         lastCameraHealthDuration = 0
@@ -1171,6 +1197,23 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
     }
 }
 
+extension RecordingCoordinator: SCStreamDelegate {
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        let source = healthSourceLock.withLock {
+            healthSourceByStreamID[ObjectIdentifier(stream)]
+        }
+        guard let source else { return }
+        Task { @MainActor [weak self] in
+            guard let self, !self.isTearingDown else { return }
+            self.sourceHealthMonitor.invalidate(source)
+            let message = LiveScreenPreviewFramePolicy.isUserStopped(error)
+                ? "Screen sharing was stopped from macOS."
+                : "Screen capture stopped unexpectedly. \(error.localizedDescription)"
+            await self.beginInterruptedTeardown(reason: message)
+        }
+    }
+}
+
 extension RecordingCoordinator: SCStreamOutput {
     nonisolated func stream(
         _ stream: SCStream,
@@ -1194,6 +1237,13 @@ extension RecordingCoordinator: SCStreamOutput {
                     return
                 }
                 if let source = healthSourceLock.withLock({ healthSourceByStreamID[streamID] }) {
+                    screenStartGate.record(
+                        source,
+                        status: status,
+                        displayTime: displayTime,
+                        isValid: true,
+                        hasImageBuffer: sampleBuffer.imageBuffer != nil
+                    )
                     if status == .idle {
                         sourceHealthMonitor.recordIdle(source, at: ProcessInfo.processInfo.systemUptime)
                     } else if status == .complete {
