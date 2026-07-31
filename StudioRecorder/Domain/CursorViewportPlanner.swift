@@ -187,7 +187,21 @@ struct CursorSceneTimeline: Codable, Equatable, Sendable {
                 upper = middle
             }
         }
-        return candidates[max(0, lower - 1)]
+        guard lower > 0 else { return candidates[0] }
+        let previous = candidates[lower - 1]
+        guard lower < candidates.count else { return previous }
+        let next = candidates[lower]
+        guard next.displayID == previous.displayID, next.time > previous.time else {
+            return previous
+        }
+        let progress = CGFloat((target - previous.time) / (next.time - previous.time))
+        return CursorSceneSample(
+            time: target,
+            displayID: previous.displayID,
+            normalizedX: previous.normalizedX + (next.normalizedX - previous.normalizedX) * progress,
+            normalizedY: previous.normalizedY + (next.normalizedY - previous.normalizedY) * progress,
+            isPrimaryButtonDown: previous.isPrimaryButtonDown
+        ).validated()
     }
 }
 

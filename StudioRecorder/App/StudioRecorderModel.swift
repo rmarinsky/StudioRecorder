@@ -712,7 +712,10 @@ final class StudioRecorderModel: ObservableObject {
 
         case .setDraftFrameRate(let frameRate):
             guard canEditDraft, CaptureDefaults.supportedFrameRates.contains(frameRate) else { return .ignored }
-            snapshot.studioDraft?.frameRate = frameRate
+            snapshot.studioDraft?.frameRate = CaptureDefaults.frameRate(
+                frameRate,
+                for: snapshot.studioDraft?.presentation.canvas ?? CaptureCanvasSnapshot()
+            )
             result = .draftChanged
 
         case .setDraftCodecPolicy(let policy):
@@ -772,6 +775,7 @@ final class StudioRecorderModel: ObservableObject {
             )
             if let scene {
                 draft.presentation = scene.presentation.applyingSourceAvailability(scene.sources)
+                draft.frameRate = CaptureDefaults.frameRate(draft.frameRate, for: draft.presentation.canvas)
                 if let sources = scene.sources {
                     draft.apply(
                         sceneSources: sources,
@@ -921,6 +925,9 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft != nil
         if canEditDraft || canRestoreIdlePresentation {
             snapshot.studioDraft?.presentation = validated
+            if let draft = snapshot.studioDraft {
+                snapshot.studioDraft?.frameRate = CaptureDefaults.frameRate(draft.frameRate, for: validated.canvas)
+            }
             return true
         }
         guard (snapshot.captureState == .recording || snapshot.captureState == .paused),

@@ -332,7 +332,7 @@ extension StudioDraft {
         cameras: [AvailableCamera]
     ) {
         let configuration = configuration.validated()
-        frameRate = configuration.frameRate
+        frameRate = CaptureDefaults.frameRate(configuration.frameRate, for: presentation.canvas)
         codecPolicy = configuration.codecPolicy
         retentionPolicy = configuration.retentionPolicy
         includeCursor = configuration.includeCursor

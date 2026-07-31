@@ -647,6 +647,43 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(store.preferences.capture.frameRate, 30)
     }
 
+    func test4KPresentationCapsTheCurrentDraftAtThirtyFPS() throws {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = store.makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.setDraftFrameRate(60)), .draftChanged)
+        var presentation = try XCTUnwrap(model.snapshot.studioDraft?.presentation)
+        presentation.canvas = CaptureCanvasSnapshot(preset: .ultraHD)
+
+        XCTAssertEqual(model.send(.setDraftPresentation(presentation)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 30)
+    }
+
+    func test4KProfileSceneCapsTheCurrentDraftAtThirtyFPS() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(preset: .ultraHD)
+        var configuration = StudioProfileConfiguration.desktop
+        configuration.frameRate = 60
+        let scene = StudioScenePreset(presentation: presentation, configuration: configuration)
+
+        XCTAssertEqual(model.send(.applyProfile(configuration, scene)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 30)
+    }
+
     func testCodecChangeUpdatesTheCurrentDraftWithoutChangingDefaults() {
         let store = makePreferencesStore()
         var snapshot = StudioRecorderSnapshot()

@@ -139,7 +139,8 @@ final class CursorViewportPlannerTests: XCTestCase {
             CursorSceneSample(time: 1.2, displayID: 8, normalizedX: 0.3, normalizedY: 0.2, isPrimaryButtonDown: false),
         ])
 
-        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedX, 0.15)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedX, 0.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedY, 0.5, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).normalizedX, 0.85)
         XCTAssertTrue(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).isPrimaryButtonDown)
         XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.3, for: 8)).normalizedY, 0.2)

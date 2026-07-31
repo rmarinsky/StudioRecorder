@@ -24,7 +24,7 @@ enum ProjectProgramExportPolicy {
 
 enum ProjectProgramRenderPolicy {
     static func frameRate(requested: Int, renderSize: CGSize) -> Int {
-        renderSize.width * renderSize.height >= 3_840 * 2_160 ? min(requested, 30) : requested
+        CaptureDefaults.frameRate(requested, for: renderSize)
     }
 }
 

@@ -3315,7 +3315,7 @@ private struct StudioInspector: View {
     @ViewBuilder
     private var captureControls: some View {
         Picker("Frame rate", selection: $frameRate) {
-            ForEach(CaptureDefaults.supportedFrameRates, id: \.self) { frameRate in
+            ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
                 Text("\(frameRate) fps").tag(frameRate)
             }
         }

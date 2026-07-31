@@ -833,8 +833,8 @@ final class ProjectEditRendererTests: XCTestCase {
         let right = try color(in: rightFrameURL, normalizedX: 0.5, normalizedY: 0.5)
         XCTAssertGreaterThan(left.red, 180)
         XCTAssertLessThan(left.blue, 80)
-        XCTAssertGreaterThan(transitioning.red, 180)
-        XCTAssertLessThan(transitioning.blue, 80)
+        XCTAssertGreaterThan(transitioning.blue, 180)
+        XCTAssertLessThan(transitioning.red, 80)
         XCTAssertGreaterThan(right.blue, 180)
         XCTAssertLessThan(right.red, 80)
     }
