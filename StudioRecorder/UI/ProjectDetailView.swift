@@ -29,7 +29,7 @@ struct ProjectDetailView: View {
     @State private var selectedRange: Range<TimeInterval>?
     @State private var transcript: TimedTranscript?
     @State private var transcriptSearch = ""
-    @State private var selectedWordID: UUID?
+    @State private var selectedWordOccurrenceID: String?
     @State private var transcriptError: String?
 
     private let exporter = ProjectMediaExporter()
@@ -168,7 +168,7 @@ struct ProjectDetailView: View {
                     LazyVStack(alignment: .leading, spacing: 1) {
                         ForEach(visibleTranscriptWords) { word in
                             Button {
-                                selectedWordID = word.id
+                                selectedWordOccurrenceID = word.id
                                 selectedRange = word.outputStart..<word.outputEnd
                                 Task { await editSession.player.seek(
                                     to: CMTime(seconds: word.outputStart, preferredTimescale: 600)
@@ -189,7 +189,7 @@ struct ProjectDetailView: View {
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(selectedWordID == word.id ? Color.accentColor.opacity(0.18) : .clear)
+                                .background(selectedWordOccurrenceID == word.id ? Color.accentColor.opacity(0.18) : .clear)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -212,16 +212,16 @@ struct ProjectDetailView: View {
                 }
                 HStack {
                     Button("Review Timing") { reviewSelectedWordTiming() }
-                        .disabled(selectedWordID == nil || selectedRange == nil)
+                        .disabled(selectedWordOccurrenceID == nil || selectedRange == nil)
                     Button("Delete Word") {
                         guard let selectedRange else { return }
                         Task {
                             await editSession.deleteOutputRange(selectedRange)
-                            selectedWordID = nil
+                            selectedWordOccurrenceID = nil
                         }
                     }
                     .disabled(selectedTranscriptWord?.timingStatus == .uncertain
-                              || selectedWordID == nil || selectedRange == nil)
+                              || selectedWordOccurrenceID == nil || selectedRange == nil)
                 }
                 .buttonStyle(.borderless)
                 .padding(10)
@@ -268,7 +268,7 @@ struct ProjectDetailView: View {
     }
 
     private var selectedTranscriptWord: EditedTranscriptWord? {
-        visibleTranscriptWords.first { $0.id == selectedWordID }
+        visibleTranscriptWords.first { $0.id == selectedWordOccurrenceID }
     }
 
     private func loadTranscript() {
@@ -283,11 +283,11 @@ struct ProjectDetailView: View {
     }
 
     private func reviewSelectedWordTiming() {
-        guard let transcript, let selectedWordID, let selectedRange,
+        guard let transcript, let selectedTranscriptWord, let selectedRange,
               let timeline = editSession.timeline else { return }
         do {
             let sourceRange = try timeline.sourceRange(for: selectedRange)
-            let reviewed = try transcript.reviewWord(selectedWordID, sourceRange: sourceRange)
+            let reviewed = try transcript.reviewWord(selectedTranscriptWord.sourceWordID, sourceRange: sourceRange)
             try TimedTranscriptStore().save(reviewed, in: project.rootURL)
             self.transcript = reviewed
             transcriptError = nil

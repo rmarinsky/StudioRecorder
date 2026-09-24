@@ -25,6 +25,7 @@ final class ProjectEditTimelineTests: XCTestCase {
         let clipped = transcript.words(in: timeline)
         XCTAssertEqual(clipped.first?.text, "again")
         XCTAssertEqual(clipped.first?.timingStatus, .uncertain)
+        XCTAssertEqual(Set(clipped.map(\.id)).count, clipped.count)
     }
 
     func testTranscriptStoreRejectsInvalidWordTimeAndPersistsValidWords() throws {

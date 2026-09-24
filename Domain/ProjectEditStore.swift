@@ -33,7 +33,8 @@ struct TimedTranscriptWord: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct EditedTranscriptWord: Identifiable, Equatable, Sendable {
-    let id: UUID
+    let id: String
+    let sourceWordID: UUID
     let text: String
     let outputStart: TimeInterval
     let outputEnd: TimeInterval
@@ -83,7 +84,8 @@ struct TimedTranscript: Codable, Equatable, Sendable {
                 let end = min(word.sourceEnd, sourceEnd)
                 let clipped = start > word.sourceStart + 0.001 || end < word.sourceEnd - 0.001
                 result.append(EditedTranscriptWord(
-                    id: word.id, text: word.text,
+                    id: "\(word.id.uuidString)-\(segment.id.uuidString)",
+                    sourceWordID: word.id, text: word.text,
                     outputStart: outputStart + start - segment.sourceStart,
                     outputEnd: outputStart + end - segment.sourceStart,
                     sourceStart: start, sourceEnd: end,
