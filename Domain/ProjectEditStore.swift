@@ -172,6 +172,58 @@ struct TimedTranscriptStore {
     }
 }
 
+struct WhisperWordTranscriptImporter {
+    private struct Output: Decodable {
+        struct Segment: Decodable {
+            struct Offsets: Decodable {
+                let from: Double
+                let to: Double
+            }
+            let offsets: Offsets
+            let text: String
+        }
+        let transcription: [Segment]
+    }
+
+    func transcript(
+        from data: Data,
+        projectID: UUID,
+        sourceTrackID: String,
+        sourceDuration: TimeInterval
+    ) throws -> TimedTranscript {
+        guard sourceDuration.isFinite, sourceDuration > 0,
+              !sourceTrackID.isEmpty else { throw TimedTranscriptStoreError.invalidTranscript }
+        let output = try JSONDecoder().decode(Output.self, from: data)
+        var words: [TimedTranscriptWord] = []
+        for segment in output.transcription {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            guard text.split(whereSeparator: \.isWhitespace).count == 1 else {
+                throw TimedTranscriptStoreError.invalidTranscript
+            }
+            let start = segment.offsets.from / 1000
+            let rawEnd = segment.offsets.to / 1000
+            guard start.isFinite, rawEnd.isFinite,
+                  start >= 0, start < rawEnd else { continue }
+            guard start < sourceDuration,
+                  rawEnd <= sourceDuration + 0.15 else { continue }
+            let end = min(rawEnd, sourceDuration)
+            guard start < end else { continue }
+            words.append(TimedTranscriptWord(
+                text: text, sourceStart: start, sourceEnd: end,
+                timingStatus: .uncertain, timingModel: "whisper.cpp-dtw-experimental"
+            ))
+        }
+        guard !words.isEmpty else { throw TimedTranscriptStoreError.invalidTranscript }
+        return TimedTranscript(
+            projectID: projectID, sourceTrackID: sourceTrackID,
+            sourceDuration: sourceDuration, language: "uk",
+            recognitionModel: "whisper.cpp/ggml-base",
+            alignmentModel: "unverified-dtw", words: words
+        )
+    }
+}
+
 enum ProjectAudioSource: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case systemAudio
     case microphone

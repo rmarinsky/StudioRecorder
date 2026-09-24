@@ -2,6 +2,34 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testWhisperWordImportKeepsOnlyBoundedSingleWordsAsUncertain() throws {
+        let payload = Data("""
+        {"transcription":[
+          {"offsets":{"from":0,"to":0},"text":" "},
+          {"offsets":{"from":120,"to":460},"text":" Привіт"},
+          {"offsets":{"from":470,"to":1050},"text":" світе."},
+          {"offsets":{"from":1080,"to":1120},"text":"лишнє"}
+        ]}
+        """.utf8)
+        let transcript = try WhisperWordTranscriptImporter().transcript(
+            from: payload, projectID: UUID(), sourceTrackID: "program",
+            sourceDuration: 1.1
+        )
+        XCTAssertEqual(transcript.words.map(\.text), ["Привіт", "світе.", "лишнє"])
+        XCTAssertEqual(transcript.words.map(\.sourceStart), [0.12, 0.47, 1.08])
+        XCTAssertEqual(transcript.words.map(\.sourceEnd), [0.46, 1.05, 1.1])
+        XCTAssertEqual(transcript.words.map(\.timingStatus), [.uncertain, .uncertain, .uncertain])
+        XCTAssertEqual(transcript.language, "uk")
+    }
+
+    func testWhisperWordImportRejectsPhraseInOneSegment() {
+        let payload = Data("""
+        {"transcription":[{"offsets":{"from":100,"to":800},"text":"два слова"}]}
+        """.utf8)
+        XCTAssertThrowsError(try WhisperWordTranscriptImporter().transcript(
+            from: payload, projectID: UUID(), sourceTrackID: "program", sourceDuration: 1
+        ))
+    }
     func testDeletingReviewedRangesAppliesOneBatchAgainstOriginalOutputTime() throws {
         var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
         try timeline.delete(ranges: [1..<2, 4..<5])
