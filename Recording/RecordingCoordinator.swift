@@ -13,6 +13,50 @@ enum RecordingOutputFinalizationPolicy {
     ) -> Bool {
         isReadable && duration.isFinite && duration > 0 && videoTrackCount > 0
     }
+
+    static func isCompleteProgram(
+        isReadable: Bool,
+        actualDuration: TimeInterval,
+        expectedDuration: TimeInterval,
+        videoTrackCount: Int,
+        audioTrackCount: Int,
+        expectedAudioTrackCount: Int
+    ) -> Bool {
+        isUsable(isReadable: isReadable, duration: actualDuration, videoTrackCount: videoTrackCount)
+            && expectedDuration.isFinite && expectedDuration > 0
+            && abs(actualDuration - expectedDuration) <= 0.15
+            && audioTrackCount >= expectedAudioTrackCount
+    }
+}
+
+@MainActor
+enum RecordingCaptureClosureVerifier {
+    static func failure(in project: RecordingProject, store: RecordingProjectStore) async -> String? {
+        let tracks = (project.manifest.tracks ?? []).filter { $0.kind != .program }
+        guard !tracks.isEmpty else { return "The recording has no raw capture tracks." }
+        let events = store.journalEvents(for: project)
+        for track in tracks {
+            guard events.contains(where: { $0.kind == .trackFinished && $0.trackID == track.id }),
+                  !events.contains(where: { $0.kind == .trackFailed && $0.trackID == track.id }) else {
+                return "The \(track.id) capture file did not close successfully."
+            }
+            guard let url = store.rawTrackURL(for: track.id, in: project),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                return "The \(track.id) capture file is missing."
+            }
+            let asset = AVURLAsset(url: url)
+            let isReadable = (try? await asset.load(.isReadable)) == true
+            let duration = (try? await asset.load(.duration).seconds) ?? 0
+            let mediaType: AVMediaType = track.kind == .audio ? .audio : .video
+            let trackCount = (try? await asset.loadTracks(withMediaType: mediaType).count) ?? 0
+            guard RecordingOutputFinalizationPolicy.isUsable(
+                isReadable: isReadable, duration: duration, videoTrackCount: trackCount
+            ) else {
+                return "The \(track.id) capture file is unreadable or incomplete."
+            }
+        }
+        return nil
+    }
 }
 
 enum RecordingOutputCompletionPolicy {
@@ -145,6 +189,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var recordedDuration: TimeInterval = 0
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
+    @Published private(set) var jobs: [RecordingJob] = []
     @Published private(set) var finalizationWarning: String?
     @Published private(set) var finalizationProgress: RecordingFinalizationProgress?
     @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
@@ -159,9 +204,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         let configuration: SCStreamConfiguration
     }
 
-    private let projectStore = RecordingProjectStore()
+    private let projectStore: RecordingProjectStore
     private let projectEditStore = ProjectEditStore()
+    private let jobStore = RecordingJobStore()
     private let retentionFinalizer = RecordingRetentionFinalizer()
+    private var activeFinalizationJobID: UUID?
+    private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
     nonisolated private let audioStemSession = RecordingAudioStemSessionState()
@@ -200,6 +248,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var lastStorageCheckAt: TimeInterval = 0
 
     override init() {
+        projectStore = RecordingProjectStore()
+        super.init()
+    }
+
+    init(projectStore: RecordingProjectStore) {
+        self.projectStore = projectStore
         super.init()
     }
 
@@ -251,9 +305,35 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     func refreshProjects() async {
-        let snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
+        var snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
+        var discoveredJobs: [RecordingJob] = []
+        for index in snapshots.indices {
+            guard let projectID = snapshots[index].identity.manifestID,
+                  let project = try? projectStore.openProject(
+                    at: snapshots[index].rootURL, expectedID: projectID
+                  ) else { continue }
+            let loaded = (try? jobStore.load(in: project)) ?? []
+            let projectJobs: [RecordingJob]
+            if loaded.contains(where: { blockedFinalizationJobIDs.contains($0.id) }) {
+                projectJobs = []
+            } else if loaded.contains(where: { $0.id == activeFinalizationJobID }) {
+                projectJobs = loaded
+            } else {
+                projectJobs = (try? jobStore.reconcileFinalization(
+                    in: project, projectLifecycle: snapshots[index].lifecycle
+                )) ?? []
+            }
+            if projectJobs.contains(where: {
+                $0.kind == .finalization && ($0.state == .queued || $0.state == .running)
+            }) {
+                snapshots[index].lifecycle = .finalizing
+            }
+            discoveredJobs.append(contentsOf: projectJobs)
+        }
+        jobs = discoveredJobs.sorted { $0.updatedAt > $1.updatedAt }
         projects = snapshots
         interruptedProjects = snapshots.filter(\.isInterrupted)
+        startNextFinalizationJob()
     }
 
     func recoverProject(_ projectID: String) async throws {
@@ -537,7 +617,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         let stoppedAt = ProcessInfo.processInfo.systemUptime
         updateFinalizationProgress(0.22, "Finalizing media tracks…")
 
-        if let reason = terminalFailure ?? stopErrors.first {
+        let captureClosureFailure = if let activeProject {
+            await RecordingCaptureClosureVerifier.failure(in: activeProject, store: projectStore)
+        } else {
+            "The recording package was not created."
+        }
+
+        if let reason = terminalFailure ?? stopErrors.first ?? captureClosureFailure {
             await completeInterruptedTeardown(reason: reason)
             return
         }
@@ -562,31 +648,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         in: activeProject.rootURL
                     )
                 }
-                try await retentionFinalizer.finalize(
-                    project: activeProject,
-                    request: activeCaptureRequest,
-                    projectStore: projectStore,
-                    cursorTimeline: recordedCursorTimeline,
-                    shortcutTimeline: safeShortcutTimeline.events.isEmpty ? nil : safeShortcutTimeline,
-                    sceneTimeline: studioSceneTimeline,
-                    editTimeline: pauseEditTimelines.first(where: {
-                        $0.trackID == preferredScreenTrackID(
-                            project: activeProject,
-                            request: activeCaptureRequest
-                        )
-                    }),
-                    progress: { [weak self] fraction, phase in
-                        self?.updateFinalizationProgress(0.30 + fraction * 0.62, phase)
-                    }
+                try jobStore.save(
+                    RecordingJob(projectID: activeProject.id, kind: .finalization),
+                    in: activeProject
                 )
             } catch {
-                do {
-                    try projectStore.close(activeProject)
-                    finalizationWarning = "The recording is safe, but automatic finalization did not complete. Editable tracks were kept. \(error.localizedDescription)"
-                } catch {
-                    await completeInterruptedTeardown(reason: error.localizedDescription)
-                    return
-                }
+                try? projectStore.markInterrupted(activeProject, detail: error.localizedDescription)
+                finalizationWarning = "The capture files were kept, but finalization could not be queued. Review this project in Recovery. \(error.localizedDescription)"
             }
         }
 
@@ -596,6 +664,116 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
         isTearingDown = false
         finalizationProgress = nil
+    }
+
+    func retryJob(_ jobID: UUID) async throws {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+        _ = try jobStore.retry(jobID: jobID, in: project)
+        blockedFinalizationJobIDs.remove(jobID)
+        await refreshProjects()
+    }
+
+    private func startNextFinalizationJob() {
+        guard activeFinalizationJobID == nil,
+              let job = jobs.first(where: {
+                  $0.kind == .finalization && $0.state == .queued &&
+                      !blockedFinalizationJobIDs.contains($0.id)
+              }) else { return }
+        activeFinalizationJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runFinalization(job)
+        }
+    }
+
+    private func runFinalization(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            guard let request = project.manifest.captureRequest else {
+                throw RecordingJobStoreError.invalidJob
+            }
+            job.state = .running
+            job.stage = "Preparing finalization"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+
+            let editDocument = try await projectEditStore.load(
+                from: project.rootURL, expectedProjectID: project.id
+            )
+            let editTimeline = preferredScreenTrackID(project: project, request: request)
+                .flatMap { editDocument?.timeline(for: $0) }
+            try await retentionFinalizer.finalize(
+                project: project,
+                request: request,
+                projectStore: projectStore,
+                cursorTimeline: projectStore.cursorTimeline(in: project),
+                shortcutTimeline: projectStore.shortcutTimeline(in: project),
+                sceneTimeline: projectStore.studioSceneTimeline(in: project),
+                editTimeline: editTimeline,
+                progress: { [weak self, project] fraction, phase in
+                    self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+                }
+            )
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do {
+                    try persistJob(job, in: project)
+                } catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Finalization failed and its status could not be saved. The raw project remains in Recovery. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeFinalizationJobID = nil
+        await refreshProjects()
+    }
+
+    private func persistJob(_ job: RecordingJob, in project: RecordingProject) throws {
+        try jobStore.save(job, in: project)
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        } else {
+            jobs.append(job)
+        }
+    }
+
+    private func updateJobProgress(
+        _ jobID: UUID,
+        project: RecordingProject,
+        fraction: Double,
+        phase: String
+    ) {
+        guard var job = jobs.first(where: { $0.id == jobID }) else { return }
+        let progress = min(max(fraction, 0), 1)
+        guard phase != job.stage || progress - job.progress >= 0.02 else { return }
+        job.stage = phase
+        job.progress = progress
+        job.updatedAt = Date()
+        do {
+            try persistJob(job, in: project)
+        } catch {
+            finalizationWarning = "Job progress could not be saved. \(error.localizedDescription)"
+        }
     }
 
     private func updateFinalizationProgress(_ fraction: Double, _ phase: String) {

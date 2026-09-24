@@ -121,6 +121,31 @@ final class RecordingJobStore {
         try save(job, in: project)
         return job
     }
+
+    func reconcileFinalization(
+        in project: RecordingProject,
+        projectLifecycle: RecordingProjectLifecycle
+    ) throws -> [RecordingJob] {
+        var jobs = try load(in: project)
+        for index in jobs.indices where jobs[index].kind == .finalization {
+            if projectLifecycle == .finalized, jobs[index].state != .completed {
+                jobs[index].state = .completed
+                jobs[index].stage = "Completed"
+                jobs[index].progress = 1
+                jobs[index].failure = nil
+            } else if jobs[index].state == .running {
+                jobs[index].state = .queued
+                jobs[index].stage = "Resuming after interruption"
+                jobs[index].progress = 0
+                jobs[index].attempt += 1
+            } else {
+                continue
+            }
+            jobs[index].updatedAt = Date()
+            try save(jobs[index], in: project)
+        }
+        return jobs
+    }
 }
 
 enum RecordingSourceMetadataState: String, Codable, Equatable, Sendable {
@@ -217,7 +242,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let identity: RecordingProjectIdentity
     let createdAt: Date
     let stoppedAt: Date?
-    let lifecycle: RecordingProjectLifecycle
+    var lifecycle: RecordingProjectLifecycle
     let captureProfile: String
     let sources: [RecordingSourceSnapshot]
     let tracks: [RecordingTrackDescriptor]
@@ -756,6 +781,25 @@ final class RecordingProjectStore {
         let url = project.rootURL.appending(path: "scene/layout.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? Self.makeDecoder().decode(StudioSceneTimeline.self, from: data)
+    }
+
+    func cursorTimeline(in project: RecordingProject) -> CursorSceneTimeline? {
+        let url = project.rootURL.appending(path: "scene/cursor.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(CursorSceneTimeline.self, from: data)
+    }
+
+    func shortcutTimeline(in project: RecordingProject) -> SafeShortcutTimeline? {
+        let url = project.rootURL.appending(path: "scene/shortcuts.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(SafeShortcutTimeline.self, from: data)
+    }
+
+    func openProject(at rootURL: URL, expectedID: UUID) throws -> RecordingProject {
+        let data = try Data(contentsOf: rootURL.appending(path: "manifest.json"))
+        let manifest = try Self.makeDecoder().decode(RecordingProjectManifest.self, from: data)
+        guard manifest.id == expectedID else { throw RecordingJobStoreError.projectMismatch }
+        return RecordingProject(rootURL: rootURL, manifest: manifest)
     }
 
     func restorePauseEdits(from snapshot: RecordingProjectSnapshot) async throws {

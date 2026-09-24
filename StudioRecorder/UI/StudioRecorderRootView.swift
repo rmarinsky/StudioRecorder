@@ -107,6 +107,8 @@ struct StudioRecorderRootView: View {
     @State private var newRecordingProfileID: UUID?
     @State private var projectSearchText = ""
     @State private var editorExportRequest = 0
+    @State private var isShowingJobs = false
+    @State private var jobError: String?
     @FocusState private var isProjectSearchFocused: Bool
     @State private var gifImportError: String?
     @State private var recoveryOperationID: String?
@@ -241,6 +243,14 @@ struct StudioRecorderRootView: View {
         } message: {
             Text(sceneLibraryError ?? "The scene library could not be updated.")
         }
+        .alert("Job Could Not Be Retried", isPresented: Binding(
+            get: { jobError != nil },
+            set: { if !$0 { jobError = nil } }
+        )) {
+            Button("OK", role: .cancel) { jobError = nil }
+        } message: {
+            Text(jobError ?? "Unknown job error")
+        }
         .alert("Rename Scene", isPresented: $isRenamingScene) {
             TextField("Scene name", text: $sceneRenameDraft)
             Button("Cancel", role: .cancel) {}
@@ -366,6 +376,12 @@ struct StudioRecorderRootView: View {
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
             }
+            Button("Jobs", systemImage: "list.bullet.rectangle") {
+                isShowingJobs.toggle()
+            }
+            .popover(isPresented: $isShowingJobs) {
+                jobsPanel
+            }
             if snapshot.route == .projects, snapshot.selectedProjectID != nil {
                 Button("Export", systemImage: "square.and.arrow.up") {
                     editorExportRequest += 1
@@ -386,6 +402,46 @@ struct StudioRecorderRootView: View {
         .buttonStyle(.borderless)
         .background(shellPanel)
         .simultaneousGesture(WindowDragGesture())
+    }
+
+    private var jobsPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Jobs").font(.headline)
+                if snapshot.jobs.isEmpty {
+                    Text("No background jobs yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(snapshot.jobs) { job in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(snapshot.projects.first(where: { $0.identity.manifestID == job.projectID }).map(projectTitle) ?? "Recording")
+                            .font(.subheadline.weight(.semibold))
+                        Text("\(job.kind.rawValue.capitalized) · \(job.stage)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if job.state == .running {
+                            ProgressView(value: job.progress)
+                        }
+                        if let failure = job.failure {
+                            Text(failure).font(.caption).foregroundStyle(.orange)
+                        }
+                        if job.state == .failed {
+                            Button("Retry") {
+                                Task {
+                                    do { try await model.retryJob(job.id) }
+                                    catch { jobError = error.localizedDescription }
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Divider()
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 320, height: min(CGFloat(max(snapshot.jobs.count, 1)) * 110 + 60, 420))
     }
 
     private var lifecycleRoot: some View {
@@ -925,7 +981,16 @@ struct StudioRecorderRootView: View {
                             LazyVStack(spacing: 0) {
                                 ForEach(Array(filteredProjects.enumerated()), id: \.element.id) { index, project in
                                     Button {
-                                        model.send(.openProject(project.id))
+                                        if snapshot.jobs.contains(where: {
+                                            $0.projectID == project.identity.manifestID &&
+                                                $0.kind == .finalization && $0.state != .completed
+                                        }) {
+                                            isShowingJobs = true
+                                        } else if project.isInterrupted {
+                                            model.send(.selectRoute(.recovery))
+                                        } else {
+                                            model.send(.openProject(project.id))
+                                        }
                                     } label: {
                                         ProjectRow(project: project)
                                             .contentShape(Rectangle())

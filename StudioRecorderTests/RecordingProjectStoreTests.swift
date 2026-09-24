@@ -6,6 +6,102 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testProgramVerificationRejectsReadableButTruncatedRender() {
+        XCTAssertFalse(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 8, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 1, expectedAudioTrackCount: 1
+        ))
+        XCTAssertTrue(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 9.97, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 1, expectedAudioTrackCount: 1
+        ))
+        XCTAssertFalse(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 10, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 0, expectedAudioTrackCount: 1
+        ))
+    }
+
+    func testCaptureClosureRequiresEveryExpectedRawTrackToBeReadableAndFinished() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(
+            sources: [.display(id: 1)], primaryAudioDisplayID: nil, capturesMicrophone: false
+        )
+
+        let missing = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNotNil(missing)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 1, in: project)))
+        let unfinished = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNotNil(unfinished)
+        try store.markStarted(displayID: 1, in: project)
+        try store.markFinished(displayID: 1, in: project)
+        let closed = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNil(closed)
+    }
+
+    func testInterruptedProgramFinalizationResumesFromPackageAndPublishesCompletedProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+        let request = CaptureRequest(
+            id: UUID(), createdAt: Date(),
+            displaySources: [.init(id: 9, name: "Display", pixelWidth: 64, pixelHeight: 64, metadataState: .known)],
+            audio: .init(capturesSystemAudio: false, capturesMicrophone: false, microphone: nil,
+                         primaryAudioDisplayID: 9, excludesStudioRecorderAudio: true),
+            profile: .init(frameRate: 30, codecPolicy: .h264, includeCursor: false,
+                           excludeStudioRecorder: true, programResolutionTarget: "64x64"),
+            presentation: presentation,
+            storage: .init(destinationURL: destination, destinationBookmarkID: "queue-test",
+                           fallbackPath: destination.path, retentionPolicy: .programOnly)
+        )
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)), frameCount: 31)
+        try store.markStarted(displayID: 9, in: project)
+        try store.markFinished(displayID: 9, in: project)
+        var interruptedJob = RecordingJob(projectID: project.id, kind: .finalization)
+        interruptedJob.state = .running
+        interruptedJob.stage = "Rendering"
+        interruptedJob.progress = 0.5
+        try RecordingJobStore().save(interruptedJob, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalizing)
+
+        for _ in 0..<100 where coordinator.jobs.first?.state != .completed ||
+            coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle != .finalized {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first?.attempt, 2)
+        XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalized)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "program.mov").path))
+    }
+
+    func testFailedBackgroundFinalizationKeepsProjectInRecoveryWithRetryableJob() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: destination))
+        try RecordingJobStore().save(RecordingJob(projectID: project.id, kind: .finalization), in: project)
+        let coordinator = RecordingCoordinator(projectStore: store)
+
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first?.state != .failed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(coordinator.jobs.first?.state, .failed)
+        XCTAssertNotNil(coordinator.jobs.first?.failure)
+        XCTAssertEqual(coordinator.projects.first?.lifecycle, .needsRecovery)
+        XCTAssertNil(try decodeManifest(at: project.rootURL).stoppedAt)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "raw-tracks").path))
+    }
+
     func testFinalizationJobSurvivesRestartAndRetryKeepsProjectIdentity() throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }
@@ -34,6 +130,30 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertNil(retried.failure)
         XCTAssertEqual(retried.progress, 0)
         XCTAssertEqual(try RecordingJobStore().load(in: project), [retried])
+    }
+
+    func testRunningFinalizationJobReconcilesAfterRestartWithoutClaimingReady() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let project = try RecordingProjectStore(baseDirectory: destination).createProject(
+            sources: [.display(id: 1)], primaryAudioDisplayID: 1, capturesMicrophone: false
+        )
+        let store = RecordingJobStore()
+        var running = RecordingJob(projectID: project.id, kind: .finalization)
+        running.state = .running
+        running.stage = "Rendering"
+        running.progress = 0.6
+        try store.save(running, in: project)
+
+        let resumed = try store.reconcileFinalization(in: project, projectLifecycle: .needsRecovery)
+        XCTAssertEqual(resumed.single?.state, .queued)
+        XCTAssertEqual(resumed.single?.progress, 0)
+        XCTAssertEqual(resumed.single?.attempt, 2)
+        XCTAssertEqual(try store.load(in: project), resumed)
+
+        let completed = try store.reconcileFinalization(in: project, projectLifecycle: .finalized)
+        XCTAssertEqual(completed.single?.state, .completed)
+        XCTAssertEqual(completed.single?.progress, 1)
     }
 
     func testShortcutTimelinePersistsInsideTheRecoverableScenePackage() throws {

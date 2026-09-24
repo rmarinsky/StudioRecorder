@@ -263,6 +263,7 @@ struct StudioRecorderSnapshot: Equatable {
     var launchPhase: LaunchPhase = .checking
     var selectedProjectID: String?
     var captureState: RecordingState = .preparing
+    var jobs: [RecordingJob] = []
     var availableDisplays: [AvailableDisplay] = []
     var availableMicrophones: [AvailableMicrophone] = []
     var availableCameras: [AvailableCamera] = []
@@ -565,6 +566,12 @@ final class StudioRecorderModel: ObservableObject {
     func recoverProject(_ projectID: String) async throws {
         guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
         try await coordinator.recoverProject(projectID)
+        synchronizeFromCoordinator()
+    }
+
+    func retryJob(_ jobID: UUID) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.retryJob(jobID)
         synchronizeFromCoordinator()
     }
 
@@ -1048,6 +1055,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.availableMicrophones = coordinator.availableMicrophones
         snapshot.availableCameras = coordinator.availableCameras
         snapshot.projects = coordinator.projects
+        snapshot.jobs = coordinator.jobs
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
         snapshot.finalizationProgress = coordinator.finalizationProgress
