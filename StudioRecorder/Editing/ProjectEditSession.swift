@@ -288,6 +288,22 @@ final class ProjectEditSession: ObservableObject {
         }
     }
 
+    func deleteOutputRange(_ range: Range<TimeInterval>) async {
+        guard let current = timeline else { return }
+        var next = current
+        do {
+            try next.delete(range: range)
+            let seekTime = min(range.lowerBound, next.duration)
+            await commitEdit(
+                next,
+                selectedSegmentID: next.segment(at: seekTime)?.id ?? next.segments.last?.id,
+                seekTime: seekTime
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func reset() async {
         guard let current = timeline else { return }
         errorMessage = nil

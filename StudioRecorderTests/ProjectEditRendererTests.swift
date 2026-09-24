@@ -6,6 +6,38 @@ import XCTest
 
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
+    func testSelectedRangeCutExportsShorterMovieWithoutChangingRawMedia() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "source.mov")
+        let exportURL = rootURL.appending(path: "edited.mov")
+        try await writeReadableMovie(to: sourceURL)
+        let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let rawBytes = try Data(contentsOf: sourceURL)
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(),
+            projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: sourceURL,
+            programSources: nil,
+            initialPresentation: .default
+        )
+
+        await session.deleteOutputRange(0.5..<1.2)
+
+        XCTAssertEqual(try XCTUnwrap(session.timeline).duration, sourceDuration - 0.7, accuracy: 0.1)
+        try await session.exportEditedMovie(to: exportURL)
+        let exportedDuration = try await AVURLAsset(url: exportURL).load(.duration).seconds
+        XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.1)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+        await session.undo()
+        XCTAssertEqual(try XCTUnwrap(session.timeline).duration, sourceDuration, accuracy: 0.1)
+        session.stop()
+    }
+
     func testProgramCompositionUsesTheValidatedRequestedFrameRateAndTweening() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
