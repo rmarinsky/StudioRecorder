@@ -2,6 +2,21 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testTranscriptDisplaysWordsInSourceTimeOrderWithinEachEditedSegment() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "screen", sourceDuration: 3,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "third", sourceStart: 2, sourceEnd: 2.3, timingStatus: .aligned),
+                TimedTranscriptWord(text: "first", sourceStart: 0.2, sourceEnd: 0.5, timingStatus: .aligned),
+                TimedTranscriptWord(text: "second", sourceStart: 1, sourceEnd: 1.3, timingStatus: .aligned),
+            ]
+        )
+
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 3)
+        XCTAssertEqual(transcript.words(in: timeline).map(\.text), ["first", "second", "third"])
+    }
+
     func testTimedWordsFollowEditedVideoOrderAndMarkPartialWordsUncertain() throws {
         let transcript = TimedTranscript(
             projectID: UUID(), sourceTrackID: "screen", sourceDuration: 2,

@@ -77,9 +77,14 @@ struct TimedTranscript: Codable, Equatable, Sendable {
               abs(timeline.sourceDuration - sourceDuration) < 0.1 else { return [] }
         var outputStart: TimeInterval = 0
         var result: [EditedTranscriptWord] = []
+        let orderedWords = words.sorted {
+            if $0.sourceStart != $1.sourceStart { return $0.sourceStart < $1.sourceStart }
+            if $0.sourceEnd != $1.sourceEnd { return $0.sourceEnd < $1.sourceEnd }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         for segment in timeline.segments {
             let sourceEnd = segment.sourceStart + segment.duration
-            for word in words where word.sourceStart < sourceEnd && word.sourceEnd > segment.sourceStart {
+            for word in orderedWords where word.sourceStart < sourceEnd && word.sourceEnd > segment.sourceStart {
                 let start = max(word.sourceStart, segment.sourceStart)
                 let end = min(word.sourceEnd, sourceEnd)
                 let clipped = start > word.sourceStart + 0.001 || end < word.sourceEnd - 0.001
