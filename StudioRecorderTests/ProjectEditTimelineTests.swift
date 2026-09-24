@@ -85,6 +85,41 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(timeline.sourceDuration, 12, accuracy: 0.001)
     }
 
+    func testDeletingArbitraryOutputRangeCutsAcrossSegmentsAndPreservesSourceMedia() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        try timeline.split(at: 5)
+        try timeline.split(at: 8)
+
+        try timeline.delete(range: 3..<9)
+
+        XCTAssertEqual(timeline.duration, 6, accuracy: 0.001)
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 9])
+        XCTAssertEqual(timeline.segments.map(\.duration), [3, 3])
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 3)), 9, accuracy: 0.001)
+        XCTAssertEqual(timeline.sourceDuration, 12, accuracy: 0.001)
+    }
+
+    func testDeletingEntireOutputIsRejectedWithoutChangingTheTimeline() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        let original = timeline
+
+        XCTAssertThrowsError(try timeline.delete(range: 0..<12))
+        XCTAssertEqual(timeline, original)
+    }
+
+    func testDeletingWithinOneSegmentKeepsDistinctPiecesAndRejectsInvalidBounds() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        try timeline.delete(range: 3..<5)
+
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 5])
+        XCTAssertEqual(timeline.segments.map(\.duration), [3, 7])
+        XCTAssertNotEqual(timeline.segments[0].id, timeline.segments[1].id)
+
+        let saved = timeline
+        XCTAssertThrowsError(try timeline.delete(range: 9..<11))
+        XCTAssertEqual(timeline, saved)
+    }
+
     func testEditStoreRoundTripsTheDocumentWithoutTouchingRawTracks() async throws {
         let projectID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
         let rootURL = FileManager.default.temporaryDirectory

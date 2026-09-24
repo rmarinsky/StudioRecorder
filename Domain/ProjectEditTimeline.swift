@@ -304,6 +304,41 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         segments.remove(at: index)
     }
 
+    mutating func delete(range: Range<TimeInterval>) throws {
+        guard range.lowerBound.isFinite,
+              range.upperBound.isFinite,
+              range.lowerBound >= 0,
+              range.upperBound <= duration,
+              range.lowerBound < range.upperBound else {
+            throw ProjectEditTimelineError.invalidTimelineTime
+        }
+        guard range.lowerBound > 0 || range.upperBound < duration else {
+            throw ProjectEditTimelineError.cannotDeleteOnlySegment
+        }
+
+        var kept: [ProjectEditSegment] = []
+        var outputStart: TimeInterval = 0
+        for segment in segments {
+            let outputEnd = outputStart + segment.duration
+            let leftDuration = max(min(outputEnd, range.lowerBound) - outputStart, 0)
+            if leftDuration > 0 {
+                kept.append(.init(id: segment.id, sourceStart: segment.sourceStart, duration: leftDuration))
+            }
+            let rightStart = max(outputStart, range.upperBound)
+            let rightDuration = max(outputEnd - rightStart, 0)
+            if rightDuration > 0 {
+                kept.append(.init(
+                    id: leftDuration > 0 ? UUID() : segment.id,
+                    sourceStart: segment.sourceStart + rightStart - outputStart,
+                    duration: rightDuration
+                ))
+            }
+            outputStart = outputEnd
+        }
+        guard !kept.isEmpty else { throw ProjectEditTimelineError.cannotDeleteOnlySegment }
+        segments = kept
+    }
+
     mutating func trimStart(to timelineTime: TimeInterval) throws {
         guard timelineTime.isFinite, timelineTime >= 0, timelineTime < duration else {
             throw ProjectEditTimelineError.invalidTimelineTime
