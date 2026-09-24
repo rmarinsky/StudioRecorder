@@ -36,6 +36,9 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var sourceAudioWaveformErrors: [ProjectAudioSource: String] = [:]
     @Published private(set) var isLoadingAudioWaveform = false
     @Published private(set) var audioWaveformError: String?
+    @Published private(set) var silenceCandidates: [Range<TimeInterval>] = []
+    @Published private(set) var isDetectingSilence = false
+    @Published private(set) var silenceError: String?
     @Published var selectedSegmentID: UUID?
     @Published var selectedPrivacyOverlayID: UUID?
     @Published var selectedManualZoomTransitionIndex: Int?
@@ -57,6 +60,8 @@ final class ProjectEditSession: ObservableObject {
     private var documentSaveTask: Task<Void, Never>?
     private var presentationRenderTask: Task<Void, Never>?
     private var audioWaveformTask: Task<Void, Never>?
+    private var silenceTask: Task<Void, Never>?
+    private var silenceWaveform: ProjectAudioWaveform?
     private var documentRevision = 0
     private var loadID = UUID()
 
@@ -132,6 +137,12 @@ final class ProjectEditSession: ObservableObject {
         presentationRenderTask = nil
         audioWaveformTask?.cancel()
         audioWaveformTask = nil
+        silenceTask?.cancel()
+        silenceTask = nil
+        silenceWaveform = nil
+        silenceCandidates = []
+        silenceError = nil
+        isDetectingSilence = false
         defer {
             if loadID == requestID { isLoading = false }
         }
@@ -426,6 +437,36 @@ final class ProjectEditSession: ObservableObject {
             sourceAudioAdjustments: sourceAudioAdjustments,
             segmentAudioAdjustments: segmentAudioAdjustments
         )
+    }
+
+    func detectSilence() {
+        guard let timeline, let sourceURL, let projectRootURL else { return }
+        silenceTask?.cancel()
+        isDetectingSilence = true
+        silenceError = nil
+        let operationID = loadID
+        let audioURL = programSources?.audioURL ?? sourceURL
+        let buckets = Int(min(ceil(timeline.sourceDuration / 0.02), 200_000))
+        silenceTask = Task(priority: .background) { [weak self, audioWaveformAnalyzer] in
+            do {
+                let waveform = try await audioWaveformAnalyzer.waveform(
+                    for: audioURL,
+                    cacheURL: projectRootURL.appending(path: "analysis/silence-waveform.json"),
+                    bucketCount: buckets
+                )
+                try Task.checkCancellation()
+                guard let self, self.loadID == operationID, let current = self.timeline else { return }
+                self.silenceWaveform = waveform
+                self.silenceCandidates = ProjectSilenceDetector.candidates(in: waveform, timeline: current)
+                self.isDetectingSilence = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.loadID == operationID else { return }
+                self.silenceError = error.localizedDescription
+                self.isDetectingSilence = false
+            }
+        }
     }
 
     func updateAudioAdjustment(_ next: ProjectAudioAdjustment) {
@@ -726,7 +767,9 @@ final class ProjectEditSession: ObservableObject {
         documentSaveTask?.cancel()
         presentationRenderTask?.cancel()
         audioWaveformTask?.cancel()
+        silenceTask?.cancel()
         isLoadingAudioWaveform = false
+        isDetectingSilence = false
         audioAdjustmentGestureStart = nil
         if let document, let projectRootURL {
             documentSaveTask = Task { [store] in
@@ -806,6 +849,11 @@ final class ProjectEditSession: ObservableObject {
             guard loadID == operationID else { return }
             document = nextDocument
             timeline = next.timeline
+            if let silenceWaveform {
+                silenceCandidates = ProjectSilenceDetector.candidates(
+                    in: silenceWaveform, timeline: next.timeline
+                )
+            }
             sceneTimeline = next.sceneTimeline
             audioAdjustment = next.audioAdjustment
             sourceAudioAdjustments = next.sourceAudioAdjustments

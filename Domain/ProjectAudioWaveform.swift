@@ -26,6 +26,53 @@ struct ProjectAudioWaveform: Codable, Equatable, Sendable {
     }
 }
 
+enum ProjectSilenceDetector {
+    static func candidates(
+        in waveform: ProjectAudioWaveform,
+        timeline: ProjectEditTimeline,
+        minimumDuration: TimeInterval = 0.35,
+        padding: TimeInterval = 0.08,
+        rmsThreshold: Float = 0.012,
+        peakThreshold: Float = 0.06
+    ) -> [Range<TimeInterval>] {
+        guard abs(waveform.duration - timeline.sourceDuration) < 0.1,
+              minimumDuration > 0, padding >= 0 else { return [] }
+        var result: [Range<TimeInterval>] = []
+        var outputStart: TimeInterval = 0
+        for segment in timeline.segments {
+            let sourceEnd = segment.sourceStart + segment.duration
+            var quietStart: TimeInterval?
+            var quietEnd: TimeInterval = 0
+            func finishQuietRun() {
+                guard let quietStart, quietEnd - quietStart >= minimumDuration else { return }
+                let start = quietStart + padding
+                let end = quietEnd - padding
+                if end > start {
+                    let outputLower = outputStart + start - segment.sourceStart
+                    let outputUpper = outputStart + end - segment.sourceStart
+                    result.append(outputLower..<outputUpper)
+                }
+            }
+            for bucket in waveform.buckets {
+                let start = max(bucket.sourceStart, segment.sourceStart)
+                let end = min(bucket.sourceStart + bucket.duration, sourceEnd)
+                guard end > start else { continue }
+                let quiet = bucket.rms <= rmsThreshold && bucket.peak <= peakThreshold
+                if quiet {
+                    if quietStart == nil { quietStart = start }
+                    quietEnd = end
+                } else {
+                    finishQuietRun()
+                    quietStart = nil
+                }
+            }
+            finishQuietRun()
+            outputStart += segment.duration
+        }
+        return result
+    }
+}
+
 enum ProjectAudioWaveformError: LocalizedError, Equatable {
     case noAudioTrack
     case unreadableAudio
@@ -71,7 +118,7 @@ actor ProjectAudioWaveformAnalyzer {
         trackIndex: Int? = nil,
         persistentTrackID: Int32? = nil
     ) async throws -> ProjectAudioWaveform {
-        let bucketCount = min(max(bucketCount, 2), 512)
+        let bucketCount = min(max(bucketCount, 2), 200_000)
         let metadata = try sourceMetadata(at: sourceURL)
         if let cached = readCache(
             at: cacheURL,

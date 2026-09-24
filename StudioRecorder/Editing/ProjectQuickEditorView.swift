@@ -186,6 +186,7 @@ struct ProjectQuickEditorView: View {
             .buttonStyle(.bordered)
 
             audioEditor(timeline)
+            silenceEditor
             zoomEditor(timeline)
             privacyEditor(timeline)
 
@@ -232,6 +233,42 @@ struct ProjectQuickEditorView: View {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var silenceEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button("Find Silences", systemImage: "waveform.badge.magnifyingglass") {
+                    session.detectSilence()
+                }
+                .disabled(session.isDetectingSilence || session.isWorking)
+                if session.isDetectingSilence {
+                    ProgressView().controlSize(.small)
+                    Text("Analyzing audio locally…").font(.caption).foregroundStyle(.secondary)
+                } else if !session.silenceCandidates.isEmpty {
+                    Text("\(session.silenceCandidates.count) suggestions")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.borderless)
+            if let silenceError = session.silenceError {
+                Text(silenceError).font(.caption).foregroundStyle(.orange)
+            }
+            ForEach(Array(session.silenceCandidates.enumerated()), id: \.offset) { _, range in
+                HStack(spacing: 8) {
+                    Text("\(format(range.lowerBound))–\(format(range.upperBound))")
+                        .font(.caption.monospacedDigit())
+                    Spacer()
+                    Button("Select") { selectedRange = range }
+                    Button("Apply") {
+                        Task { await session.deleteOutputRange(range) }
+                    }
+                    .disabled(selectedRange != range || session.isWorking)
+                }
+                .buttonStyle(.borderless)
             }
         }
     }
