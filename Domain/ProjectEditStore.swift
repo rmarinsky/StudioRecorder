@@ -1,6 +1,170 @@
 import CoreMedia
 import Foundation
 
+enum TranscriptTimingStatus: String, Codable, Sendable {
+    case aligned
+    case uncertain
+    case reviewed
+}
+
+struct TimedTranscriptWord: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    let text: String
+    let sourceStart: TimeInterval
+    let sourceEnd: TimeInterval
+    let timingStatus: TranscriptTimingStatus
+    let timingModel: String?
+
+    init(
+        id: UUID = UUID(),
+        text: String,
+        sourceStart: TimeInterval,
+        sourceEnd: TimeInterval,
+        timingStatus: TranscriptTimingStatus,
+        timingModel: String? = nil
+    ) {
+        self.id = id
+        self.text = text
+        self.sourceStart = sourceStart
+        self.sourceEnd = sourceEnd
+        self.timingStatus = timingStatus
+        self.timingModel = timingModel
+    }
+}
+
+struct EditedTranscriptWord: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let text: String
+    let outputStart: TimeInterval
+    let outputEnd: TimeInterval
+    let sourceStart: TimeInterval
+    let sourceEnd: TimeInterval
+    let timingStatus: TranscriptTimingStatus
+}
+
+struct TimedTranscript: Codable, Equatable, Sendable {
+    let schemaVersion: Int
+    let projectID: UUID
+    let sourceTrackID: String
+    let sourceDuration: TimeInterval
+    let language: String
+    let recognitionModel: String
+    let alignmentModel: String
+    let words: [TimedTranscriptWord]
+
+    init(
+        projectID: UUID,
+        sourceTrackID: String,
+        sourceDuration: TimeInterval,
+        language: String,
+        recognitionModel: String,
+        alignmentModel: String,
+        words: [TimedTranscriptWord]
+    ) {
+        schemaVersion = 1
+        self.projectID = projectID
+        self.sourceTrackID = sourceTrackID
+        self.sourceDuration = sourceDuration
+        self.language = language
+        self.recognitionModel = recognitionModel
+        self.alignmentModel = alignmentModel
+        self.words = words
+    }
+
+    func words(in timeline: ProjectEditTimeline) -> [EditedTranscriptWord] {
+        guard timeline.trackID == sourceTrackID,
+              abs(timeline.sourceDuration - sourceDuration) < 0.1 else { return [] }
+        var outputStart: TimeInterval = 0
+        var result: [EditedTranscriptWord] = []
+        for segment in timeline.segments {
+            let sourceEnd = segment.sourceStart + segment.duration
+            for word in words where word.sourceStart < sourceEnd && word.sourceEnd > segment.sourceStart {
+                let start = max(word.sourceStart, segment.sourceStart)
+                let end = min(word.sourceEnd, sourceEnd)
+                let clipped = start > word.sourceStart + 0.001 || end < word.sourceEnd - 0.001
+                result.append(EditedTranscriptWord(
+                    id: word.id, text: word.text,
+                    outputStart: outputStart + start - segment.sourceStart,
+                    outputEnd: outputStart + end - segment.sourceStart,
+                    sourceStart: start, sourceEnd: end,
+                    timingStatus: clipped ? .uncertain : word.timingStatus
+                ))
+            }
+            outputStart += segment.duration
+        }
+        return result
+    }
+
+    func reviewWord(_ id: UUID, sourceRange: Range<TimeInterval>) throws -> TimedTranscript {
+        guard sourceRange.lowerBound.isFinite, sourceRange.upperBound.isFinite,
+              sourceRange.lowerBound >= 0,
+              sourceRange.lowerBound < sourceRange.upperBound,
+              sourceRange.upperBound <= sourceDuration,
+              let index = words.firstIndex(where: { $0.id == id }) else {
+            throw TimedTranscriptStoreError.invalidTranscript
+        }
+        var revised = words
+        let original = revised[index]
+        revised[index] = TimedTranscriptWord(
+            id: original.id, text: original.text,
+            sourceStart: sourceRange.lowerBound, sourceEnd: sourceRange.upperBound,
+            timingStatus: .reviewed, timingModel: "manual"
+        )
+        return TimedTranscript(
+            projectID: projectID, sourceTrackID: sourceTrackID,
+            sourceDuration: sourceDuration, language: language,
+            recognitionModel: recognitionModel, alignmentModel: alignmentModel,
+            words: revised
+        )
+    }
+}
+
+enum TimedTranscriptStoreError: LocalizedError {
+    case invalidTranscript
+    case unsupportedSchema
+    case projectMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidTranscript: "The transcript contains missing or invalid word times."
+        case .unsupportedSchema: "This transcript was written by an unsupported app version."
+        case .projectMismatch: "This transcript belongs to a different project."
+        }
+    }
+}
+
+struct TimedTranscriptStore {
+    func load(in rootURL: URL, expectedProjectID: UUID) throws -> TimedTranscript? {
+        let url = rootURL.appending(path: "analysis/transcript.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let transcript = try JSONDecoder().decode(TimedTranscript.self, from: Data(contentsOf: url))
+        try validate(transcript, expectedProjectID: expectedProjectID)
+        return transcript
+    }
+
+    func save(_ transcript: TimedTranscript, in rootURL: URL) throws {
+        try validate(transcript, expectedProjectID: transcript.projectID)
+        let url = rootURL.appending(path: "analysis/transcript.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(transcript).write(to: url, options: .atomic)
+    }
+
+    private func validate(_ transcript: TimedTranscript, expectedProjectID: UUID) throws {
+        guard transcript.schemaVersion == 1 else { throw TimedTranscriptStoreError.unsupportedSchema }
+        guard transcript.projectID == expectedProjectID else { throw TimedTranscriptStoreError.projectMismatch }
+        guard transcript.sourceDuration.isFinite, transcript.sourceDuration > 0,
+              !transcript.sourceTrackID.isEmpty, !transcript.language.isEmpty,
+              !transcript.recognitionModel.isEmpty, !transcript.alignmentModel.isEmpty,
+              Set(transcript.words.map(\.id)).count == transcript.words.count,
+              transcript.words.allSatisfy({
+                  !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && $0.sourceStart.isFinite && $0.sourceEnd.isFinite
+                      && $0.sourceStart >= 0 && $0.sourceStart < $0.sourceEnd
+                      && $0.sourceEnd <= transcript.sourceDuration + 0.05
+              }) else { throw TimedTranscriptStoreError.invalidTranscript }
+    }
+}
+
 enum ProjectAudioSource: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case systemAudio
     case microphone

@@ -2,6 +2,58 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testTimedWordsFollowEditedVideoOrderAndMarkPartialWordsUncertain() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "screen", sourceDuration: 2,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "Hello", sourceStart: 0.1, sourceEnd: 0.4, timingStatus: .aligned),
+                TimedTranscriptWord(text: "again", sourceStart: 1.1, sourceEnd: 1.5, timingStatus: .aligned),
+            ]
+        )
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        try timeline.split(at: 1)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        let reordered = transcript.words(in: timeline)
+        XCTAssertEqual(reordered.map(\.text), ["again", "Hello"])
+        XCTAssertEqual(reordered[0].outputStart, 0.1, accuracy: 0.001)
+        XCTAssertEqual(reordered[1].outputStart, 1.1, accuracy: 0.001)
+        XCTAssertTrue(reordered.allSatisfy { $0.timingStatus == .aligned })
+
+        try timeline.delete(range: 0.2..<0.4)
+        let clipped = transcript.words(in: timeline)
+        XCTAssertEqual(clipped.first?.text, "again")
+        XCTAssertEqual(clipped.first?.timingStatus, .uncertain)
+    }
+
+    func testTranscriptStoreRejectsInvalidWordTimeAndPersistsValidWords() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let projectID = UUID()
+        let word = TimedTranscriptWord(text: "Привіт", sourceStart: 0.2, sourceEnd: 0.7, timingStatus: .reviewed)
+        let document = TimedTranscript(
+            projectID: projectID, sourceTrackID: "screen", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture", words: [word]
+        )
+        let store = TimedTranscriptStore()
+        try store.save(document, in: root)
+        XCTAssertEqual(try store.load(in: root, expectedProjectID: projectID)?.words, [word])
+        let reviewed = try document.reviewWord(word.id, sourceRange: 0.15..<0.75)
+        XCTAssertEqual(reviewed.words.first?.timingStatus, .reviewed)
+        XCTAssertEqual(reviewed.words.first?.sourceStart, 0.15)
+        try store.save(reviewed, in: root)
+        XCTAssertEqual(try store.load(in: root, expectedProjectID: projectID), reviewed)
+
+        let invalid = TimedTranscript(
+            projectID: projectID, sourceTrackID: "screen", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [TimedTranscriptWord(text: "bad", sourceStart: 1.2, sourceEnd: 1.1, timingStatus: .aligned)]
+        )
+        XCTAssertThrowsError(try store.save(invalid, in: root))
+    }
+
     func testSceneSelectionMapsOneOutputSegmentToSourceAfterReorder() throws {
         var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
         try timeline.split(at: 5)

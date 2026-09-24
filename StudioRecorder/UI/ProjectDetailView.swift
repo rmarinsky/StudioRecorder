@@ -26,6 +26,11 @@ struct ProjectDetailView: View {
     @State private var isAssistantVisible = true
     @State private var isTranscriptVisible = true
     @State private var isShowingDetails = false
+    @State private var selectedRange: Range<TimeInterval>?
+    @State private var transcript: TimedTranscript?
+    @State private var transcriptSearch = ""
+    @State private var selectedWordID: UUID?
+    @State private var transcriptError: String?
 
     private let exporter = ProjectMediaExporter()
 
@@ -84,6 +89,7 @@ struct ProjectDetailView: View {
             if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
         }
         .task(id: programScreenTrackID) { await loadProgram() }
+        .task(id: project.id) { loadTranscript() }
         .onDisappear {
             editSession.stop()
             cancelGIFPreparation()
@@ -152,21 +158,153 @@ struct ProjectDetailView: View {
             }
             .padding(14)
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: "text.alignleft")
-                    .font(.title3)
+            if let transcript, let timeline = editSession.timeline,
+               transcript.sourceTrackID == timeline.trackID {
+                TextField("Search transcript", text: $transcriptSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(visibleTranscriptWords) { word in
+                            Button {
+                                selectedWordID = word.id
+                                selectedRange = word.outputStart..<word.outputEnd
+                                Task { await editSession.player.seek(
+                                    to: CMTime(seconds: word.outputStart, preferredTimescale: 600)
+                                ) }
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(String(format: "%02d:%05.2f", Int(word.outputStart) / 60,
+                                                word.outputStart.truncatingRemainder(dividingBy: 60)))
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 64, alignment: .leading)
+                                    Text(word.text)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    if word.timingStatus == .uncertain {
+                                        Image(systemName: "waveform.badge.exclamationmark")
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(selectedWordID == word.id ? Color.accentColor.opacity(0.18) : .clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(word.text), \(word.outputStart.formatted()) seconds, \(word.timingStatus.rawValue) timing")
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                Divider()
+                if let selectedTranscriptWord {
+                    Text(String(
+                        format: "Output %.2f–%.2f s · Source %.2f–%.2f s",
+                        selectedTranscriptWord.outputStart, selectedTranscriptWord.outputEnd,
+                        selectedTranscriptWord.sourceStart, selectedTranscriptWord.sourceEnd
+                    ))
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Text("No timed transcript")
-                    .font(.subheadline.weight(.medium))
-                Text("Word timing and transcript editing will appear here after local transcription is connected.")
-                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+                }
+                HStack {
+                    Button("Review Timing") { reviewSelectedWordTiming() }
+                        .disabled(selectedWordID == nil || selectedRange == nil)
+                    Button("Delete Word") {
+                        guard let selectedRange else { return }
+                        Task {
+                            await editSession.deleteOutputRange(selectedRange)
+                            selectedWordID = nil
+                        }
+                    }
+                    .disabled(selectedTranscriptWord?.timingStatus == .uncertain
+                              || selectedWordID == nil || selectedRange == nil)
+                }
+                .buttonStyle(.borderless)
+                .padding(10)
+                Button("Save Transcript…") { saveTranscriptText() }
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                Text("Word cuts remove picture and sound together. Review uncertain boundaries on the waveform first.")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                if let transcriptError {
+                    Text(transcriptError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 10)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Image(systemName: "text.alignleft")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("No timed transcript")
+                        .font(.subheadline.weight(.medium))
+                    Text(transcriptError ?? "Local word recognition and alignment are not connected yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                Spacer()
             }
-            .padding(14)
-            Spacer()
         }
         .background(detailPanel)
+    }
+
+    private var visibleTranscriptWords: [EditedTranscriptWord] {
+        guard let transcript, let timeline = editSession.timeline else { return [] }
+        let words = transcript.words(in: timeline)
+        let query = transcriptSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? words : words.filter { $0.text.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var selectedTranscriptWord: EditedTranscriptWord? {
+        visibleTranscriptWords.first { $0.id == selectedWordID }
+    }
+
+    private func loadTranscript() {
+        guard let projectID = project.identity.manifestID else { return }
+        do {
+            transcript = try TimedTranscriptStore().load(in: project.rootURL, expectedProjectID: projectID)
+            transcriptError = nil
+        } catch {
+            transcript = nil
+            transcriptError = error.localizedDescription
+        }
+    }
+
+    private func reviewSelectedWordTiming() {
+        guard let transcript, let selectedWordID, let selectedRange,
+              let timeline = editSession.timeline else { return }
+        do {
+            let sourceRange = try timeline.sourceRange(for: selectedRange)
+            let reviewed = try transcript.reviewWord(selectedWordID, sourceRange: sourceRange)
+            try TimedTranscriptStore().save(reviewed, in: project.rootURL)
+            self.transcript = reviewed
+            transcriptError = nil
+        } catch {
+            transcriptError = error.localizedDescription
+        }
+    }
+
+    private func saveTranscriptText() {
+        guard let transcript, let timeline = editSession.timeline, !transcript.words.isEmpty,
+              let destination = saveURL(type: .plainText, suggestedName: "Recording transcript.txt") else { return }
+        do {
+            try transcript.words(in: timeline).map(\.text).joined(separator: " ")
+                .write(to: destination, atomically: true, encoding: .utf8)
+        } catch {
+            transcriptError = error.localizedDescription
+        }
     }
 
     private var editorCenter: some View {
@@ -225,7 +363,11 @@ struct ProjectDetailView: View {
                 .background(detailContent)
             Divider()
             ScrollView {
-                ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
+                ProjectQuickEditorView(
+                    session: editSession,
+                    onExportMovie: exportEditedMovie,
+                    selectedRange: $selectedRange
+                )
                     .padding(12)
             }
             .frame(height: 290)

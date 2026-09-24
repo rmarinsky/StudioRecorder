@@ -17,13 +17,19 @@ struct ProjectQuickEditorView: View {
     @State private var audioExpanded = false
     @State private var assistantCommand = ""
     @State private var assistantMessage: String?
-    @State private var selectedRange: Range<TimeInterval>?
+    @Binding private var selectedRange: Range<TimeInterval>?
     @State private var selectedSceneInterval: SelectedSceneInterval?
     @State private var auditionTask: Task<Void, Never>?
 
-    init(session: ProjectEditSession, onExportMovie: @escaping () -> Void, commandsOnly: Bool = false) {
+    init(
+        session: ProjectEditSession,
+        onExportMovie: @escaping () -> Void,
+        selectedRange: Binding<Range<TimeInterval>?> = .constant(nil),
+        commandsOnly: Bool = false
+    ) {
         self.session = session
         self.onExportMovie = onExportMovie
+        _selectedRange = selectedRange
         self.commandsOnly = commandsOnly
     }
 
