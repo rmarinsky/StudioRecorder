@@ -12,6 +12,7 @@ struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
     let onExportMovie: () -> Void
     let commandsOnly: Bool
+    let proposedRanges: [Range<TimeInterval>]
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
@@ -25,11 +26,13 @@ struct ProjectQuickEditorView: View {
         session: ProjectEditSession,
         onExportMovie: @escaping () -> Void,
         selectedRange: Binding<Range<TimeInterval>?> = .constant(nil),
+        proposedRanges: [Range<TimeInterval>] = [],
         commandsOnly: Bool = false
     ) {
         self.session = session
         self.onExportMovie = onExportMovie
         _selectedRange = selectedRange
+        self.proposedRanges = proposedRanges
         self.commandsOnly = commandsOnly
     }
 
@@ -86,6 +89,7 @@ struct ProjectQuickEditorView: View {
                 playhead: session.playhead,
                 waveform: session.audioWaveform,
                 sceneTransitions: session.sceneTimeline?.transitions ?? [],
+                proposedRanges: proposedRanges,
                 selectedRange: $selectedRange,
                 onSeek: { time in
                     session.selectedSegmentID = timeline.segment(at: time)?.id
@@ -992,6 +996,7 @@ private struct ProjectLinkedTimeline: View {
     let playhead: TimeInterval
     let waveform: ProjectAudioWaveform?
     let sceneTransitions: [StudioSceneTransition]
+    let proposedRanges: [Range<TimeInterval>]
     @Binding var selectedRange: Range<TimeInterval>?
     let onSeek: (TimeInterval) -> Void
     let onDelete: () -> Void
@@ -1166,6 +1171,16 @@ private struct ProjectLinkedTimeline: View {
             }
         } else {
             context.fill(Path(CGRect(x: 0, y: audioY + laneHeight / 2, width: width, height: 1)), with: .color(.secondary.opacity(0.35)))
+        }
+
+        for range in proposedRanges where range.upperBound > viewport.visibleStart
+            && range.lowerBound < viewport.visibleStart + viewport.visibleDuration {
+            let x = width * (range.lowerBound - viewport.visibleStart) / viewport.visibleDuration
+            let proposedWidth = width * (range.upperBound - range.lowerBound) / viewport.visibleDuration
+            context.fill(
+                Path(CGRect(x: x, y: videoY, width: proposedWidth, height: laneHeight * 2)),
+                with: .color(.red.opacity(0.30))
+            )
         }
 
         if let selectedRange, selectedRange.upperBound > selectedRange.lowerBound {

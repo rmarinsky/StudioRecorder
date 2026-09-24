@@ -44,6 +44,8 @@ struct ProjectDetailView: View {
     @State private var assistantMessages: [AssistantMessage] = []
     @State private var assistantError: String?
     @State private var isAssistantWorking = false
+    @State private var assistantRequestID = UUID()
+    @State private var pendingAssistantCuts: OpenRouterReviewedCuts?
 
     private let exporter = ProjectMediaExporter()
 
@@ -107,8 +109,11 @@ struct ProjectDetailView: View {
             assistantMessages = []
             assistantPrompt = ""
             assistantError = nil
+            assistantRequestID = UUID()
+            pendingAssistantCuts = nil
         }
         .onDisappear {
+            assistantRequestID = UUID()
             editSession.stop()
             cancelGIFPreparation()
             cleanupGIFSource()
@@ -151,10 +156,10 @@ struct ProjectDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if assistantMessages.isEmpty {
-                        Text("Ask for titles, descriptions, or wording for a new take.")
+                        Text("Ask for cuts, titles, descriptions, or wording for a new take.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("The assistant sends transcript text for the chosen scope. It cannot change the recording from this chat yet.")
+                        Text("The assistant sends transcript text for the chosen scope. Review proposed cuts before applying them.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -182,6 +187,11 @@ struct ProjectDetailView: View {
                                         .font(.caption)
                                         .textSelection(.enabled)
                                 }
+                                ForEach(draft.cuts, id: \.id) { cut in
+                                    Label(cut.reason, systemImage: "scissors")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -191,12 +201,48 @@ struct ProjectDetailView: View {
                 .padding(12)
             }
             Divider()
+            if let pendingAssistantCuts, !pendingAssistantCuts.ranges.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(pendingAssistantCuts.ranges.count) proposed cuts")
+                        .font(.caption.weight(.semibold))
+                    Text("Red spans mark both video and audio. Audition a span before applying.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Review") { selectedRange = pendingAssistantCuts.ranges.first }
+                        Button("Apply") { applyAssistantCuts() }
+                            .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                        Button("Dismiss") { self.pendingAssistantCuts = nil }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed cuts: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Context", selection: $assistantScope) {
                     Text("Whole project").tag(OpenRouterAssistantScope.wholeProject)
                     Text("Selection").tag(OpenRouterAssistantScope.selection)
                 }
                 .pickerStyle(.segmented)
+                HStack {
+                    Button("Find pauses") { editSession.detectSilence() }
+                        .disabled(editSession.isDetectingSilence || editSession.timeline == nil)
+                    if editSession.isDetectingSilence {
+                        ProgressView().controlSize(.small)
+                    } else if !editSession.silenceCandidates.isEmpty {
+                        Text("\(editSession.silenceCandidates.count) detected")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
                 if assistantScope == .selection, selectedRange == nil {
                     Text("Select a range on the timeline first.")
                         .font(.caption2)
@@ -248,16 +294,29 @@ struct ProjectDetailView: View {
                         && word.outputEnd > selectedRange.lowerBound
                 }
                 .map { OpenRouterAssistantWord(
-                    id: $0.sourceWordID, text: $0.text,
-                    start: $0.outputStart, end: $0.outputEnd
+                    id: $0.id, text: $0.text,
+                    start: $0.outputStart, end: $0.outputEnd,
+                    timingStatus: $0.timingStatus
                 ) }
         }()
+        let silences: [OpenRouterAssistantSilence] = editSession.silenceCandidates.enumerated().compactMap { index, range in
+            if scope == .selection, let selectedRange,
+               (range.lowerBound < selectedRange.lowerBound
+                || range.upperBound > selectedRange.upperBound) { return nil }
+            return OpenRouterAssistantSilence(
+                id: "silence-\(index)", start: range.lowerBound, end: range.upperBound
+            )
+        }
         let history = assistantMessages.suffix(12).map { message in
             OpenRouterAssistantTurn(
                 role: message.role == "You" ? .user : .assistant,
                 content: message.text
             )
         }
+        let requestID = UUID()
+        assistantRequestID = requestID
+        let requestTimeline = editSession.timeline
+        let requestRevision = editSession.editRevision
         assistantPrompt = ""
         assistantError = nil
         assistantMessages.append(AssistantMessage(role: "You", text: prompt, draft: nil))
@@ -268,14 +327,51 @@ struct ProjectDetailView: View {
                 guard let key = try OpenRouterAssistantKeyStore().load() else {
                     throw OpenRouterAssistantError.missingKey
                 }
-                let context = OpenRouterAssistantContext(projectID: projectID, scope: scope, words: words)
+                let context = OpenRouterAssistantContext(
+                    projectID: projectID, scope: scope, words: words, silences: silences
+                )
                 let draft = try await OpenRouterAssistantClient().draft(
                     apiKey: key, model: assistantModel, prompt: prompt, context: context,
                     history: history
                 )
+                guard assistantRequestID == requestID else { return }
                 assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
+                if !draft.cuts.isEmpty, let requestTimeline {
+                    let proposal = try draft.reviewedCuts(
+                        context: context, timeline: requestTimeline, revision: requestRevision
+                    )
+                    guard proposal.isCurrent(
+                        projectID: projectID,
+                        timeline: editSession.timeline ?? requestTimeline,
+                        revision: editSession.editRevision
+                    ) else { throw OpenRouterAssistantError.invalidProposal }
+                    pendingAssistantCuts = proposal
+                    selectedRange = proposal.ranges.first
+                }
             } catch {
-                assistantError = error.localizedDescription
+                if assistantRequestID == requestID { assistantError = error.localizedDescription }
+            }
+        }
+    }
+
+    private func applyAssistantCuts() {
+        guard let proposal = pendingAssistantCuts,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                  projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), !proposal.ranges.isEmpty else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantCuts = nil
+            return
+        }
+        Task {
+            await editSession.deleteOutputRanges(proposal.ranges)
+            if let error = editSession.errorMessage {
+                assistantError = error
+            } else {
+                pendingAssistantCuts = nil
+                selectedRange = nil
             }
         }
     }
@@ -324,6 +420,9 @@ struct ProjectDetailView: View {
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
                                 .background(selectedWordOccurrenceID == word.id ? Color.accentColor.opacity(0.18) : .clear)
+                                .background(pendingAssistantCuts?.ranges.contains(where: {
+                                    $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
+                                }) == true ? Color.red.opacity(0.15) : .clear)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -500,7 +599,8 @@ struct ProjectDetailView: View {
                 ProjectQuickEditorView(
                     session: editSession,
                     onExportMovie: exportEditedMovie,
-                    selectedRange: $selectedRange
+                    selectedRange: $selectedRange,
+                    proposedRanges: pendingAssistantCuts?.ranges ?? []
                 )
                     .padding(12)
             }

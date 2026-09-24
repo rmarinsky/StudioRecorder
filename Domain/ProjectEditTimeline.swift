@@ -390,6 +390,23 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         segments = kept
     }
 
+    mutating func delete(ranges: [Range<TimeInterval>]) throws {
+        guard !ranges.isEmpty else { return }
+        let ordered = ranges.sorted { $0.lowerBound < $1.lowerBound }
+        guard ordered.allSatisfy({
+            $0.lowerBound.isFinite && $0.upperBound.isFinite
+                && $0.lowerBound >= 0 && $0.lowerBound < $0.upperBound
+                && $0.upperBound <= duration
+        }), zip(ordered, ordered.dropFirst()).allSatisfy({
+            $0.0.upperBound <= $0.1.lowerBound
+        }) else { throw ProjectEditTimelineError.invalidTimelineTime }
+        var next = self
+        for range in ordered.reversed() {
+            try next.delete(range: range)
+        }
+        self = next
+    }
+
     mutating func trimStart(to timelineTime: TimeInterval) throws {
         guard timelineTime.isFinite, timelineTime >= 0, timelineTime < duration else {
             throw ProjectEditTimelineError.invalidTimelineTime

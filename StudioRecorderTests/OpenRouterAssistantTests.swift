@@ -19,7 +19,8 @@ final class OpenRouterAssistantTests: XCTestCase {
     func testDraftRequestIncludesOnlyExplicitTextContextAndRequiresStructuredOutput() throws {
         let context = OpenRouterAssistantContext(
             projectID: UUID(), scope: .selection, words: [
-                OpenRouterAssistantWord(id: UUID(), text: "Hello", start: 1.2, end: 1.5)
+                OpenRouterAssistantWord(id: "hello", text: "Hello", start: 1.2, end: 1.5,
+                                        timingStatus: .aligned)
             ]
         )
         let request = try OpenRouterAssistantClient().draftRequest(
@@ -62,13 +63,65 @@ final class OpenRouterAssistantTests: XCTestCase {
 
     func testMalformedModelReplyCannotBecomeAVisibleDraft() throws {
         let valid = Data("""
-        {"choices":[{"message":{"content":"{\\"reply\\":\\"Here are ideas\\",\\"titles\\":[\\"A title\\"],\\"descriptions\\":[],\\"new_take_wording\\":[]}"}}]}
+        {"choices":[{"message":{"content":"{\\"reply\\":\\"Here are ideas\\",\\"titles\\":[\\"A title\\"],\\"descriptions\\":[],\\"new_take_wording\\":[],\\"cuts\\":[]}"}}]}
         """.utf8)
         XCTAssertEqual(try OpenRouterAssistantClient.parseDraft(from: valid).titles, ["A title"])
 
         let invalid = Data("""
-        {"choices":[{"message":{"content":"{\\"reply\\":\\" \",\\"titles\\":[],\\"descriptions\\":[],\\"new_take_wording\\":[]}"}}]}
+        {"choices":[{"message":{"content":"{\\"reply\\":\\" \",\\"titles\\":[],\\"descriptions\\":[],\\"new_take_wording\\":[],\\"cuts\\":[]}"}}]}
         """.utf8)
         XCTAssertThrowsError(try OpenRouterAssistantClient.parseDraft(from: invalid))
+    }
+
+    func testCutProposalAcceptsOnlyKnownReviewedTargetsForCurrentRevision() throws {
+        let projectID = UUID()
+        let context = OpenRouterAssistantContext(
+            projectID: projectID, scope: .wholeProject,
+            words: [
+                OpenRouterAssistantWord(id: "reviewed", text: "um", start: 1, end: 1.3,
+                                        timingStatus: .reviewed),
+                OpenRouterAssistantWord(id: "uncertain", text: "maybe", start: 2, end: 2.4,
+                                        timingStatus: .uncertain),
+            ]
+        )
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 3)
+        let valid = OpenRouterAssistantDraft(reply: "Remove a filler", titles: [], descriptions: [],
+                                             newTakeWording: [], cuts: [
+                                                OpenRouterAssistantCutTarget(id: "reviewed", reason: "Filler")
+                                             ])
+        let proposal = try valid.reviewedCuts(context: context, timeline: timeline, revision: 5)
+        XCTAssertEqual(proposal.ranges, [1..<1.3])
+        XCTAssertTrue(proposal.isCurrent(projectID: projectID, timeline: timeline, revision: 5))
+        XCTAssertFalse(proposal.isCurrent(projectID: projectID, timeline: timeline, revision: 6))
+
+        let uncertain = OpenRouterAssistantDraft(reply: "Remove", titles: [], descriptions: [],
+                                                 newTakeWording: [], cuts: [
+                                                    OpenRouterAssistantCutTarget(id: "uncertain", reason: "Filler")
+                                                 ])
+        XCTAssertThrowsError(try uncertain.reviewedCuts(context: context, timeline: timeline, revision: 5))
+        let invented = OpenRouterAssistantDraft(reply: "Remove", titles: [], descriptions: [],
+                                                newTakeWording: [], cuts: [
+                                                    OpenRouterAssistantCutTarget(id: "invented", reason: "Filler")
+                                                ])
+        XCTAssertThrowsError(try invented.reviewedCuts(context: context, timeline: timeline, revision: 5))
+    }
+
+    func testCutProposalCanReferenceOnlyLocallyDetectedSilence() throws {
+        let context = OpenRouterAssistantContext(
+            projectID: UUID(), scope: .wholeProject, words: [],
+            silences: [OpenRouterAssistantSilence(id: "silence-0", start: 1, end: 1.8)]
+        )
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 3)
+        let draft = OpenRouterAssistantDraft(
+            reply: "Remove the long pause", titles: [], descriptions: [], newTakeWording: [],
+            cuts: [OpenRouterAssistantCutTarget(id: "silence-0", reason: "Long pause")]
+        )
+        XCTAssertEqual(try draft.reviewedCuts(context: context, timeline: timeline, revision: 2).ranges,
+                       [1..<1.8])
+        let unknown = OpenRouterAssistantDraft(
+            reply: "Remove", titles: [], descriptions: [], newTakeWording: [],
+            cuts: [OpenRouterAssistantCutTarget(id: "silence-1", reason: "Invented pause")]
+        )
+        XCTAssertThrowsError(try unknown.reviewedCuts(context: context, timeline: timeline, revision: 2))
     }
 }

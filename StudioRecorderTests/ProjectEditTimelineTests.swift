@@ -2,6 +2,15 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testDeletingReviewedRangesAppliesOneBatchAgainstOriginalOutputTime() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try timeline.delete(ranges: [1..<2, 4..<5])
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 2, 5])
+        XCTAssertEqual(timeline.segments.map(\.duration), [1, 2, 5])
+        XCTAssertEqual(timeline.duration, 8)
+        XCTAssertThrowsError(try timeline.delete(ranges: [0..<2, 1..<3]))
+    }
+
     func testTranscriptDisplaysWordsInSourceTimeOrderWithinEachEditedSegment() throws {
         let transcript = TimedTranscript(
             projectID: UUID(), sourceTrackID: "screen", sourceDuration: 3,

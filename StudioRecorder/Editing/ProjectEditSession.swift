@@ -80,6 +80,7 @@ final class ProjectEditSession: ObservableObject {
     var canUndo: Bool { !undoStack.isEmpty && !isWorking }
     var canRedo: Bool { !redoStack.isEmpty && !isWorking }
     var canPersistEdits: Bool { document != nil }
+    var editRevision: Int { documentRevision }
     var canDeleteSelectedSegment: Bool {
         guard let timeline, let selectedSegmentID else { return false }
         return timeline.segments.count > 1 && timeline.segments.contains { $0.id == selectedSegmentID }
@@ -336,6 +337,22 @@ final class ProjectEditSession: ObservableObject {
         do {
             try next.delete(range: range)
             let seekTime = min(range.lowerBound, next.duration)
+            await commitEdit(
+                next,
+                selectedSegmentID: next.segment(at: seekTime)?.id ?? next.segments.last?.id,
+                seekTime: seekTime
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteOutputRanges(_ ranges: [Range<TimeInterval>]) async {
+        guard let current = timeline, !ranges.isEmpty else { return }
+        var next = current
+        do {
+            try next.delete(ranges: ranges)
+            let seekTime = min(ranges.map(\.lowerBound).min() ?? 0, next.duration)
             await commitEdit(
                 next,
                 selectedSegmentID: next.segment(at: seekTime)?.id ?? next.segments.last?.id,
