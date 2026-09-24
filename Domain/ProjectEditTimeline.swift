@@ -24,6 +24,7 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
     case splitAtSegmentBoundary
     case segmentNotFound
     case invalidSegmentDestination
+    case rangeCrossesSegments
     case cannotDeleteOnlySegment
     case recordingContainsOnlyPausedTime
 
@@ -39,6 +40,8 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
             "The selected edit segment no longer exists."
         case .invalidSegmentDestination:
             "The selected segment cannot move beyond the timeline."
+        case .rangeCrossesSegments:
+            "Select a range within one recorded segment to change its scene."
         case .cannotDeleteOnlySegment:
             "At least one segment must remain in the edit."
         case .recordingContainsOnlyPausedTime:
@@ -277,6 +280,21 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
               timelineTime >= 0,
               timelineTime <= duration else { return nil }
         return segmentLocation(at: min(timelineTime, max(duration - 0.000_001, 0)))?.segment
+    }
+
+    func sourceRange(for outputRange: Range<TimeInterval>) throws -> Range<TimeInterval> {
+        guard outputRange.lowerBound.isFinite, outputRange.upperBound.isFinite,
+              outputRange.lowerBound >= 0,
+              outputRange.lowerBound < outputRange.upperBound,
+              outputRange.upperBound <= duration,
+              let start = segmentLocation(at: outputRange.lowerBound),
+              let end = segmentLocation(at: outputRange.upperBound.nextDown),
+              start.index == end.index else {
+            throw ProjectEditTimelineError.rangeCrossesSegments
+        }
+        let lower = start.segment.sourceStart + outputRange.lowerBound - start.timelineStart
+        let upper = start.segment.sourceStart + outputRange.upperBound - start.timelineStart
+        return lower..<upper
     }
 
     init(

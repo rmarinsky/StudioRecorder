@@ -4,6 +4,36 @@ import XCTest
 
 @MainActor
 final class StudioSceneTests: XCTestCase {
+    func testEditorSceneOverrideRestoresRecordedSceneAtEndAndFollowsSourceAfterReorder() throws {
+        var wide = CapturePresentationSnapshot.default
+        wide.name = "Wide"
+        var camera = wide
+        camera.name = "Camera"
+        camera.camera.isVisible = true
+        var later = wide
+        later.name = "Later"
+        var scenes = StudioSceneTimeline(initialPresentation: wide, displayID: 1)
+        scenes.append(later, at: 5, displayID: 1)
+
+        try scenes.overrideScene(
+            in: 2..<7, sourceDuration: 10,
+            with: camera, displayID: 2,
+            transition: .cut
+        )
+
+        XCTAssertEqual(scenes.presentation(at: 1).name, "Wide")
+        XCTAssertEqual(scenes.presentation(at: 3).name, "Camera")
+        XCTAssertEqual(scenes.displayID(at: 3), 2)
+        XCTAssertEqual(scenes.presentation(at: 8).name, "Later")
+        XCTAssertEqual(scenes.displayID(at: 8), 1)
+
+        var edit = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try edit.split(at: 5)
+        try edit.move(segmentID: edit.segments[0].id, toIndex: 1)
+        XCTAssertEqual(scenes.presentation(at: try XCTUnwrap(edit.sourceTime(at: 0.5))).name, "Camera")
+        XCTAssertEqual(scenes.presentation(at: try XCTUnwrap(edit.sourceTime(at: 8))).name, "Camera")
+    }
+
     func testAutomaticCameraOrientationPreservesTheSessionNativeRotation() {
         XCTAssertNil(CameraOrientationApplier.rotationAngle(for: .automatic))
         XCTAssertEqual(CameraOrientationApplier.rotationAngle(for: .landscape), 0)

@@ -16,6 +16,7 @@ struct PreparedProjectMedia: Sendable {
 final class ProjectEditSession: ObservableObject {
     private struct EditHistoryState: Equatable {
         let timeline: ProjectEditTimeline
+        let sceneTimeline: StudioSceneTimeline?
         let audioAdjustment: ProjectAudioAdjustment
         let sourceAudioAdjustments: [ProjectAudioSourceAdjustment]
         let segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
@@ -88,6 +89,21 @@ final class ProjectEditSession: ObservableObject {
     }
     var canEditPrivacy: Bool { canPersistEdits && timeline != nil }
     var canEditManualZoom: Bool { canPersistEdits && timeline != nil && sceneTimeline != nil }
+    var canEditRecordedScenes: Bool { canPersistEdits && timeline != nil && programSources != nil }
+    var capturedDisplayIDs: [UInt32] {
+        programSources?.screenSources.compactMap(\.displayID) ?? []
+    }
+    var hasCapturedCamera: Bool { programSources?.cameraURL != nil }
+    func importScenePNG(from sourceURL: URL, canvas: CaptureCanvasSnapshot) throws -> ImageOverlaySnapshot {
+        guard let projectRootURL, canEditRecordedScenes else {
+            throw StudioSceneEditError.unavailableSource
+        }
+        return try ImageOverlayImporter.importPNG(
+            from: sourceURL,
+            canvas: canvas,
+            destinationDirectory: projectRootURL.appending(path: "overlays", directoryHint: .isDirectory)
+        )
+    }
     var availableAudioSources: [ProjectAudioSource] { programSources?.audioSourceOrder ?? [] }
     var manualZoomMarkers: [StudioManualZoomMarker] {
         guard let sceneTimeline, let timeline else { return [] }
@@ -564,6 +580,89 @@ final class ProjectEditSession: ObservableObject {
         updateSceneTimeline(next, selectedIndex: nextSelection)
     }
 
+    func scenePresentation(for outputRange: Range<TimeInterval>) -> CapturePresentationSnapshot? {
+        guard let timeline,
+              let sourceRange = try? timeline.sourceRange(for: outputRange) else { return nil }
+        return sceneTimeline?.presentation(at: sourceRange.lowerBound) ?? presentation
+    }
+
+    func sceneDisplayID(for outputRange: Range<TimeInterval>) -> UInt32? {
+        guard let timeline,
+              let sourceRange = try? timeline.sourceRange(for: outputRange) else { return nil }
+        return sceneTimeline?.displayID(at: sourceRange.lowerBound)
+            ?? programSources?.screenDisplayID
+            ?? programSources?.screenSources.first?.displayID
+    }
+
+    func applyScene(
+        to outputRange: Range<TimeInterval>,
+        presentation nextPresentation: CapturePresentationSnapshot,
+        displayID: UInt32?,
+        transition: StudioSceneTransitionConfiguration
+    ) async {
+        guard !isWorking, let timeline, let programSources else { return }
+        let operationID = loadID
+        errorMessage = nil
+        do {
+            let sourceRange = try timeline.sourceRange(for: outputRange)
+            let screenSource = displayID.flatMap { id in
+                programSources.screenSources.first { $0.displayID == id }
+            } ?? (displayID == nil ? programSources.screenSources.first : nil)
+            if nextPresentation.screen.isVisible {
+                guard let screenSource,
+                      try await containsVideo(in: screenSource.url, throughout: sourceRange) else {
+                    throw StudioSceneEditError.unavailableSource
+                }
+            }
+            if nextPresentation.camera.isVisible {
+                guard let cameraURL = programSources.cameraURL,
+                      try await containsVideo(
+                        in: cameraURL,
+                        throughout: (sourceRange.lowerBound - programSources.cameraTimeOffset)..<(sourceRange.upperBound - programSources.cameraTimeOffset)
+                      ) else {
+                    throw StudioSceneEditError.unavailableSource
+                }
+            }
+            guard nextPresentation.screen.isVisible || nextPresentation.camera.isVisible else {
+                throw StudioSceneEditError.unavailableSource
+            }
+            var nextScenes = sceneTimeline ?? StudioSceneTimeline(
+                initialPresentation: presentation,
+                displayID: programSources.screenDisplayID
+            )
+            try nextScenes.overrideScene(
+                in: sourceRange, sourceDuration: timeline.sourceDuration,
+                with: nextPresentation, displayID: displayID ?? programSources.screenDisplayID,
+                transition: transition
+            )
+            guard loadID == operationID else { return }
+            guard let current = currentHistoryState else { return }
+            await commit(
+                EditHistoryState(
+                    timeline: timeline, sceneTimeline: nextScenes,
+                    audioAdjustment: audioAdjustment,
+                    sourceAudioAdjustments: sourceAudioAdjustments,
+                    segmentAudioAdjustments: segmentAudioAdjustments
+                ),
+                selectedSegmentID: selectedSegmentID,
+                seekTime: outputRange.lowerBound,
+                nextUndoStack: undoStack + [current],
+                nextRedoStack: []
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func containsVideo(in url: URL, throughout range: Range<TimeInterval>) async throws -> Bool {
+        guard range.lowerBound >= -0.02, range.upperBound > range.lowerBound else { return false }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        return duration.isFinite && range.upperBound <= duration + 0.02
+            && !tracks.isEmpty
+    }
+
     func prepareMediaForDerivedExport() async throws -> PreparedProjectMedia {
         guard let sourceURL else { throw ProjectEditRendererError.unreadableSource }
         guard let timeline else {
@@ -627,6 +726,7 @@ final class ProjectEditSession: ObservableObject {
         await commit(
             EditHistoryState(
                 timeline: next,
+                sceneTimeline: sceneTimeline,
                 audioAdjustment: audioAdjustment,
                 sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: nextSegmentAudioAdjustments ?? segmentAudioAdjustments
@@ -664,6 +764,7 @@ final class ProjectEditSession: ObservableObject {
                 timeline: next.timeline,
                 presentation: presentation,
                 privacyOverlays: privacyOverlays,
+                sceneTimelineOverride: .some(next.sceneTimeline),
                 audioAdjustment: next.audioAdjustment,
                 sourceAudioAdjustments: next.sourceAudioAdjustments,
                 segmentAudioAdjustments: next.segmentAudioAdjustments
@@ -673,6 +774,7 @@ final class ProjectEditSession: ObservableObject {
                 nextDocument.timeline(for: next.timeline.trackID)?.segments.map(\.id) ?? []
             )
             nextDocument.replaceTimeline(next.timeline)
+            nextDocument.replaceSceneTimeline(next.sceneTimeline)
             nextDocument.replaceAudioAdjustment(next.audioAdjustment)
             nextDocument.sourceAudioAdjustments = next.sourceAudioAdjustments
             nextDocument.segmentAudioAdjustments.removeAll {
@@ -685,6 +787,7 @@ final class ProjectEditSession: ObservableObject {
             guard loadID == operationID else { return }
             document = nextDocument
             timeline = next.timeline
+            sceneTimeline = next.sceneTimeline
             audioAdjustment = next.audioAdjustment
             sourceAudioAdjustments = next.sourceAudioAdjustments
             let nextSegmentIDs = Set(next.timeline.segments.map(\.id))
@@ -707,6 +810,7 @@ final class ProjectEditSession: ObservableObject {
         timeline: ProjectEditTimeline,
         presentation: CapturePresentationSnapshot,
         privacyOverlays: [ProjectPrivacyOverlay],
+        sceneTimelineOverride: StudioSceneTimeline?? = nil,
         audioAdjustment: ProjectAudioAdjustment? = nil,
         sourceAudioAdjustments: [ProjectAudioSourceAdjustment]? = nil,
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]? = nil
@@ -714,7 +818,11 @@ final class ProjectEditSession: ObservableObject {
         let audioAdjustment = audioAdjustment ?? self.audioAdjustment
         let sourceAudioAdjustments = sourceAudioAdjustments ?? self.sourceAudioAdjustments
         let segmentAudioAdjustments = segmentAudioAdjustments ?? self.segmentAudioAdjustments
-        if let renderSources = renderSources(for: sourceURL, privacyOverlays: privacyOverlays) {
+        if let renderSources = renderSources(
+            for: sourceURL,
+            privacyOverlays: privacyOverlays,
+            sceneTimelineOverride: sceneTimelineOverride
+        ) {
             return try await programRenderer.makePlayerItem(
                 sources: renderSources,
                 timeline: timeline,
@@ -737,6 +845,7 @@ final class ProjectEditSession: ObservableObject {
         timeline.map {
             EditHistoryState(
                 timeline: $0,
+                sceneTimeline: sceneTimeline,
                 audioAdjustment: audioAdjustment,
                 sourceAudioAdjustments: sourceAudioAdjustments,
                 segmentAudioAdjustments: segmentAudioAdjustments
@@ -921,9 +1030,12 @@ final class ProjectEditSession: ObservableObject {
 
     private func renderSources(
         for sourceURL: URL,
-        privacyOverlays: [ProjectPrivacyOverlay]? = nil
+        privacyOverlays: [ProjectPrivacyOverlay]? = nil,
+        sceneTimelineOverride: StudioSceneTimeline?? = nil
     ) -> ProjectProgramSources? {
-        if let programSources { return programSources.replacingSceneTimeline(sceneTimeline) }
+        if let programSources {
+            return programSources.replacingSceneTimeline(sceneTimelineOverride ?? sceneTimeline)
+        }
         guard !(privacyOverlays ?? self.privacyOverlays).isEmpty else { return nil }
         return ProjectProgramSources(screenURL: sourceURL, cameraURL: nil)
     }
