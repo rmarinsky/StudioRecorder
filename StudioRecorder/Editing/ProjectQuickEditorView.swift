@@ -11,6 +11,7 @@ struct ProjectQuickEditorView: View {
     @State private var assistantCommand = ""
     @State private var assistantMessage: String?
     @State private var selectedRange: Range<TimeInterval>?
+    @State private var auditionTask: Task<Void, Never>?
 
     init(session: ProjectEditSession, onExportMovie: @escaping () -> Void, commandsOnly: Bool = false) {
         self.session = session
@@ -44,6 +45,10 @@ struct ProjectQuickEditorView: View {
             }
         }
         .padding(commandsOnly ? 0 : 4)
+        .onDisappear {
+            auditionTask?.cancel()
+            auditionTask = nil
+        }
     }
 
     private func editor(_ timeline: ProjectEditTimeline) -> some View {
@@ -68,6 +73,7 @@ struct ProjectQuickEditorView: View {
                 waveform: session.audioWaveform,
                 selectedRange: $selectedRange,
                 onSeek: { time in
+                    session.selectedSegmentID = timeline.segment(at: time)?.id
                     Task { await session.player.seek(to: CMTime(seconds: time, preferredTimescale: 600)) }
                 },
                 onDelete: {
@@ -83,6 +89,20 @@ struct ProjectQuickEditorView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button("Audition", systemImage: "play.rectangle") {
+                    guard let selectedRange else { return }
+                    auditionTask?.cancel()
+                    auditionTask = Task {
+                        await session.player.seek(to: CMTime(seconds: selectedRange.lowerBound, preferredTimescale: 600))
+                        guard !Task.isCancelled else { return }
+                        session.player.play()
+                        while !Task.isCancelled && session.playhead < selectedRange.upperBound {
+                            try? await Task.sleep(for: .milliseconds(40))
+                        }
+                        if !Task.isCancelled { session.player.pause() }
+                    }
+                }
+                .disabled(selectedRange == nil || session.isWorking)
                 Button("Delete Selection", systemImage: "trash") {
                     guard let selectedRange else { return }
                     Task { await session.deleteOutputRange(selectedRange) }
@@ -116,6 +136,19 @@ struct ProjectQuickEditorView: View {
                 }
                 .disabled(!session.canDeleteSelectedSegment)
                 .help("Delete the selected segment from the edit")
+
+                if timeline.segments.count > 1,
+                   let selectedSegmentID = session.selectedSegmentID,
+                   let index = timeline.segments.firstIndex(where: { $0.id == selectedSegmentID }) {
+                    Button("Move Earlier", systemImage: "arrow.left") {
+                        Task { await session.moveSelectedSegment(by: -1) }
+                    }
+                    .disabled(session.isWorking || index == 0)
+                    Button("Move Later", systemImage: "arrow.right") {
+                        Task { await session.moveSelectedSegment(by: 1) }
+                    }
+                    .disabled(session.isWorking || index == timeline.segments.count - 1)
+                }
             }
             .buttonStyle(.bordered)
 
@@ -927,7 +960,22 @@ private struct ProjectLinkedTimeline: View {
                     DragGesture(minimumDistance: 2)
                         .onChanged { value in
                             isFocused = true
-                            let anchor = dragAnchor ?? time(for: value.startLocation.x, width: proxy.size.width)
+                            let anchor: TimeInterval
+                            if let dragAnchor {
+                                anchor = dragAnchor
+                            } else if let selectedRange {
+                                let lowerX = proxy.size.width * (selectedRange.lowerBound - viewport.visibleStart) / viewport.visibleDuration
+                                let upperX = proxy.size.width * (selectedRange.upperBound - viewport.visibleStart) / viewport.visibleDuration
+                                if abs(value.startLocation.x - lowerX) <= 8 {
+                                    anchor = selectedRange.upperBound
+                                } else if abs(value.startLocation.x - upperX) <= 8 {
+                                    anchor = selectedRange.lowerBound
+                                } else {
+                                    anchor = time(for: value.startLocation.x, width: proxy.size.width)
+                                }
+                            } else {
+                                anchor = time(for: value.startLocation.x, width: proxy.size.width)
+                            }
                             dragAnchor = anchor
                             let end = time(for: value.location.x, width: proxy.size.width)
                             selectedRange = min(anchor, end)..<max(anchor, end)
@@ -943,6 +991,24 @@ private struct ProjectLinkedTimeline: View {
                 .focusable()
                 .focused($isFocused)
                 .onDeleteCommand(perform: onDelete)
+                .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+                    let step = max(viewport.visibleDuration / 100, 0.01)
+                    if press.modifiers.contains(.shift) {
+                        if press.key == .leftArrow {
+                            let upper = selectedRange?.upperBound ?? playhead
+                            let lower = max((selectedRange?.lowerBound ?? playhead) - step, 0)
+                            if lower < upper { selectedRange = lower..<upper }
+                        } else {
+                            let lower = selectedRange?.lowerBound ?? playhead
+                            let upper = min((selectedRange?.upperBound ?? playhead) + step, timeline.duration)
+                            if lower < upper { selectedRange = lower..<upper }
+                        }
+                    } else {
+                        let delta = press.key == .leftArrow ? -step : step
+                        onSeek(min(max(playhead + delta, 0), timeline.duration))
+                    }
+                    return .handled
+                }
                 .accessibilityElement()
                 .accessibilityLabel("Linked video and audio timeline")
                 .accessibilityValue(selectedRange.map {

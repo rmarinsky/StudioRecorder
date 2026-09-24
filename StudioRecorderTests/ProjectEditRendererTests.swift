@@ -6,6 +6,53 @@ import XCTest
 
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
+    func testReorderedSegmentsExportInEditedPictureOrder() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "source.mov")
+        let exportURL = rootURL.appending(path: "reordered.mov")
+        let firstFrameURL = rootURL.appending(path: "first.png")
+        let secondFrameURL = rootURL.appending(path: "second.png")
+        try await writeReadableMovie(to: sourceURL)
+        let rawBytes = try Data(contentsOf: sourceURL)
+        let projectID = UUID()
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        await session.player.seek(to: CMTime(seconds: 1, preferredTimescale: 600))
+        await session.splitAtPlayhead()
+        session.selectedSegmentID = session.timeline?.segments.first?.id
+
+        await session.moveSelectedSegment(by: 1)
+        let reordered = try XCTUnwrap(session.timeline)
+        XCTAssertEqual(reordered.segments.count, 2)
+        XCTAssertEqual(try XCTUnwrap(reordered.sourceTime(at: 0.25)), 1.25, accuracy: 0.05)
+        try await session.exportEditedMovie(to: exportURL)
+
+        let exporter = ProjectMediaExporter()
+        try await exporter.exportScreenshot(from: exportURL, at: 0.25, to: firstFrameURL)
+        try await exporter.exportScreenshot(from: exportURL, at: 1.75, to: secondFrameURL)
+        let first = try averageColor(in: firstFrameURL)
+        let second = try averageColor(in: secondFrameURL)
+        XCTAssertGreaterThan(first.blue, first.red)
+        XCTAssertGreaterThan(second.red, second.blue)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+        let reopened = ProjectEditSession()
+        await reopened.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        XCTAssertEqual(try XCTUnwrap(reopened.timeline?.sourceTime(at: 0.25)), 1.25, accuracy: 0.05)
+        reopened.stop()
+        session.stop()
+    }
+
     func testSelectedRangeCutExportsShorterMovieWithoutChangingRawMedia() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)

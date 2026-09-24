@@ -288,6 +288,21 @@ final class ProjectEditSession: ObservableObject {
         }
     }
 
+    func moveSelectedSegment(by offset: Int) async {
+        guard let current = timeline,
+              let selectedSegmentID,
+              let index = current.segments.firstIndex(where: { $0.id == selectedSegmentID }),
+              current.segments.indices.contains(index + offset) else { return }
+        var next = current
+        do {
+            try next.move(segmentID: selectedSegmentID, toIndex: index + offset)
+            let seekTime = next.segments.prefix(index + offset).reduce(0) { $0 + $1.duration }
+            await commitEdit(next, selectedSegmentID: selectedSegmentID, seekTime: seekTime)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func deleteOutputRange(_ range: Range<TimeInterval>) async {
         guard let current = timeline else { return }
         var next = current

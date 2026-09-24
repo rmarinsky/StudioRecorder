@@ -23,6 +23,7 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
     case invalidTimelineTime
     case splitAtSegmentBoundary
     case segmentNotFound
+    case invalidSegmentDestination
     case cannotDeleteOnlySegment
     case recordingContainsOnlyPausedTime
 
@@ -36,6 +37,8 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
             "The playhead is already at a cut."
         case .segmentNotFound:
             "The selected edit segment no longer exists."
+        case .invalidSegmentDestination:
+            "The selected segment cannot move beyond the timeline."
         case .cannotDeleteOnlySegment:
             "At least one segment must remain in the edit."
         case .recordingContainsOnlyPausedTime:
@@ -320,6 +323,18 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
             throw ProjectEditTimelineError.cannotDeleteOnlySegment
         }
         segments.remove(at: index)
+    }
+
+    mutating func move(segmentID: UUID, toIndex: Int) throws {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else {
+            throw ProjectEditTimelineError.segmentNotFound
+        }
+        guard segments.indices.contains(toIndex) else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        guard index != toIndex else { return }
+        let segment = segments.remove(at: index)
+        segments.insert(segment, at: toIndex)
     }
 
     mutating func delete(range: Range<TimeInterval>) throws {

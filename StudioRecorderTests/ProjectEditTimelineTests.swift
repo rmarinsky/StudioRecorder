@@ -431,4 +431,18 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(viewport.time(atFraction: 0.5), 1280, accuracy: 0.001)
         XCTAssertEqual(viewport.time(atFraction: 2), 1285, accuracy: 0.001)
     }
+
+    func testMovingSegmentChangesOutputOrderWithoutChangingSourceRanges() throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2.5, initialSegmentID: firstID)
+        try timeline.split(at: 1, newSegmentID: secondID)
+
+        try timeline.move(segmentID: firstID, toIndex: 1)
+
+        XCTAssertEqual(timeline.segments.map(\.id), [secondID, firstID])
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 0.25)), 1.25, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 1.75)), 0.25, accuracy: 0.001)
+        XCTAssertEqual(timeline.duration, 2.5, accuracy: 0.001)
+    }
 }

@@ -173,6 +173,22 @@ struct ProjectDetailView: View {
                         .labelStyle(.iconOnly)
                 }
                 Text("Editor").font(.subheadline.weight(.semibold))
+                TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+                    HStack(spacing: 6) {
+                        Button(
+                            editSession.player.rate > 0 ? "Pause" : "Play",
+                            systemImage: editSession.player.rate > 0 ? "pause.fill" : "play.fill"
+                        ) {
+                            if editSession.player.rate > 0 { editSession.player.pause() }
+                            else { editSession.player.play() }
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(editSession.timeline == nil)
+                        Text(String(format: "%d:%02d", Int(editSession.playhead) / 60, Int(editSession.playhead) % 60))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
                 Label(lifecycleLabel, systemImage: lifecycleIcon)
                     .font(.caption)
