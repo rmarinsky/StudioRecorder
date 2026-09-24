@@ -209,6 +209,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private let jobStore = RecordingJobStore()
     private let retentionFinalizer = RecordingRetentionFinalizer()
     private var activeFinalizationJobID: UUID?
+    private var activeExportJobID: UUID?
     private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
@@ -316,7 +317,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             let projectJobs: [RecordingJob]
             if loaded.contains(where: { blockedFinalizationJobIDs.contains($0.id) }) {
                 projectJobs = []
-            } else if loaded.contains(where: { $0.id == activeFinalizationJobID }) {
+            } else if loaded.contains(where: {
+                $0.id == activeFinalizationJobID || $0.id == activeExportJobID
+            }) {
                 projectJobs = loaded
             } else {
                 projectJobs = (try? jobStore.reconcileFinalization(
@@ -334,6 +337,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         projects = snapshots
         interruptedProjects = snapshots.filter(\.isInterrupted)
         startNextFinalizationJob()
+        startNextExportJob()
     }
 
     func recoverProject(_ projectID: String) async throws {
@@ -677,12 +681,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
+    func enqueueExport(_ recipe: ProjectExportRecipe) async throws {
+        guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
+              snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
+            throw RecordingJobStoreError.invalidExport
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: recipe.projectID)
+        let job = RecordingJob(projectID: project.id, kind: .export)
+        try jobStore.saveExport(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        await refreshProjects()
+    }
+
     private func startNextFinalizationJob() {
-        guard activeFinalizationJobID == nil,
-              let job = jobs.first(where: {
-                  $0.kind == .finalization && $0.state == .queued &&
-                      !blockedFinalizationJobIDs.contains($0.id)
-              }) else { return }
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(
+                in: jobs, blockedIDs: blockedFinalizationJobIDs
+              ), job.kind == .finalization else { return }
         activeFinalizationJobID = job.id
         Task(priority: .background) { [weak self] in
             await self?.runFinalization(job)
@@ -745,6 +760,95 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
         }
         activeFinalizationJobID = nil
+        await refreshProjects()
+    }
+
+    private func startNextExportJob() {
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(
+                in: jobs, blockedIDs: blockedFinalizationJobIDs
+              ), job.kind == .export else { return }
+        activeExportJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runExport(job)
+        }
+    }
+
+    private func runExport(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            let recipe = try jobStore.loadExport(for: job, in: project)
+            job.state = .running
+            job.stage = "Rendering selected edit revision"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+
+            if let sources = recipe.programSources {
+                try await ProjectProgramRenderer().exportMovie(
+                    sources: sources,
+                    timeline: recipe.timeline,
+                    presentation: recipe.presentation,
+                    privacyOverlays: recipe.privacyOverlays,
+                    audioAdjustment: recipe.audioAdjustment,
+                    sourceAudioAdjustments: recipe.sourceAudioAdjustments,
+                    segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    to: recipe.destinationURL,
+                    progress: { [weak self, project] fraction in
+                        self?.updateJobProgress(
+                            queuedJob.id, project: project, fraction: fraction,
+                            phase: "Rendering selected edit revision"
+                        )
+                    }
+                )
+            } else {
+                try await ProjectEditRenderer().exportMovie(
+                    from: recipe.sourceURL,
+                    timeline: recipe.timeline,
+                    audioAdjustment: recipe.audioAdjustment,
+                    segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    to: recipe.destinationURL
+                )
+            }
+            let exported = AVURLAsset(url: recipe.destinationURL)
+            let audioSource = AVURLAsset(url: recipe.programSources?.audioURL ?? recipe.sourceURL)
+            let expectedAudio = try await audioSource.loadTracks(withMediaType: .audio).isEmpty ? 0 : 1
+            guard RecordingOutputFinalizationPolicy.isCompleteProgram(
+                isReadable: try await exported.load(.isReadable),
+                actualDuration: try await exported.load(.duration).seconds,
+                expectedDuration: recipe.timeline.duration,
+                videoTrackCount: try await exported.loadTracks(withMediaType: .video).count,
+                audioTrackCount: try await exported.loadTracks(withMediaType: .audio).count,
+                expectedAudioTrackCount: expectedAudio
+            ) else {
+                throw RecordingJobStoreError.invalidExport
+            }
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do { try persistJob(job, in: project) }
+                catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Export failed and its status could not be saved. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeExportJobID = nil
         await refreshProjects()
     }
 

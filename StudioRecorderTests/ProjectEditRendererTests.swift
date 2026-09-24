@@ -76,12 +76,14 @@ final class ProjectEditRendererTests: XCTestCase {
         await session.deleteOutputRange(0.5..<1.2)
 
         XCTAssertEqual(try XCTUnwrap(session.timeline).duration, sourceDuration - 0.7, accuracy: 0.1)
+        let queuedRevision = try session.makeExportRecipe(to: exportURL)
         try await session.exportEditedMovie(to: exportURL)
         let exportedDuration = try await AVURLAsset(url: exportURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.1)
         XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
         await session.undo()
         XCTAssertEqual(try XCTUnwrap(session.timeline).duration, sourceDuration, accuracy: 0.1)
+        XCTAssertEqual(queuedRevision.timeline.duration, sourceDuration - 0.7, accuracy: 0.1)
         session.stop()
     }
 
@@ -866,6 +868,10 @@ final class ProjectEditRendererTests: XCTestCase {
         await session.applyScene(to: 0.5..<1.2, presentation: camera, displayID: nil, transition: .cut)
         XCTAssertNil(session.errorMessage)
         XCTAssertTrue(session.canUndo)
+        XCTAssertEqual(
+            try session.makeExportRecipe(to: outputURL).programSources?.sceneTimeline,
+            session.sceneTimeline
+        )
         try await session.exportEditedMovie(to: outputURL)
         try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.2, to: beforeURL)
         try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: 0.8, to: selectedURL)

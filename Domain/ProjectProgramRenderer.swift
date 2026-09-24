@@ -28,12 +28,12 @@ enum ProjectProgramRenderPolicy {
     }
 }
 
-struct ProjectScreenSource: Sendable, Equatable {
+struct ProjectScreenSource: Codable, Sendable, Equatable {
     let url: URL
     let displayID: UInt32?
 }
 
-struct ProjectProgramSources: Sendable {
+struct ProjectProgramSources: Codable, Sendable {
     let screenURL: URL
     let screenSources: [ProjectScreenSource]
     let cameraURL: URL?

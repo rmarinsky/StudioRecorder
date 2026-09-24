@@ -917,7 +917,8 @@ struct StudioRecorderRootView: View {
                 ProjectDetailView(
                     project: selectedProject,
                     onClose: { model.send(.closeProject) },
-                    exportRequest: editorExportRequest
+                    exportRequest: editorExportRequest,
+                    queueExport: { try await model.enqueueExport($0) }
                 )
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {
@@ -980,11 +981,11 @@ struct StudioRecorderRootView: View {
                         if !filteredProjects.isEmpty {
                             LazyVStack(spacing: 0) {
                                 ForEach(Array(filteredProjects.enumerated()), id: \.element.id) { index, project in
+                                    let activeJob = snapshot.jobs.first {
+                                        $0.projectID == project.identity.manifestID && $0.state != .completed
+                                    }
                                     Button {
-                                        if snapshot.jobs.contains(where: {
-                                            $0.projectID == project.identity.manifestID &&
-                                                $0.kind == .finalization && $0.state != .completed
-                                        }) {
+                                        if activeJob != nil {
                                             isShowingJobs = true
                                         } else if project.isInterrupted {
                                             model.send(.selectRoute(.recovery))
@@ -992,7 +993,7 @@ struct StudioRecorderRootView: View {
                                             model.send(.openProject(project.id))
                                         }
                                     } label: {
-                                        ProjectRow(project: project)
+                                        ProjectRow(project: project, job: activeJob)
                                             .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
@@ -2894,6 +2895,7 @@ private struct CaptureTransitionOverlay: View {
 
 private struct ProjectRow: View {
     let project: RecordingProjectSnapshot
+    let job: RecordingJob?
     @State private var previewImage: NSImage?
     @State private var duration: TimeInterval?
 
@@ -2982,7 +2984,15 @@ private struct ProjectRow: View {
     }
 
     private var statusLabel: String {
-        switch project.lifecycle {
+        if let job {
+            let action = switch job.kind {
+            case .finalization: "Finalization"
+            case .export: "Export"
+            case .transcription: "Transcription"
+            }
+            return job.state == .failed ? "\(action) failed" : "\(action) \(job.state.rawValue)"
+        }
+        return switch project.lifecycle {
         case .recording: "Recording"
         case .finalizing: "Finalizing"
         case .finalized: "Ready"
@@ -2993,7 +3003,8 @@ private struct ProjectRow: View {
     }
 
     private var statusColor: Color {
-        switch project.lifecycle {
+        if let job { return job.state == .failed ? .orange : .secondary }
+        return switch project.lifecycle {
         case .finalized: .green
         case .recovered: .blue
         case .needsRecovery, .unreadable: .orange

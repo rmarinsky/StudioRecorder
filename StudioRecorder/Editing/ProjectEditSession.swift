@@ -409,6 +409,25 @@ final class ProjectEditSession: ObservableObject {
         }
     }
 
+    func makeExportRecipe(to destinationURL: URL) throws -> ProjectExportRecipe {
+        guard let sourceURL, let timeline, let document else {
+            throw ProjectEditRendererError.unreadableSource
+        }
+        return ProjectExportRecipe(
+            projectID: document.projectID,
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            timeline: timeline,
+            presentation: renderPresentation,
+            programSources: renderSources(for: sourceURL),
+            editRevision: document.updatedAt,
+            privacyOverlays: privacyOverlays,
+            audioAdjustment: audioAdjustment,
+            sourceAudioAdjustments: sourceAudioAdjustments,
+            segmentAudioAdjustments: segmentAudioAdjustments
+        )
+    }
+
     func updateAudioAdjustment(_ next: ProjectAudioAdjustment) {
         guard !isWorking, var nextDocument = document, let projectRootURL else { return }
         let validated = ProjectAudioAdjustment(gain: next.gain, isMuted: next.isMuted)

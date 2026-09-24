@@ -8,6 +8,7 @@ struct ProjectDetailView: View {
     let project: RecordingProjectSnapshot
     let onClose: () -> Void
     let exportRequest: Int
+    let queueExport: (ProjectExportRecipe) async throws -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -28,10 +29,16 @@ struct ProjectDetailView: View {
 
     private let exporter = ProjectMediaExporter()
 
-    init(project: RecordingProjectSnapshot, onClose: @escaping () -> Void, exportRequest: Int = 0) {
+    init(
+        project: RecordingProjectSnapshot,
+        onClose: @escaping () -> Void,
+        exportRequest: Int = 0,
+        queueExport: @escaping (ProjectExportRecipe) async throws -> Void
+    ) {
         self.project = project
         self.onClose = onClose
         self.exportRequest = exportRequest
+        self.queueExport = queueExport
         let playableTrackIDs = Set(project.recoveryReport.tracks.compactMap { track in
             switch track.state {
             case .finalized, .partialReadable: track.id
@@ -643,8 +650,9 @@ struct ProjectDetailView: View {
 
     private func exportEditedMovie() {
         guard let destinationURL = saveURL(type: .quickTimeMovie, suggestedName: "Recording edited.mov") else { return }
-        performExport(success: "Edited movie saved") {
-            try await editSession.exportEditedMovie(to: destinationURL)
+        performExport(success: "Export queued in Jobs") {
+            let recipe = try editSession.makeExportRecipe(to: destinationURL)
+            try await queueExport(recipe)
         }
     }
 

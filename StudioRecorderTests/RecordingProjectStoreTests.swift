@@ -6,6 +6,101 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testHeavyJobsRunOldestQueuedRequestFirst() {
+        let projectID = UUID()
+        var olderExport = RecordingJob(projectID: projectID, kind: .export)
+        olderExport.updatedAt = Date(timeIntervalSinceReferenceDate: 1)
+        var newerFinalization = RecordingJob(projectID: projectID, kind: .finalization)
+        newerFinalization.updatedAt = Date(timeIntervalSinceReferenceDate: 2)
+
+        XCTAssertEqual(
+            RecordingJobQueuePolicy.nextHeavyJob(in: [newerFinalization, olderExport])?.id,
+            olderExport.id
+        )
+    }
+
+    func testInterruptedExportResumesItsCapturedEditRevision() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        let exportedURL = destination.appending(path: "edited.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 61)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        var selectedTimeline = try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration)
+        try selectedTimeline.delete(range: 0.5..<1.2)
+        let recipe = ProjectExportRecipe(
+            projectID: project.id, sourceURL: sourceURL, destinationURL: exportedURL,
+            timeline: selectedTimeline, presentation: .default,
+            programSources: nil
+        )
+        let jobStore = RecordingJobStore()
+        var job = RecordingJob(projectID: project.id, kind: .export)
+        try jobStore.saveExport(recipe, for: job, in: project)
+        job.state = .running
+        try jobStore.save(job, in: project)
+        try await ProjectEditStore().save(
+            ProjectEditDocument(
+                projectID: project.id,
+                timelines: [try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration)]
+            ), in: project.rootURL
+        )
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
+        XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
+    }
+
+    func testFailedExportRetainsRecipeAndRetryWritesOutput() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let outputDirectory = destination.appending(path: "missing", directoryHint: .isDirectory)
+        let outputURL = outputDirectory.appending(path: "retry.mov")
+        let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectExportRecipe(
+            projectID: project.id, sourceURL: sourceURL, destinationURL: outputURL,
+            timeline: try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration),
+            presentation: .default, programSources: nil
+        )
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueExport(recipe)
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.kind == .export })?.state != .failed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let failed = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .export }))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertNotNil(failed.failure)
+        XCTAssertEqual(try RecordingJobStore().loadExport(for: failed, in: project).destinationURL, outputURL)
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try await coordinator.retryJob(failed.id)
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == failed.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == failed.id })?.attempt, 2)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == failed.id })?.state, .completed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
     func testProgramVerificationRejectsReadableButTruncatedRender() {
         XCTAssertFalse(RecordingOutputFinalizationPolicy.isCompleteProgram(
             isReadable: true, actualDuration: 8, expectedDuration: 10,
