@@ -91,7 +91,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         let coordinator = RecordingCoordinator(projectStore: store)
 
         await coordinator.refreshProjects()
-        for _ in 0..<100 where coordinator.jobs.first?.state != .failed {
+        for _ in 0..<100 where coordinator.jobs.first?.state != .failed ||
+            coordinator.projects.first?.lifecycle != .needsRecovery {
             try await Task.sleep(for: .milliseconds(100))
         }
 
