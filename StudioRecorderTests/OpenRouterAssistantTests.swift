@@ -183,6 +183,20 @@ final class OpenRouterAssistantTests: XCTestCase {
         XCTAssertTrue(reviewed?.isCurrent(projectID: projectID, timeline: timeline, revision: 3) == true)
         XCTAssertFalse(reviewed?.isCurrent(projectID: projectID, timeline: timeline, revision: 4) == true)
 
+        var reordered = timeline
+        try reordered.split(at: 5)
+        try reordered.move(segmentID: reordered.segments[0].id, toIndex: 1)
+        let acrossCut = OpenRouterAssistantContext(
+            projectID: projectID, scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 4.5, end: 5.5, capturedDisplayIDs: [42], hasCapturedCamera: true
+            )
+        )
+        XCTAssertEqual(
+            try draft.reviewedScene(context: acrossCut, timeline: reordered, revision: 3)?.range,
+            4.5..<5.5
+        )
+
         let noCamera = OpenRouterAssistantContext(
             projectID: projectID, scope: .selection, words: [],
             sceneSelection: OpenRouterAssistantSceneSelection(

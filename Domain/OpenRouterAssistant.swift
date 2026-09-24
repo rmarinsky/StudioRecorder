@@ -212,7 +212,7 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
               selection.start.isFinite, selection.end.isFinite,
               selection.start >= 0, selection.start < selection.end,
               selection.end <= timeline.duration,
-              (try? timeline.sourceRange(for: selection.start..<selection.end)) != nil,
+              (try? timeline.sourceRanges(for: selection.start..<selection.end)) != nil,
               (!change.layout.usesCamera || selection.hasCapturedCamera),
               (!change.layout.usesScreen || !selection.capturedDisplayIDs.isEmpty),
               (!change.hasCameraCustomization || change.layout.usesCamera && selection.hasCapturedCamera),

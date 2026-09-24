@@ -259,6 +259,15 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertThrowsError(try timeline.sourceRange(for: 4.5..<5.5))
     }
 
+    func testSceneSelectionMapsAcrossReorderedSegmentsInOutputOrder() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try timeline.split(at: 5)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        XCTAssertEqual(try timeline.sourceRanges(for: 4.5..<5.5), [9.5..<10, 0..<0.5])
+        XCTAssertThrowsError(try timeline.sourceRanges(for: 9.5..<10.5))
+    }
+
     func testPauseTimelineCompactsMultiplePausedRangesWithoutTouchingSourceTime() throws {
         var pauses = RecordingPauseTimeline()
         XCTAssertTrue(pauses.pause(at: 103))

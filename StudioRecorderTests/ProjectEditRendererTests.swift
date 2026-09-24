@@ -1014,6 +1014,61 @@ final class ProjectEditRendererTests: XCTestCase {
         reopened.stop()
     }
 
+    func testEditorSceneSelectionCrossesReorderedSegmentsInPreviewAndExport() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let cameraURL = directory.appending(path: "camera.mov")
+        let outputURL = directory.appending(path: "edited.mov")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFF0000FF, count: 5))
+        try await writeReadableMovie(to: cameraURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        var screen = CapturePresentationSnapshot.default
+        screen.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        screen.camera.isVisible = false
+        var camera = screen
+        camera.screen.isVisible = false
+        camera.camera = SourcePlacementSnapshot(
+            centerX: 0.5, centerY: 0.5, width: 1, height: 1, shape: .rectangle
+        )
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: directory,
+            track: .init(id: "screen", kind: .screen, displayID: nil, relativePath: "screen.mov"),
+            sourceURL: screenURL,
+            programSources: ProjectProgramSources(screenURL: screenURL, cameraURL: cameraURL),
+            initialPresentation: screen
+        )
+        await session.moveOutputRange(0.5..<1, before: 2)
+        let canApplyScene = await session.canApplyScene(
+            to: 0.2..<1.2, presentation: camera, displayID: nil
+        )
+        XCTAssertTrue(canApplyScene)
+        await session.previewScene(
+            to: 0.2..<1.2, presentation: camera, displayID: nil, transition: .cut
+        )
+        XCTAssertNotNil(session.proposalPlayer)
+        XCTAssertNil(session.sceneTimeline)
+        await session.applyScene(
+            to: 0.2..<1.2, presentation: camera, displayID: nil, transition: .cut
+        )
+        XCTAssertNil(session.errorMessage)
+        try await session.exportEditedMovie(to: outputURL)
+        for (time, shouldShowCamera) in [(0.1, false), (0.3, true), (0.8, true), (1.3, false)] {
+            let frameURL = directory.appending(path: "frame-\(time).png")
+            try await ProjectMediaExporter().exportScreenshot(from: outputURL, at: time, to: frameURL)
+            let frame = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
+            if shouldShowCamera {
+                XCTAssertGreaterThan(frame.red, 180, "output time \(time)")
+                XCTAssertLessThan(frame.blue, 80, "output time \(time)")
+            } else {
+                XCTAssertGreaterThan(frame.blue, 140, "output time \(time)")
+                XCTAssertLessThan(frame.red, 80, "output time \(time)")
+            }
+        }
+        session.stop()
+    }
+
     func testSceneProposalPreviewsCapturedCameraWithoutSavingChange() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -297,6 +297,28 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         return lower..<upper
     }
 
+    func sourceRanges(for outputRange: Range<TimeInterval>) throws -> [Range<TimeInterval>] {
+        guard outputRange.lowerBound.isFinite, outputRange.upperBound.isFinite,
+              outputRange.lowerBound >= 0,
+              outputRange.lowerBound < outputRange.upperBound,
+              outputRange.upperBound <= duration else {
+            throw ProjectEditTimelineError.rangeCrossesSegments
+        }
+        var outputStart: TimeInterval = 0
+        var ranges: [Range<TimeInterval>] = []
+        for segment in segments {
+            let lower = max(outputRange.lowerBound, outputStart)
+            let upper = min(outputRange.upperBound, outputStart + segment.duration)
+            if lower < upper {
+                let sourceStart = segment.sourceStart + lower - outputStart
+                ranges.append(sourceStart..<(sourceStart + upper - lower))
+            }
+            outputStart += segment.duration
+            if outputStart >= outputRange.upperBound { break }
+        }
+        return ranges
+    }
+
     init(
         trackID: String,
         sourceDuration: TimeInterval,

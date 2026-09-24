@@ -690,13 +690,13 @@ final class ProjectEditSession: ObservableObject {
 
     func scenePresentation(for outputRange: Range<TimeInterval>) -> CapturePresentationSnapshot? {
         guard let timeline,
-              let sourceRange = try? timeline.sourceRange(for: outputRange) else { return nil }
+              let sourceRange = try? timeline.sourceRanges(for: outputRange).first else { return nil }
         return sceneTimeline?.presentation(at: sourceRange.lowerBound) ?? presentation
     }
 
     func sceneDisplayID(for outputRange: Range<TimeInterval>) -> UInt32? {
         guard let timeline,
-              let sourceRange = try? timeline.sourceRange(for: outputRange) else { return nil }
+              let sourceRange = try? timeline.sourceRanges(for: outputRange).first else { return nil }
         return sceneTimeline?.displayID(at: sourceRange.lowerBound)
             ?? programSources?.screenDisplayID
             ?? programSources?.screenSources.first?.displayID
@@ -708,24 +708,26 @@ final class ProjectEditSession: ObservableObject {
         displayID: UInt32?
     ) async -> Bool {
         guard canEditRecordedScenes, let timeline, let programSources,
-              let sourceRange = try? timeline.sourceRange(for: outputRange),
+              let sourceRanges = try? timeline.sourceRanges(for: outputRange),
               nextPresentation.screen.isVisible || nextPresentation.camera.isVisible else { return false }
         do {
-            if nextPresentation.screen.isVisible {
-                let screenSource = displayID.flatMap { id in
-                    programSources.screenSources.first { $0.displayID == id }
-                } ?? (displayID == nil ? programSources.screenSources.first : nil)
-                guard let screenSource,
-                      try await containsVideo(in: screenSource.url, throughout: sourceRange) else {
-                    return false
+            for sourceRange in sourceRanges {
+                if nextPresentation.screen.isVisible {
+                    let screenSource = displayID.flatMap { id in
+                        programSources.screenSources.first { $0.displayID == id }
+                    } ?? (displayID == nil ? programSources.screenSources.first : nil)
+                    guard let screenSource,
+                          try await containsVideo(in: screenSource.url, throughout: sourceRange) else {
+                        return false
+                    }
                 }
-            }
-            if nextPresentation.camera.isVisible {
-                guard let cameraURL = programSources.cameraURL,
-                      try await containsVideo(
-                        in: cameraURL,
-                        throughout: (sourceRange.lowerBound - programSources.cameraTimeOffset)..<(sourceRange.upperBound - programSources.cameraTimeOffset)
-                      ) else { return false }
+                if nextPresentation.camera.isVisible {
+                    guard let cameraURL = programSources.cameraURL,
+                          try await containsVideo(
+                            in: cameraURL,
+                            throughout: (sourceRange.lowerBound - programSources.cameraTimeOffset)..<(sourceRange.upperBound - programSources.cameraTimeOffset)
+                          ) else { return false }
+                }
             }
             return true
         } catch { return false }
@@ -739,24 +741,20 @@ final class ProjectEditSession: ObservableObject {
     ) async {
         guard !isWorking, let timeline, let programSources else { return }
         let operationID = loadID
+        let revision = documentRevision
         errorMessage = nil
         do {
-            let sourceRange = try timeline.sourceRange(for: outputRange)
+            let sourceRanges = try timeline.sourceRanges(for: outputRange)
             guard await canApplyScene(
                 to: outputRange, presentation: nextPresentation, displayID: displayID
             ) else {
                 throw StudioSceneEditError.unavailableSource
             }
-            var nextScenes = sceneTimeline ?? StudioSceneTimeline(
-                initialPresentation: presentation,
-                displayID: programSources.screenDisplayID
+            guard loadID == operationID, documentRevision == revision else { return }
+            let nextScenes = try scenesByOverriding(
+                sourceRanges, timeline: timeline, programSources: programSources,
+                presentation: nextPresentation, displayID: displayID, transition: transition
             )
-            try nextScenes.overrideScene(
-                in: sourceRange, sourceDuration: timeline.sourceDuration,
-                with: nextPresentation, displayID: displayID ?? programSources.screenDisplayID,
-                transition: transition
-            )
-            guard loadID == operationID else { return }
             guard let current = currentHistoryState else { return }
             await commit(
                 EditHistoryState(
@@ -819,18 +817,14 @@ final class ProjectEditSession: ObservableObject {
         let operationID = loadID
         let revision = documentRevision
         do {
-            let sourceRange = try timeline.sourceRange(for: outputRange)
+            let sourceRanges = try timeline.sourceRanges(for: outputRange)
             guard await canApplyScene(
                 to: outputRange, presentation: nextPresentation, displayID: displayID
             ) else { throw StudioSceneEditError.unavailableSource }
             guard loadID == operationID, documentRevision == revision else { return }
-            var nextScenes = sceneTimeline ?? StudioSceneTimeline(
-                initialPresentation: presentation, displayID: programSources.screenDisplayID
-            )
-            try nextScenes.overrideScene(
-                in: sourceRange, sourceDuration: timeline.sourceDuration,
-                with: nextPresentation, displayID: displayID ?? programSources.screenDisplayID,
-                transition: transition
+            let nextScenes = try scenesByOverriding(
+                sourceRanges, timeline: timeline, programSources: programSources,
+                presentation: nextPresentation, displayID: displayID, transition: transition
             )
             await preview(
                 timeline: timeline, sceneTimelineOverride: .some(nextScenes),
@@ -839,6 +833,27 @@ final class ProjectEditSession: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func scenesByOverriding(
+        _ sourceRanges: [Range<TimeInterval>],
+        timeline: ProjectEditTimeline,
+        programSources: ProjectProgramSources,
+        presentation nextPresentation: CapturePresentationSnapshot,
+        displayID: UInt32?,
+        transition: StudioSceneTransitionConfiguration
+    ) throws -> StudioSceneTimeline {
+        var nextScenes = sceneTimeline ?? StudioSceneTimeline(
+            initialPresentation: presentation, displayID: programSources.screenDisplayID
+        )
+        for sourceRange in sourceRanges {
+            try nextScenes.overrideScene(
+                in: sourceRange, sourceDuration: timeline.sourceDuration,
+                with: nextPresentation, displayID: displayID ?? programSources.screenDisplayID,
+                transition: transition
+            )
+        }
+        return nextScenes
     }
 
     func dismissProposalPreview() {

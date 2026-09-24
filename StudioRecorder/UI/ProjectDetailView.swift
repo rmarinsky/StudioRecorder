@@ -426,7 +426,7 @@ struct ProjectDetailView: View {
         let sceneSelection: OpenRouterAssistantSceneSelection? = {
             guard scope == .selection, editSession.canEditRecordedScenes,
                   let selectedRange, let timeline = editSession.timeline,
-                  (try? timeline.sourceRange(for: selectedRange)) != nil,
+                  (try? timeline.sourceRanges(for: selectedRange)) != nil,
                   let current = editSession.scenePresentation(for: selectedRange) else { return nil }
             return OpenRouterAssistantSceneSelection(
                 start: selectedRange.lowerBound, end: selectedRange.upperBound,
