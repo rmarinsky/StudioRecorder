@@ -37,6 +37,13 @@ final class OpenRouterAssistantTests: XCTestCase {
         XCTAssertEqual(provider["require_parameters"] as? Bool, true)
         XCTAssertEqual(format["type"] as? String, "json_schema")
         XCTAssertEqual(schema["strict"] as? Bool, true)
+        let rootSchema = try XCTUnwrap(schema["schema"] as? [String: Any])
+        let rootProperties = try XCTUnwrap(rootSchema["properties"] as? [String: Any])
+        let sceneChanges = try XCTUnwrap(rootProperties["scene_changes"] as? [String: Any])
+        let sceneItem = try XCTUnwrap(sceneChanges["items"] as? [String: Any])
+        let sceneProperties = try XCTUnwrap(sceneItem["properties"] as? [String: Any])
+        XCTAssertNotNil(sceneProperties["camera_x"])
+        XCTAssertNotNil(sceneProperties["overlay_id"])
         XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("private-key"))
         XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("file://"))
         XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("selection"))
@@ -59,6 +66,33 @@ final class OpenRouterAssistantTests: XCTestCase {
         XCTAssertEqual(messages[1]["content"], "Suggest a concise title")
         XCTAssertEqual(messages[2]["content"], "First title idea")
         XCTAssertTrue(messages[3]["content"]?.contains("Make it shorter") == true)
+    }
+
+    func testSceneContextCarriesCurrentLayoutWithoutLocalImagePath() throws {
+        let context = OpenRouterAssistantContext(
+            projectID: UUID(), scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 1, end: 2, capturedDisplayIDs: [42], hasCapturedCamera: true,
+                overlays: [OpenRouterAssistantSceneOverlay(id: UUID(), name: "Logo")],
+                currentState: OpenRouterAssistantSceneState(
+                    screenVisible: true, cameraVisible: true, displayID: 42,
+                    cameraX: 0.86, cameraY: 0.82, cameraWidth: 0.22,
+                    cameraShape: .circle, cameraBackground: .off
+                )
+            )
+        )
+        let request = try OpenRouterAssistantClient().draftRequest(
+            apiKey: "private-key", model: "openai/gpt-4.1-mini",
+            prompt: "Move camera left", context: context
+        )
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
+        let content = try XCTUnwrap(messages.last?["content"])
+
+        XCTAssertTrue(content.contains("0.86"))
+        XCTAssertTrue(content.contains("Logo"))
+        XCTAssertFalse(content.contains("scene/images/"))
     }
 
     func testMalformedModelReplyCannotBecomeAVisibleDraft() throws {
@@ -226,6 +260,69 @@ final class OpenRouterAssistantTests: XCTestCase {
             )]
         )
         XCTAssertThrowsError(try badDuration.reviewedScene(context: context, timeline: timeline, revision: 1))
+    }
+
+    func testSceneProposalChangesOnlyCapturedDisplayAndImportedCameraOverlaySettings() throws {
+        let overlayID = UUID()
+        var current = CapturePresentationSnapshot.default
+        current.imageOverlays = [ImageOverlaySnapshot(
+            id: overlayID, name: "Logo", filePath: "scene/images/logo.png",
+            placement: SourcePlacementSnapshot(centerX: 0.5, centerY: 0.5, width: 0.3, shape: .rectangle)
+        )]
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        let context = OpenRouterAssistantContext(
+            projectID: UUID(), scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 2, end: 4, capturedDisplayIDs: [42], hasCapturedCamera: true,
+                overlays: [OpenRouterAssistantSceneOverlay(id: overlayID, name: "Logo")]
+            )
+        )
+        let change = OpenRouterAssistantSceneChange(
+            layout: .screenAndCamera, transition: .smoothMove, duration: 0.4,
+            reason: "Show speaker and logo", displayID: 42,
+            cameraX: 0.25, cameraY: 0.75, cameraWidth: 0.3,
+            cameraShape: .roundedRectangle, cameraBackground: .blur,
+            overlayID: overlayID, overlayVisible: false
+        )
+        let draft = OpenRouterAssistantDraft(
+            reply: "Change the scene", titles: [], descriptions: [],
+            newTakeWording: [], cuts: [], sceneChanges: [change]
+        )
+
+        XCTAssertNotNil(try draft.reviewedScene(context: context, timeline: timeline, revision: 1))
+        let next = change.presentation(from: current)
+        XCTAssertEqual(next.camera.centerX, 0.25, accuracy: 0.001)
+        XCTAssertEqual(next.camera.centerY, 0.75, accuracy: 0.001)
+        XCTAssertEqual(next.camera.width, 0.3, accuracy: 0.001)
+        XCTAssertEqual(next.camera.shape, .roundedRectangle)
+        XCTAssertEqual(next.resolvedCameraBackground.mode, .blur)
+        XCTAssertFalse(try XCTUnwrap(next.resolvedImageOverlays.first).placement.isVisible)
+
+        let unknownDisplay = OpenRouterAssistantDraft(
+            reply: "Change the scene", titles: [], descriptions: [],
+            newTakeWording: [], cuts: [], sceneChanges: [OpenRouterAssistantSceneChange(
+                layout: .screenOnly, transition: .cut, duration: 0.15,
+                reason: "Uncaptured display", displayID: 43
+            )]
+        )
+        XCTAssertThrowsError(try unknownDisplay.reviewedScene(
+            context: context, timeline: timeline, revision: 1
+        ))
+        let unknownImage = OpenRouterAssistantDraft(
+            reply: "Show an image", titles: [], descriptions: [],
+            newTakeWording: [], cuts: [], sceneChanges: [OpenRouterAssistantSceneChange(
+                layout: .screenOnly, transition: .cut, duration: 0.15,
+                reason: "Unknown image", overlayID: UUID(), overlayVisible: true
+            )]
+        )
+        XCTAssertThrowsError(try unknownImage.reviewedScene(
+            context: context, timeline: timeline, revision: 1
+        ))
+        let invalidPosition = OpenRouterAssistantSceneChange(
+            layout: .cameraOnly, transition: .cut, duration: 0.15,
+            reason: "Outside frame", cameraX: 1.5
+        )
+        XCTAssertFalse(invalidPosition.isValid)
     }
 
     func testCameraOnlySceneFillsFrameAndKeepsAudioIndependent() {

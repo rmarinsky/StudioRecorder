@@ -24,6 +24,44 @@ struct OpenRouterAssistantSceneSelection: Codable, Equatable, Sendable {
     let end: TimeInterval
     let capturedDisplayIDs: [UInt32]
     let hasCapturedCamera: Bool
+    let overlays: [OpenRouterAssistantSceneOverlay]
+    let currentState: OpenRouterAssistantSceneState?
+
+    init(
+        start: TimeInterval, end: TimeInterval,
+        capturedDisplayIDs: [UInt32], hasCapturedCamera: Bool,
+        overlays: [OpenRouterAssistantSceneOverlay] = [],
+        currentState: OpenRouterAssistantSceneState? = nil
+    ) {
+        self.start = start
+        self.end = end
+        self.capturedDisplayIDs = capturedDisplayIDs
+        self.hasCapturedCamera = hasCapturedCamera
+        self.overlays = overlays
+        self.currentState = currentState
+    }
+}
+
+struct OpenRouterAssistantSceneOverlay: Codable, Equatable, Sendable {
+    let id: UUID
+    let name: String
+}
+
+struct OpenRouterAssistantSceneState: Codable, Equatable, Sendable {
+    let screenVisible: Bool
+    let cameraVisible: Bool
+    let displayID: UInt32?
+    let cameraX: Double
+    let cameraY: Double
+    let cameraWidth: Double
+    let cameraShape: SourceShape
+    let cameraBackground: CameraBackgroundMode
+
+    var isValid: Bool {
+        cameraX.isFinite && (0...1).contains(cameraX)
+            && cameraY.isFinite && (0...1).contains(cameraY)
+            && cameraWidth.isFinite && (0.08...1).contains(cameraWidth)
+    }
 }
 
 struct OpenRouterAssistantContext: Codable, Equatable, Sendable {
@@ -176,7 +214,13 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
               selection.end <= timeline.duration,
               (try? timeline.sourceRange(for: selection.start..<selection.end)) != nil,
               (!change.layout.usesCamera || selection.hasCapturedCamera),
-              (!change.layout.usesScreen || !selection.capturedDisplayIDs.isEmpty) else {
+              (!change.layout.usesScreen || !selection.capturedDisplayIDs.isEmpty),
+              (!change.hasCameraCustomization || change.layout.usesCamera && selection.hasCapturedCamera),
+              (change.displayID == nil || change.layout.usesScreen),
+              (change.displayID.map { selection.capturedDisplayIDs.contains($0) } ?? true),
+              (change.overlayID.map { overlayID in
+                  selection.overlays.contains { $0.id == overlayID }
+              } ?? true) else {
             throw OpenRouterAssistantError.invalidProposal
         }
         return OpenRouterReviewedScene(
@@ -286,11 +330,67 @@ struct OpenRouterAssistantSceneChange: Codable, Equatable, Sendable {
     let transition: StudioSceneTransitionEffect
     let duration: TimeInterval
     let reason: String
+    let displayID: UInt32?
+    let cameraX: Double?
+    let cameraY: Double?
+    let cameraWidth: Double?
+    let cameraShape: SourceShape?
+    let cameraBackground: CameraBackgroundMode?
+    let overlayID: UUID?
+    let overlayVisible: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case layout, transition, duration, reason
+        case displayID = "display_id"
+        case cameraX = "camera_x"
+        case cameraY = "camera_y"
+        case cameraWidth = "camera_width"
+        case cameraShape = "camera_shape"
+        case cameraBackground = "camera_background"
+        case overlayID = "overlay_id"
+        case overlayVisible = "overlay_visible"
+    }
+
+    init(
+        layout: OpenRouterAssistantSceneLayout,
+        transition: StudioSceneTransitionEffect,
+        duration: TimeInterval,
+        reason: String,
+        displayID: UInt32? = nil,
+        cameraX: Double? = nil,
+        cameraY: Double? = nil,
+        cameraWidth: Double? = nil,
+        cameraShape: SourceShape? = nil,
+        cameraBackground: CameraBackgroundMode? = nil,
+        overlayID: UUID? = nil,
+        overlayVisible: Bool? = nil
+    ) {
+        self.layout = layout
+        self.transition = transition
+        self.duration = duration
+        self.reason = reason
+        self.displayID = displayID
+        self.cameraX = cameraX
+        self.cameraY = cameraY
+        self.cameraWidth = cameraWidth
+        self.cameraShape = cameraShape
+        self.cameraBackground = cameraBackground
+        self.overlayID = overlayID
+        self.overlayVisible = overlayVisible
+    }
+
+    var hasCameraCustomization: Bool {
+        cameraX != nil || cameraY != nil || cameraWidth != nil
+            || cameraShape != nil || cameraBackground != nil
+    }
 
     var isValid: Bool {
         duration.isFinite && (0.15...1).contains(duration)
             && !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && reason.count <= 500
+            && [cameraX, cameraY].allSatisfy { $0.map { $0.isFinite && (0...1).contains($0) } ?? true }
+            && (cameraWidth.map { $0.isFinite && (0.08...1).contains($0) } ?? true)
+            && ((overlayID == nil) == (overlayVisible == nil))
     }
 
     func presentation(from current: CapturePresentationSnapshot) -> CapturePresentationSnapshot {
@@ -305,6 +405,18 @@ struct OpenRouterAssistantSceneChange: Codable, Equatable, Sendable {
             next.camera.shape = .rectangle
         } else if layout == .screenAndCamera && next.camera.width >= 0.8 {
             next.camera = CapturePresentationSnapshot.default.camera
+        }
+        if let cameraX { next.camera.centerX = cameraX }
+        if let cameraY { next.camera.centerY = cameraY }
+        if let cameraWidth { next.camera.width = cameraWidth }
+        if let cameraShape { next.camera.shape = cameraShape }
+        if let cameraBackground { next.cameraBackground = CameraBackgroundSnapshot(mode: cameraBackground) }
+        if let overlayID, let overlayVisible {
+            next.imageOverlays = current.resolvedImageOverlays.map { overlay in
+                var overlay = overlay
+                if overlay.id == overlayID { overlay.placement.isVisible = overlayVisible }
+                return overlay
+            }
         }
         return next.validated()
     }
@@ -450,11 +562,21 @@ struct OpenRouterAssistantClient {
                   $0.start.isFinite && $0.end.isFinite
                       && $0.start >= 0 && $0.start < $0.end
                       && Set($0.capturedDisplayIDs).count == $0.capturedDisplayIDs.count
+                      && Set($0.overlays.map(\.id)).count == $0.overlays.count
+                      && $0.overlays.allSatisfy {
+                          !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              && $0.name.count <= 80
+                      }
+                      && ($0.currentState?.isValid ?? true)
               }) ?? true else { throw OpenRouterAssistantError.invalidContext }
 
         let contextJSON = String(decoding: try JSONEncoder().encode(context), as: UTF8.self)
         let string: [String: Any] = ["type": "string"]
         let strings: [String: Any] = ["type": "array", "items": string]
+        let optionalNumber: [String: Any] = ["type": ["number", "null"]]
+        let optionalInteger: [String: Any] = ["type": ["integer", "null"]]
+        let optionalString: [String: Any] = ["type": ["string", "null"]]
+        let optionalBoolean: [String: Any] = ["type": ["boolean", "null"]]
         let cut: [String: Any] = [
             "type": "object",
             "properties": ["id": string, "reason": string],
@@ -467,8 +589,20 @@ struct OpenRouterAssistantClient {
                 "transition": ["type": "string", "enum": ["cut", "dissolve", "smoothMove"]],
                 "duration": ["type": "number"],
                 "reason": string,
+                "display_id": optionalInteger,
+                "camera_x": optionalNumber,
+                "camera_y": optionalNumber,
+                "camera_width": optionalNumber,
+                "camera_shape": ["type": ["string", "null"],
+                                 "enum": SourceShape.allCases.map { $0.rawValue as Any } + [NSNull()]],
+                "camera_background": ["type": ["string", "null"],
+                                      "enum": CameraBackgroundMode.allCases.map { $0.rawValue as Any } + [NSNull()]],
+                "overlay_id": optionalString,
+                "overlay_visible": optionalBoolean,
             ],
-            "required": ["layout", "transition", "duration", "reason"],
+            "required": ["layout", "transition", "duration", "reason", "display_id",
+                         "camera_x", "camera_y", "camera_width", "camera_shape",
+                         "camera_background", "overlay_id", "overlay_visible"],
             "additionalProperties": false,
         ]
         let phraseMove: [String: Any] = [
@@ -492,7 +626,7 @@ struct OpenRouterAssistantClient {
             "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes", "phrase_moves"],
             "additionalProperties": false,
         ]
-        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. To move a recorded phrase, use exact first and last word IDs in playback order and a before_word_id for its destination; use an empty before_word_id to append at the end. Phrase moves require whole-project scope and aligned or reviewed timing for the first, last, and destination words. Use no more than one media operation type per reply. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
+        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. Scene display_id must be a captured display; overlay_id must be an existing imported PNG ID. Camera coordinates are normalized 0 to 1 and width 0.08 to 1. Use null for unchanged optional scene fields. To move a recorded phrase, use exact first and last word IDs in playback order and a before_word_id for its destination; use an empty before_word_id to append at the end. Phrase moves require whole-project scope and aligned or reviewed timing for the first, last, and destination words. Use no more than one media operation type per reply. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
             + history.map { ["role": $0.role.rawValue, "content": $0.content] }
             + [["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"]]
         let body: [String: Any] = [

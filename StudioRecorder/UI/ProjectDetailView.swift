@@ -275,6 +275,11 @@ struct ProjectDetailView: View {
                     Text("\(pendingAssistantScene.change.layout.label) · \(pendingAssistantScene.change.transition.label)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    ForEach(sceneChangeDetails(pendingAssistantScene.change), id: \.self) { detail in
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack {
                         Button("Review") { selectedRange = pendingAssistantScene.range }
                         Button("Apply") { applyAssistantScene() }
@@ -412,11 +417,25 @@ struct ProjectDetailView: View {
         let sceneSelection: OpenRouterAssistantSceneSelection? = {
             guard scope == .selection, editSession.canEditRecordedScenes,
                   let selectedRange, let timeline = editSession.timeline,
-                  (try? timeline.sourceRange(for: selectedRange)) != nil else { return nil }
+                  (try? timeline.sourceRange(for: selectedRange)) != nil,
+                  let current = editSession.scenePresentation(for: selectedRange) else { return nil }
             return OpenRouterAssistantSceneSelection(
                 start: selectedRange.lowerBound, end: selectedRange.upperBound,
                 capturedDisplayIDs: editSession.capturedDisplayIDs,
-                hasCapturedCamera: editSession.hasCapturedCamera
+                hasCapturedCamera: editSession.hasCapturedCamera,
+                overlays: current.resolvedImageOverlays.map {
+                    OpenRouterAssistantSceneOverlay(id: $0.id, name: $0.name)
+                },
+                currentState: OpenRouterAssistantSceneState(
+                    screenVisible: current.screen.isVisible,
+                    cameraVisible: current.camera.isVisible,
+                    displayID: editSession.sceneDisplayID(for: selectedRange),
+                    cameraX: current.camera.centerX,
+                    cameraY: current.camera.centerY,
+                    cameraWidth: current.camera.width,
+                    cameraShape: current.camera.shape,
+                    cameraBackground: current.resolvedCameraBackground.mode
+                )
             )
         }()
         let history = assistantMessages.suffix(12).map { message in
@@ -474,7 +493,8 @@ struct ProjectDetailView: View {
                           await editSession.canApplyScene(
                             to: sceneProposal.range,
                             presentation: sceneProposal.change.presentation(from: current),
-                            displayID: editSession.sceneDisplayID(for: sceneProposal.range)
+                            displayID: sceneProposal.change.displayID
+                                ?? editSession.sceneDisplayID(for: sceneProposal.range)
                           ) else { throw OpenRouterAssistantError.invalidProposal }
                 }
                 guard assistantRequestID == requestID,
@@ -527,7 +547,10 @@ struct ProjectDetailView: View {
               let timeline = editSession.timeline,
               proposal.isCurrent(
                 projectID: projectID, timeline: timeline, revision: editSession.editRevision
-              ), let current = editSession.scenePresentation(for: proposal.range) else {
+              ), let current = editSession.scenePresentation(for: proposal.range),
+              (proposal.change.overlayID.map { overlayID in
+                  current.resolvedImageOverlays.contains { $0.id == overlayID }
+              } ?? true) else {
             assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
             pendingAssistantScene = nil
             return
@@ -544,7 +567,8 @@ struct ProjectDetailView: View {
             await editSession.applyScene(
                 to: proposal.range,
                 presentation: proposal.change.presentation(from: current),
-                displayID: editSession.sceneDisplayID(for: proposal.range),
+                displayID: proposal.change.displayID
+                    ?? editSession.sceneDisplayID(for: proposal.range),
                 transition: StudioSceneTransitionConfiguration(
                     effect: proposal.change.transition, duration: proposal.change.duration
                 )
@@ -552,6 +576,27 @@ struct ProjectDetailView: View {
             if let error = editSession.errorMessage { assistantError = error }
             else { pendingAssistantScene = nil }
         }
+    }
+
+    private func sceneChangeDetails(_ change: OpenRouterAssistantSceneChange) -> [String] {
+        var details: [String] = []
+        if let displayID = change.displayID { details.append("Display \(displayID)") }
+        if let shape = change.cameraShape { details.append("Camera shape: \(shape.label)") }
+        if let background = change.cameraBackground { details.append("Camera background: \(background.label)") }
+        if change.cameraX != nil || change.cameraY != nil || change.cameraWidth != nil {
+            let position = [change.cameraX, change.cameraY, change.cameraWidth]
+                .map { $0.map { String(format: "%.2f", $0) } ?? "unchanged" }
+                .joined(separator: ", ")
+            details.append("Camera x, y, width: \(position)")
+        }
+        if let overlayID = change.overlayID, let visible = change.overlayVisible {
+            let overlayName = pendingAssistantScene.flatMap {
+                editSession.scenePresentation(for: $0.range)?.resolvedImageOverlays
+                    .first(where: { $0.id == overlayID })?.name
+            } ?? "Image"
+            details.append("PNG \(overlayName): \(visible ? "show" : "hide")")
+        }
+        return details
     }
 
     private func applyAssistantMove() {
