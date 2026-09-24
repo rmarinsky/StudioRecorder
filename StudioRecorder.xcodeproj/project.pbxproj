@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
 		02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */; };
+		B0A1A1A1A1A1A1A1A1A1A1A1 /* OpenRouterAssistantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A2A2A2A2A2A2A2A2A2A2A2 /* OpenRouterAssistantTests.swift */; };
+		B0A3A3A3A3A3A3A3A3A3A3A3 /* OpenRouterAssistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4A4A4A4A4A4A4A4A4A4A4 /* OpenRouterAssistant.swift */; };
 		09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */; };
 		0A528571673E6AFA9D7A0EAC /* SafeShortcutTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AD5D447541362413D3EE64 /* SafeShortcutTimeline.swift */; };
 		0B278698AA45D8C52BD70E88 /* SafeShortcutTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC0C6B8CEFCFC6873D21AE8 /* SafeShortcutTimelineTests.swift */; };
@@ -86,6 +88,8 @@
 
 /* Begin PBXFileReference section */
 		01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditTimelineTests.swift; sourceTree = "<group>"; };
+		B0A2A2A2A2A2A2A2A2A2A2A2 /* OpenRouterAssistantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistantTests.swift; sourceTree = "<group>"; };
+		B0A4A4A4A4A4A4A4A4A4A4A4 /* OpenRouterAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistant.swift; sourceTree = "<group>"; };
 		027D0183284B828436F04225 /* StudioRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		067BFA6986D1345EB4D0A82C /* RecordingRetentionFinalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingRetentionFinalizer.swift; sourceTree = "<group>"; };
 		078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgramArchiveTests.swift; sourceTree = "<group>"; };
@@ -240,6 +244,7 @@
 				31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */,
 				CEE50CD0F60DE19F2D59B7F7 /* LiveSourceHealthTests.swift */,
 				5A11DDF9D81A956435CD8B2D /* LiveSourceRecoveryPolicyTests.swift */,
+				B0A2A2A2A2A2A2A2A2A2A2A2 /* OpenRouterAssistantTests.swift */,
 				51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */,
 				6FE27C7C08A80AB23D56F3A4 /* ProjectAudioWaveformTests.swift */,
 				CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */,
@@ -291,6 +296,7 @@
 				08A55ADC6536CD2D7A9808C0 /* LiveSourceHealth.swift */,
 				A0FE99528B91B6B4165AEE25 /* LiveSourceRecovery.swift */,
 				A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */,
+				B0A4A4A4A4A4A4A4A4A4A4A4 /* OpenRouterAssistant.swift */,
 				9AEB84D5875ABFF7914F90A4 /* ProjectAudioWaveform.swift */,
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
@@ -419,6 +425,7 @@
 				2A13B2D40F6076886A88781F /* ProjectAudioWaveformTests.swift in Sources */,
 				DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */,
 				30C473B441D6165AE700ADDF /* ProjectEditTimelineTests.swift in Sources */,
+				B0A1A1A1A1A1A1A1A1A1A1A1 /* OpenRouterAssistantTests.swift in Sources */,
 				D01F6C6336EE40388DBE8C5C /* ProjectMediaExporterTests.swift in Sources */,
 				09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */,
 				0B278698AA45D8C52BD70E88 /* SafeShortcutTimelineTests.swift in Sources */,
@@ -454,6 +461,7 @@
 				F195967D1996D9078D6FF408 /* ProjectEditRenderer.swift in Sources */,
 				D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */,
 				C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */,
+				B0A3A3A3A3A3A3A3A3A3A3A3 /* OpenRouterAssistant.swift in Sources */,
 				196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */,
 				E9E0C0A0A54C9D2CC336B3DA /* ProjectMediaExporter.swift in Sources */,
 				28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */,
