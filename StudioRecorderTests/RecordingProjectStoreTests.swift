@@ -6,6 +6,36 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testFinalizationJobSurvivesRestartAndRetryKeepsProjectIdentity() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(
+            sources: [.display(id: 1)],
+            primaryAudioDisplayID: 1,
+            capturesMicrophone: false
+        )
+        let jobStore = RecordingJobStore()
+        let queued = RecordingJob(projectID: project.id, kind: .finalization)
+
+        try jobStore.save(queued, in: project)
+        XCTAssertEqual(try RecordingJobStore().load(in: project), [queued])
+
+        var failed = queued
+        failed.state = .failed
+        failed.failure = "The disk is full"
+        failed.progress = 0.4
+        try jobStore.save(failed, in: project)
+
+        let retried = try jobStore.retry(jobID: queued.id, in: project)
+        XCTAssertEqual(retried.projectID, project.id)
+        XCTAssertEqual(retried.state, .queued)
+        XCTAssertEqual(retried.attempt, 2)
+        XCTAssertNil(retried.failure)
+        XCTAssertEqual(retried.progress, 0)
+        XCTAssertEqual(try RecordingJobStore().load(in: project), [retried])
+    }
+
     func testShortcutTimelinePersistsInsideTheRecoverableScenePackage() throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }

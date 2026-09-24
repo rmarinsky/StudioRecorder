@@ -10,6 +10,119 @@ enum RecordingProjectLifecycle: String, Codable, Equatable, Sendable {
     case unreadable
 }
 
+enum RecordingJobKind: String, Codable, Sendable {
+    case finalization
+    case export
+    case transcription
+}
+
+enum RecordingJobState: String, Codable, Sendable {
+    case queued
+    case running
+    case failed
+    case completed
+}
+
+struct RecordingJob: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    let projectID: UUID
+    let kind: RecordingJobKind
+    var state: RecordingJobState
+    var stage: String
+    var progress: Double
+    var failure: String?
+    var attempt: Int
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), projectID: UUID, kind: RecordingJobKind) {
+        self.id = id
+        self.projectID = projectID
+        self.kind = kind
+        state = .queued
+        stage = "Queued"
+        progress = 0
+        failure = nil
+        attempt = 1
+        updatedAt = Date()
+    }
+}
+
+enum RecordingJobStoreError: LocalizedError {
+    case unsupportedSchema
+    case projectMismatch
+    case invalidJob
+    case jobNotFound
+    case notRetryable
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema: "This project's jobs were written by an unsupported app version."
+        case .projectMismatch: "A job belongs to another recording project."
+        case .invalidJob: "The saved job is invalid."
+        case .jobNotFound: "The job no longer exists."
+        case .notRetryable: "Only failed jobs can be retried."
+        }
+    }
+}
+
+final class RecordingJobStore {
+    private struct Document: Codable {
+        let schemaVersion: Int
+        var jobs: [RecordingJob]
+    }
+
+    private let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func load(in project: RecordingProject) throws -> [RecordingJob] {
+        let url = project.rootURL.appending(path: "jobs.json")
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: url))
+        guard document.schemaVersion == 1 else { throw RecordingJobStoreError.unsupportedSchema }
+        guard document.jobs.allSatisfy({ $0.projectID == project.id }) else {
+            throw RecordingJobStoreError.projectMismatch
+        }
+        guard document.jobs.allSatisfy({ $0.progress.isFinite && (0...1).contains($0.progress) && $0.attempt > 0 }),
+              Set(document.jobs.map(\.id)).count == document.jobs.count else {
+            throw RecordingJobStoreError.invalidJob
+        }
+        return document.jobs
+    }
+
+    func save(_ job: RecordingJob, in project: RecordingProject) throws {
+        guard job.projectID == project.id else { throw RecordingJobStoreError.projectMismatch }
+        guard job.progress.isFinite, (0...1).contains(job.progress), job.attempt > 0 else {
+            throw RecordingJobStoreError.invalidJob
+        }
+        var jobs = try load(in: project)
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        } else {
+            jobs.append(job)
+        }
+        try JSONEncoder().encode(Document(schemaVersion: 1, jobs: jobs))
+            .write(to: project.rootURL.appending(path: "jobs.json"), options: .atomic)
+    }
+
+    func retry(jobID: UUID, in project: RecordingProject) throws -> RecordingJob {
+        guard var job = try load(in: project).first(where: { $0.id == jobID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        guard job.state == .failed else { throw RecordingJobStoreError.notRetryable }
+        job.state = .queued
+        job.stage = "Queued"
+        job.progress = 0
+        job.failure = nil
+        job.attempt += 1
+        job.updatedAt = Date()
+        try save(job, in: project)
+        return job
+    }
+}
+
 enum RecordingSourceMetadataState: String, Codable, Equatable, Sendable {
     case known
     case unknown
