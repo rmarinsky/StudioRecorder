@@ -355,6 +355,53 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         segments.insert(segment, at: toIndex)
     }
 
+    @discardableResult
+    mutating func move(
+        range: Range<TimeInterval>, before destination: TimeInterval
+    ) throws -> [UUID: UUID] {
+        guard range.lowerBound.isFinite, range.upperBound.isFinite,
+              destination.isFinite, range.lowerBound >= 0,
+              range.lowerBound < range.upperBound,
+              range.upperBound <= duration,
+              destination >= 0, destination <= duration,
+              destination <= range.lowerBound || destination >= range.upperBound else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        if destination == range.lowerBound || destination == range.upperBound { return [:] }
+
+        var next = self
+        var splitParents: [UUID: UUID] = [:]
+        for boundary in [range.lowerBound, range.upperBound, destination].sorted() {
+            guard boundary > 0, boundary < duration,
+                  let location = next.segmentLocation(at: boundary) else { continue }
+            let localTime = boundary - location.timelineStart
+            guard localTime > 0.000_001,
+                  localTime < location.segment.duration - 0.000_001 else { continue }
+            let newID = UUID()
+            splitParents[newID] = splitParents[location.segment.id] ?? location.segment.id
+            try next.split(at: boundary, newSegmentID: newID)
+        }
+
+        func boundaryIndex(_ time: TimeInterval) -> Int? {
+            var outputTime: TimeInterval = 0
+            for index in next.segments.indices {
+                if abs(outputTime - time) < 0.000_001 { return index }
+                outputTime += next.segments[index].duration
+            }
+            return abs(outputTime - time) < 0.000_001 ? next.segments.count : nil
+        }
+        guard let first = boundaryIndex(range.lowerBound),
+              let last = boundaryIndex(range.upperBound),
+              let target = boundaryIndex(destination), first < last else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        let moving = Array(next.segments[first..<last])
+        next.segments.removeSubrange(first..<last)
+        next.segments.insert(contentsOf: moving, at: target > last ? target - moving.count : target)
+        self = next
+        return splitParents
+    }
+
     mutating func delete(range: Range<TimeInterval>) throws {
         guard range.lowerBound.isFinite,
               range.upperBound.isFinite,

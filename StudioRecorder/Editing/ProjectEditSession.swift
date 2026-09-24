@@ -331,6 +331,34 @@ final class ProjectEditSession: ObservableObject {
         }
     }
 
+    func moveOutputRange(_ range: Range<TimeInterval>, before destination: TimeInterval) async {
+        guard let current = timeline else { return }
+        var next = current
+        do {
+            let splitParents = try next.move(range: range, before: destination)
+            guard next != current else { return }
+            var nextAdjustments = segmentAudioAdjustments
+            for (newID, parentID) in splitParents {
+                let inherited = segmentAudioAdjustment(for: parentID)
+                if !inherited.isUnchanged {
+                    nextAdjustments.append(ProjectSegmentAudioAdjustment(
+                        segmentID: newID, gain: inherited.gain, isMuted: inherited.isMuted
+                    ))
+                }
+            }
+            let movedStart = destination > range.upperBound
+                ? destination - (range.upperBound - range.lowerBound)
+                : destination
+            await commitEdit(
+                next, segmentAudioAdjustments: nextAdjustments,
+                selectedSegmentID: next.segment(at: movedStart)?.id,
+                seekTime: movedStart
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func deleteOutputRange(_ range: Range<TimeInterval>) async {
         guard let current = timeline else { return }
         var next = current

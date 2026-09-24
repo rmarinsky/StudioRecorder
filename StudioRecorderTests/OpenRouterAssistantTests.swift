@@ -162,6 +162,48 @@ final class OpenRouterAssistantTests: XCTestCase {
         ))
     }
 
+    func testPhraseMoveUsesOnlyReviewedWordBoundariesAndCurrentRevision() throws {
+        let projectID = UUID()
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 10)
+        let words = [
+            OpenRouterAssistantWord(id: "first", text: "Перша", start: 1, end: 1.3, timingStatus: .reviewed),
+            OpenRouterAssistantWord(id: "last", text: "фраза", start: 1.4, end: 1.7, timingStatus: .reviewed),
+            OpenRouterAssistantWord(id: "target", text: "Наступна", start: 7, end: 7.4, timingStatus: .reviewed),
+        ]
+        let context = OpenRouterAssistantContext(projectID: projectID, scope: .wholeProject, words: words)
+        let move = OpenRouterAssistantPhraseMove(
+            firstWordID: "first", lastWordID: "last", beforeWordID: "target",
+            reason: "Put the introduction later"
+        )
+        let draft = OpenRouterAssistantDraft(
+            reply: "Move the recorded phrase", titles: [], descriptions: [],
+            newTakeWording: [], cuts: [], phraseMoves: [move]
+        )
+
+        let proposal = try XCTUnwrap(draft.reviewedMove(context: context, timeline: timeline, revision: 4))
+        XCTAssertEqual(proposal.range, 1..<1.7)
+        XCTAssertEqual(proposal.destination, 7)
+        XCTAssertTrue(proposal.isCurrent(projectID: projectID, timeline: timeline, revision: 4))
+        XCTAssertFalse(proposal.isCurrent(projectID: projectID, timeline: timeline, revision: 5))
+
+        let uncertainContext = OpenRouterAssistantContext(
+            projectID: projectID, scope: .wholeProject,
+            words: [words[0], OpenRouterAssistantWord(
+                id: "last", text: "фраза", start: 1.4, end: 1.7, timingStatus: .uncertain
+            ), words[2]]
+        )
+        XCTAssertThrowsError(try draft.reviewedMove(
+            context: uncertainContext, timeline: timeline, revision: 4
+        ))
+        let invented = OpenRouterAssistantDraft(
+            reply: "Move", titles: [], descriptions: [], newTakeWording: [], cuts: [],
+            phraseMoves: [OpenRouterAssistantPhraseMove(
+                firstWordID: "invented", lastWordID: "last", beforeWordID: "target", reason: "Move"
+            )]
+        )
+        XCTAssertThrowsError(try invented.reviewedMove(context: context, timeline: timeline, revision: 4))
+    }
+
     func testSceneProposalRejectsInvalidTransitionAndMissingDisplay() throws {
         let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
         let context = OpenRouterAssistantContext(

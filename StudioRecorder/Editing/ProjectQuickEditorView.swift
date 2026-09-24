@@ -13,6 +13,7 @@ struct ProjectQuickEditorView: View {
     let onExportMovie: () -> Void
     let commandsOnly: Bool
     let proposedRanges: [Range<TimeInterval>]
+    let proposedMove: OpenRouterReviewedMove?
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
@@ -27,12 +28,14 @@ struct ProjectQuickEditorView: View {
         onExportMovie: @escaping () -> Void,
         selectedRange: Binding<Range<TimeInterval>?> = .constant(nil),
         proposedRanges: [Range<TimeInterval>] = [],
+        proposedMove: OpenRouterReviewedMove? = nil,
         commandsOnly: Bool = false
     ) {
         self.session = session
         self.onExportMovie = onExportMovie
         _selectedRange = selectedRange
         self.proposedRanges = proposedRanges
+        self.proposedMove = proposedMove
         self.commandsOnly = commandsOnly
     }
 
@@ -90,6 +93,7 @@ struct ProjectQuickEditorView: View {
                 waveform: session.audioWaveform,
                 sceneTransitions: session.sceneTimeline?.transitions ?? [],
                 proposedRanges: proposedRanges,
+                proposedMove: proposedMove,
                 selectedRange: $selectedRange,
                 onSeek: { time in
                     session.selectedSegmentID = timeline.segment(at: time)?.id
@@ -997,6 +1001,7 @@ private struct ProjectLinkedTimeline: View {
     let waveform: ProjectAudioWaveform?
     let sceneTransitions: [StudioSceneTransition]
     let proposedRanges: [Range<TimeInterval>]
+    let proposedMove: OpenRouterReviewedMove?
     @Binding var selectedRange: Range<TimeInterval>?
     let onSeek: (TimeInterval) -> Void
     let onDelete: () -> Void
@@ -1181,6 +1186,28 @@ private struct ProjectLinkedTimeline: View {
                 Path(CGRect(x: x, y: videoY, width: proposedWidth, height: laneHeight * 2)),
                 with: .color(.red.opacity(0.30))
             )
+        }
+
+        if let proposedMove {
+            let range = proposedMove.range
+            if range.upperBound > viewport.visibleStart,
+               range.lowerBound < viewport.visibleStart + viewport.visibleDuration {
+                let x = width * (range.lowerBound - viewport.visibleStart) / viewport.visibleDuration
+                let span = width * (range.upperBound - range.lowerBound) / viewport.visibleDuration
+                context.fill(
+                    Path(CGRect(x: x, y: videoY, width: span, height: laneHeight * 2)),
+                    with: .color(.blue.opacity(0.28))
+                )
+            }
+            let destinationX = width * (proposedMove.destination - viewport.visibleStart)
+                / viewport.visibleDuration
+            if destinationX >= 0, destinationX <= width {
+                context.fill(
+                    Path(CGRect(x: min(destinationX, width - 2), y: videoY,
+                                width: 2, height: laneHeight * 2)),
+                    with: .color(.blue)
+                )
+            }
         }
 
         if let selectedRange, selectedRange.upperBound > selectedRange.lowerBound {

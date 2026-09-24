@@ -129,6 +129,28 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertThrowsError(try timeline.delete(ranges: [0..<2, 1..<3]))
     }
 
+    func testMovingArbitraryRecordedPhrasePreservesItsVideoAudioSourceTimes() throws {
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 10)
+        let originalID = timeline.segments[0].id
+
+        let splitParents = try timeline.move(range: 2..<4, before: 8)
+
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 4, 2, 8])
+        XCTAssertEqual(timeline.segments.map(\.duration), [2, 4, 2, 2])
+        XCTAssertEqual(timeline.sourceTime(at: 6.5), 2.5)
+        XCTAssertEqual(timeline.sourceTime(at: 8.5), 8.5)
+        XCTAssertEqual(splitParents.count, 3)
+        XCTAssertTrue(splitParents.values.allSatisfy { $0 == originalID })
+    }
+
+    func testPhraseMoveRejectsDestinationInsideSourceWithoutChangingEdit() throws {
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 10)
+        let original = timeline
+
+        XCTAssertThrowsError(try timeline.move(range: 2..<4, before: 3))
+        XCTAssertEqual(timeline, original)
+    }
+
     func testTranscriptDisplaysWordsInSourceTimeOrderWithinEachEditedSegment() throws {
         let transcript = TimedTranscript(
             projectID: UUID(), sourceTrackID: "screen", sourceDuration: 3,

@@ -52,6 +52,7 @@ struct ProjectDetailView: View {
     @State private var assistantTask: Task<Void, Never>?
     @State private var pendingAssistantCuts: OpenRouterReviewedCuts?
     @State private var pendingAssistantScene: OpenRouterReviewedScene?
+    @State private var pendingAssistantMove: OpenRouterReviewedMove?
 
     private let exporter = ProjectMediaExporter()
 
@@ -134,10 +135,12 @@ struct ProjectDetailView: View {
             assistantRequestID = UUID()
             pendingAssistantCuts = nil
             pendingAssistantScene = nil
+            pendingAssistantMove = nil
         }
         .onChange(of: editSession.editRevision) { _, _ in
             pendingAssistantCuts = nil
             pendingAssistantScene = nil
+            pendingAssistantMove = nil
         }
         .onDisappear {
             assistantTask?.cancel()
@@ -186,7 +189,7 @@ struct ProjectDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if assistantMessages.isEmpty {
-                        Text("Ask for cuts, scene changes, titles, descriptions, or wording for a new take.")
+                        Text("Ask for cuts, phrase order, scene changes, titles, descriptions, or wording for a new take.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text("Transcript text and scene metadata are sent for the chosen scope. Review every media change before applying it.")
@@ -226,6 +229,11 @@ struct ProjectDetailView: View {
                                     Label(change.reason, systemImage: "rectangle.on.rectangle")
                                         .font(.caption)
                                         .foregroundStyle(.tint)
+                                }
+                                ForEach(draft.phraseMoves, id: \.reason) { move in
+                                    Label(move.reason, systemImage: "arrow.left.arrow.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.blue)
                                 }
                             }
                         }
@@ -276,6 +284,37 @@ struct ProjectDetailView: View {
                     .buttonStyle(.borderless)
                     HStack {
                         Button("Refine") { assistantPrompt = "Refine the proposed scene: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
+            }
+            if let pendingAssistantMove {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Proposed phrase move")
+                        .font(.caption.weight(.semibold))
+                    Text(pendingAssistantMove.reason)
+                        .font(.caption2)
+                    Text(String(
+                        format: "Move %.2f–%.2f s before %.2f s",
+                        pendingAssistantMove.range.lowerBound,
+                        pendingAssistantMove.range.upperBound,
+                        pendingAssistantMove.destination
+                    ))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Review") { selectedRange = pendingAssistantMove.range }
+                        Button("Apply") { applyAssistantMove() }
+                            .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                        Button("Dismiss") { self.pendingAssistantMove = nil }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed phrase order: " }
                         Button("Undo") { Task { await editSession.undo() } }
                             .disabled(!editSession.canUndo)
                     }
@@ -427,6 +466,9 @@ struct ProjectDetailView: View {
                 let sceneProposal = try draft.reviewedScene(
                     context: context, timeline: requestTimeline, revision: requestRevision
                 )
+                let moveProposal = try draft.reviewedMove(
+                    context: context, timeline: requestTimeline, revision: requestRevision
+                )
                 if let sceneProposal {
                     guard let current = editSession.scenePresentation(for: sceneProposal.range),
                           await editSession.canApplyScene(
@@ -440,7 +482,9 @@ struct ProjectDetailView: View {
                 assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
                 pendingAssistantCuts = cutProposal
                 pendingAssistantScene = sceneProposal
-                selectedRange = cutProposal?.ranges.first ?? sceneProposal?.range ?? selectedRange
+                pendingAssistantMove = moveProposal
+                selectedRange = cutProposal?.ranges.first ?? sceneProposal?.range
+                    ?? moveProposal?.range ?? selectedRange
             } catch {
                 if assistantRequestID == requestID { assistantError = error.localizedDescription }
             }
@@ -459,6 +503,14 @@ struct ProjectDetailView: View {
             return
         }
         Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantCuts = nil
+                return
+            }
             await editSession.deleteOutputRanges(proposal.ranges)
             if let error = editSession.errorMessage {
                 assistantError = error
@@ -481,6 +533,14 @@ struct ProjectDetailView: View {
             return
         }
         Task {
+            guard let timeline = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: timeline, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantScene = nil
+                return
+            }
             await editSession.applyScene(
                 to: proposal.range,
                 presentation: proposal.change.presentation(from: current),
@@ -491,6 +551,35 @@ struct ProjectDetailView: View {
             )
             if let error = editSession.errorMessage { assistantError = error }
             else { pendingAssistantScene = nil }
+        }
+    }
+
+    private func applyAssistantMove() {
+        guard let proposal = pendingAssistantMove,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantMove = nil
+            return
+        }
+        Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantMove = nil
+                return
+            }
+            await editSession.moveOutputRange(proposal.range, before: proposal.destination)
+            if let error = editSession.errorMessage { assistantError = error }
+            else {
+                pendingAssistantMove = nil
+                selectedRange = nil
+            }
         }
     }
 
@@ -541,6 +630,10 @@ struct ProjectDetailView: View {
                                 .background(pendingAssistantCuts?.ranges.contains(where: {
                                     $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
                                 }) == true ? Color.red.opacity(0.15) : .clear)
+                                .background(pendingAssistantMove.map {
+                                    $0.range.lowerBound < word.outputEnd
+                                        && $0.range.upperBound > word.outputStart
+                                } == true ? Color.blue.opacity(0.18) : .clear)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -786,7 +879,8 @@ struct ProjectDetailView: View {
                     session: editSession,
                     onExportMovie: exportEditedMovie,
                     selectedRange: $selectedRange,
-                    proposedRanges: pendingAssistantCuts?.ranges ?? []
+                    proposedRanges: pendingAssistantCuts?.ranges ?? [],
+                    proposedMove: pendingAssistantMove
                 )
                     .padding(12)
             }

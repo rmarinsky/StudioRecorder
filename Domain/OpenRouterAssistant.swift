@@ -64,17 +64,20 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
     let newTakeWording: [String]
     let cuts: [OpenRouterAssistantCutTarget]
     let sceneChanges: [OpenRouterAssistantSceneChange]
+    let phraseMoves: [OpenRouterAssistantPhraseMove]
 
     enum CodingKeys: String, CodingKey {
         case reply, titles, descriptions, cuts
         case newTakeWording = "new_take_wording"
         case sceneChanges = "scene_changes"
+        case phraseMoves = "phrase_moves"
     }
 
     init(
         reply: String, titles: [String], descriptions: [String],
         newTakeWording: [String], cuts: [OpenRouterAssistantCutTarget],
-        sceneChanges: [OpenRouterAssistantSceneChange] = []
+        sceneChanges: [OpenRouterAssistantSceneChange] = [],
+        phraseMoves: [OpenRouterAssistantPhraseMove] = []
     ) {
         self.reply = reply
         self.titles = titles
@@ -82,6 +85,7 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
         self.newTakeWording = newTakeWording
         self.cuts = cuts
         self.sceneChanges = sceneChanges
+        self.phraseMoves = phraseMoves
     }
 
     init(from decoder: Decoder) throws {
@@ -93,6 +97,9 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
         cuts = try container.decode([OpenRouterAssistantCutTarget].self, forKey: .cuts)
         sceneChanges = try container.decodeIfPresent(
             [OpenRouterAssistantSceneChange].self, forKey: .sceneChanges
+        ) ?? []
+        phraseMoves = try container.decodeIfPresent(
+            [OpenRouterAssistantPhraseMove].self, forKey: .phraseMoves
         ) ?? []
     }
 
@@ -110,8 +117,11 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
                     && $0.reason.count <= 500
             }
             && sceneChanges.count <= 1
-            && (sceneChanges.isEmpty || cuts.isEmpty)
+            && phraseMoves.count <= 1
+            && [!cuts.isEmpty, !sceneChanges.isEmpty, !phraseMoves.isEmpty]
+                .count(where: { $0 }) <= 1
             && sceneChanges.allSatisfy { $0.isValid }
+            && phraseMoves.allSatisfy { $0.isValid }
     }
 
     func reviewedCuts(
@@ -174,11 +184,85 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
             range: selection.start..<selection.end, change: change
         )
     }
+
+    func reviewedMove(
+        context: OpenRouterAssistantContext,
+        timeline: ProjectEditTimeline,
+        revision: Int
+    ) throws -> OpenRouterReviewedMove? {
+        guard let move = phraseMoves.first else { return nil }
+        guard phraseMoves.count == 1, move.isValid,
+              context.scope == .wholeProject,
+              Set(context.words.map(\.id)).count == context.words.count,
+              let firstIndex = context.words.firstIndex(where: { $0.id == move.firstWordID }),
+              let lastIndex = context.words.firstIndex(where: { $0.id == move.lastWordID }),
+              firstIndex <= lastIndex else { throw OpenRouterAssistantError.invalidProposal }
+        let first = context.words[firstIndex]
+        let last = context.words[lastIndex]
+        guard first.timingStatus != .uncertain, last.timingStatus != .uncertain,
+              first.start.isFinite, last.end.isFinite,
+              first.start >= 0, first.start < last.end,
+              last.end <= timeline.duration else { throw OpenRouterAssistantError.invalidProposal }
+        let destination: TimeInterval
+        if move.beforeWordID.isEmpty {
+            destination = timeline.duration
+        } else {
+            guard let target = context.words.first(where: { $0.id == move.beforeWordID }),
+                  target.timingStatus != .uncertain else {
+                throw OpenRouterAssistantError.invalidProposal
+            }
+            destination = target.start
+        }
+        let range = first.start..<last.end
+        guard destination != range.lowerBound, destination != range.upperBound else {
+            throw OpenRouterAssistantError.invalidProposal
+        }
+        var validated = timeline
+        do { try validated.move(range: range, before: destination) }
+        catch { throw OpenRouterAssistantError.invalidProposal }
+        return OpenRouterReviewedMove(
+            projectID: context.projectID, timeline: timeline, revision: revision,
+            range: range, destination: destination, reason: move.reason
+        )
+    }
 }
 
 struct OpenRouterAssistantCutTarget: Codable, Equatable, Sendable {
     let id: String
     let reason: String
+}
+
+struct OpenRouterAssistantPhraseMove: Codable, Equatable, Sendable {
+    let firstWordID: String
+    let lastWordID: String
+    let beforeWordID: String
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case firstWordID = "first_word_id"
+        case lastWordID = "last_word_id"
+        case beforeWordID = "before_word_id"
+        case reason
+    }
+
+    var isValid: Bool {
+        !firstWordID.isEmpty && !lastWordID.isEmpty
+            && !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && reason.count <= 500
+    }
+}
+
+struct OpenRouterReviewedMove: Equatable, Sendable {
+    let projectID: UUID
+    let timeline: ProjectEditTimeline
+    let revision: Int
+    let range: Range<TimeInterval>
+    let destination: TimeInterval
+    let reason: String
+
+    func isCurrent(projectID: UUID, timeline: ProjectEditTimeline, revision: Int) -> Bool {
+        self.projectID == projectID && self.timeline == timeline && self.revision == revision
+    }
 }
 
 enum OpenRouterAssistantSceneLayout: String, Codable, Sendable {
@@ -387,6 +471,15 @@ struct OpenRouterAssistantClient {
             "required": ["layout", "transition", "duration", "reason"],
             "additionalProperties": false,
         ]
+        let phraseMove: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "first_word_id": string, "last_word_id": string,
+                "before_word_id": string, "reason": string,
+            ],
+            "required": ["first_word_id", "last_word_id", "before_word_id", "reason"],
+            "additionalProperties": false,
+        ]
         let schema: [String: Any] = [
             "type": "object",
             "properties": [
@@ -394,11 +487,12 @@ struct OpenRouterAssistantClient {
                 "new_take_wording": strings,
                 "cuts": ["type": "array", "items": cut],
                 "scene_changes": ["type": "array", "items": sceneChange],
+                "phrase_moves": ["type": "array", "items": phraseMove],
             ],
-            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes"],
+            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes", "phrase_moves"],
             "additionalProperties": false,
         ]
-        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
+        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. To move a recorded phrase, use exact first and last word IDs in playback order and a before_word_id for its destination; use an empty before_word_id to append at the end. Phrase moves require whole-project scope and aligned or reviewed timing for the first, last, and destination words. Use no more than one media operation type per reply. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
             + history.map { ["role": $0.role.rawValue, "content": $0.content] }
             + [["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"]]
         let body: [String: Any] = [

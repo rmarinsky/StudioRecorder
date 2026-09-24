@@ -53,6 +53,43 @@ final class ProjectEditRendererTests: XCTestCase {
         session.stop()
     }
 
+    func testArbitraryPhraseMoveExportsTheSameRecordedPictureOrderAsPreview() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).recordingproject")
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "source.mov")
+        let exportURL = rootURL.appending(path: "reordered.mov")
+        let firstFrameURL = rootURL.appending(path: "first.png")
+        let secondFrameURL = rootURL.appending(path: "second.png")
+        try await writeReadableMovie(to: sourceURL)
+        let original = try Data(contentsOf: sourceURL)
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+
+        await session.moveOutputRange(0.5..<1.5, before: 2)
+
+        XCTAssertEqual(try XCTUnwrap(session.timeline?.sourceTime(at: 0.75)), 1.75, accuracy: 0.05)
+        XCTAssertEqual(try XCTUnwrap(session.timeline?.sourceTime(at: 1.25)), 0.75, accuracy: 0.05)
+        try await session.exportEditedMovie(to: exportURL)
+        let exporter = ProjectMediaExporter()
+        try await exporter.exportScreenshot(from: exportURL, at: 0.75, to: firstFrameURL)
+        try await exporter.exportScreenshot(from: exportURL, at: 1.25, to: secondFrameURL)
+        let first = try averageColor(in: firstFrameURL)
+        let second = try averageColor(in: secondFrameURL)
+        XCTAssertGreaterThan(first.red, 240)
+        XCTAssertGreaterThan(first.green, 240)
+        XCTAssertGreaterThan(first.blue, 240)
+        XCTAssertGreaterThan(second.green, second.red)
+        XCTAssertGreaterThan(second.green, second.blue)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), original)
+        session.stop()
+    }
+
     func testSelectedRangeCutExportsShorterMovieWithoutChangingRawMedia() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
@@ -425,6 +462,42 @@ final class ProjectEditRendererTests: XCTestCase {
         let loaded = try await store.load(from: rootURL, expectedProjectID: projectID)
         let reloaded = try XCTUnwrap(loaded)
         XCTAssertEqual(reloaded.segmentAudioAdjustment(for: otherID).gain, 0.6, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testMovingPhraseRetainsAudioAdjustmentForEverySplitAndCanUndo() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let firstID = UUID()
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 0.1, initialSegmentID: firstID)
+        let store = ProjectEditStore()
+        try await store.save(ProjectEditDocument(
+            projectID: projectID, timelines: [timeline],
+            segmentAudioAdjustments: [ProjectSegmentAudioAdjustment(segmentID: firstID, gain: 0.3)]
+        ), in: rootURL)
+        let track = RecordingTrackDescriptor(
+            id: "program", kind: .program, displayID: nil,
+            relativePath: sourceURL.lastPathComponent
+        )
+        let session = ProjectEditSession(store: store)
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: track, sourceURL: sourceURL, programSources: nil,
+            initialPresentation: .default
+        )
+
+        await session.moveOutputRange(0.02..<0.04, before: 0.08)
+
+        XCTAssertEqual(session.timeline?.segments.map(\.sourceStart), [0, 0.04, 0.02, 0.08])
+        XCTAssertEqual(session.segmentAudioAdjustments.count, 4)
+        XCTAssertTrue(session.segmentAudioAdjustments.allSatisfy { abs($0.gain - 0.3) < 0.001 })
+        await session.undo()
+        XCTAssertEqual(session.timeline, timeline)
+        session.stop()
     }
 
     @MainActor
