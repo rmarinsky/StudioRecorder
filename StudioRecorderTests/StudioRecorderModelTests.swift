@@ -551,6 +551,17 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot.route, .projects)
     }
 
+    func testProjectsNavigationReturnsFromOpenEditorToProjectLibrary() {
+        let project = interruptedProject()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.projects = [project]
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.openProject(project.id)), .projectOpened(project.id))
+        XCTAssertEqual(model.send(.selectRoute(.projects)), .routeChanged(.projects))
+        XCTAssertNil(model.snapshot.selectedProjectID)
+    }
+
     func testRecoveryRouteRequiresAnInterruptedProject() {
         let emptyModel = StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot())
         XCTAssertEqual(emptyModel.send(.selectRoute(.recovery)), .ignored)

@@ -590,6 +590,9 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.route = route
+            if route == .projects {
+                snapshot.selectedProjectID = nil
+            }
             if route == .studio, snapshot.studioDraft == nil, snapshot.activeCaptureRequest == nil {
                 createFreshStudioDraft()
             }
