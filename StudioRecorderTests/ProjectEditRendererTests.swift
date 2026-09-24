@@ -90,6 +90,45 @@ final class ProjectEditRendererTests: XCTestCase {
         session.stop()
     }
 
+    func testProposedRangePreviewDoesNotChangeSavedTimeline() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "source.mov")
+        try await writeReadableMovie(to: sourceURL)
+        let originalBytes = try Data(contentsOf: sourceURL)
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        let originalTimeline = try XCTUnwrap(session.timeline)
+        var candidate = originalTimeline
+        try candidate.move(range: 0.5..<1.5, before: 2)
+
+        await session.previewProposal(timeline: candidate, at: 0.75)
+
+        let preview = try XCTUnwrap(session.proposalPlayer?.currentItem)
+        let generator = AVAssetImageGenerator(asset: preview.asset)
+        let color = try color(in: await generator.image(
+            at: CMTime(seconds: 0.75, preferredTimescale: 600)
+        ).image, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(color.red, 240)
+        XCTAssertGreaterThan(color.blue, 240)
+        XCTAssertEqual(session.timeline, originalTimeline)
+        XCTAssertFalse(session.canUndo)
+        session.dismissProposalPreview()
+        XCTAssertNil(session.proposalPlayer)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
+        await session.previewProposal(timeline: candidate, at: 0.75)
+        var updatedPresentation = session.presentation
+        updatedPresentation.name = "Changed while reviewing"
+        session.updatePresentation(updatedPresentation)
+        XCTAssertNil(session.proposalPlayer)
+        session.stop()
+    }
+
     func testSelectedRangeCutExportsShorterMovieWithoutChangingRawMedia() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
@@ -970,6 +1009,55 @@ final class ProjectEditRendererTests: XCTestCase {
                             sourceURL: screenURL, programSources: sources, initialPresentation: screen)
         XCTAssertEqual(reopened.sceneTimeline, editedScenes)
         reopened.stop()
+    }
+
+    func testSceneProposalPreviewsCapturedCameraWithoutSavingChange() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let cameraURL = directory.appending(path: "camera.mov")
+        try await writeReadableMovie(to: screenURL, colors: Array(repeating: 0xFF0000FF, count: 5))
+        try await writeReadableMovie(to: cameraURL, colors: Array(repeating: 0xFFFF0000, count: 5))
+        var screen = CapturePresentationSnapshot.default
+        screen.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        screen.camera.isVisible = false
+        var camera = screen
+        camera.screen.isVisible = false
+        camera.camera = SourcePlacementSnapshot(
+            centerX: 0.5, centerY: 0.5, width: 1, height: 1, shape: .rectangle
+        )
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: directory,
+            track: .init(id: "screen", kind: .screen, displayID: nil, relativePath: "screen.mov"),
+            sourceURL: screenURL,
+            programSources: ProjectProgramSources(screenURL: screenURL, cameraURL: cameraURL),
+            initialPresentation: screen
+        )
+
+        await session.previewScene(
+            to: 0.5..<1.2, presentation: camera, displayID: nil, transition: .cut
+        )
+
+        let preview = try XCTUnwrap(session.proposalPlayer?.currentItem)
+        let generator = AVAssetImageGenerator(asset: preview.asset)
+        generator.videoComposition = try XCTUnwrap(preview.videoComposition)
+        let inside = try color(in: await generator.image(
+            at: CMTime(seconds: 0.8, preferredTimescale: 600)
+        ).image, normalizedX: 0.5, normalizedY: 0.5)
+        XCTAssertGreaterThan(inside.red, 180)
+        XCTAssertLessThan(inside.blue, 80)
+        XCTAssertNil(session.sceneTimeline)
+        XCTAssertFalse(session.canUndo)
+        session.dismissProposalPreview()
+        XCTAssertNil(session.proposalPlayer)
+        let revision = session.editRevision
+        await session.applyScene(
+            to: 0.5..<1.2, presentation: camera, displayID: nil, transition: .cut
+        )
+        XCTAssertGreaterThan(session.editRevision, revision)
+        session.stop()
     }
 
     func testEditorSceneRejectsCameraWhenNoCameraWasCaptured() async throws {

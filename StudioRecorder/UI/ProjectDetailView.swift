@@ -252,10 +252,13 @@ struct ProjectDetailView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     HStack {
-                        Button("Review") { selectedRange = pendingAssistantCuts.ranges.first }
+                        Button("Review") { reviewAssistantCuts() }
                         Button("Apply") { applyAssistantCuts() }
                             .disabled(editSession.isWorking || !editSession.canPersistEdits)
-                        Button("Dismiss") { self.pendingAssistantCuts = nil }
+                        Button("Dismiss") {
+                            self.pendingAssistantCuts = nil
+                            editSession.dismissProposalPreview()
+                        }
                     }
                     .buttonStyle(.borderless)
                     HStack {
@@ -281,10 +284,13 @@ struct ProjectDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack {
-                        Button("Review") { selectedRange = pendingAssistantScene.range }
+                        Button("Review") { reviewAssistantScene() }
                         Button("Apply") { applyAssistantScene() }
                             .disabled(editSession.isWorking || !editSession.canEditRecordedScenes)
-                        Button("Dismiss") { self.pendingAssistantScene = nil }
+                        Button("Dismiss") {
+                            self.pendingAssistantScene = nil
+                            editSession.dismissProposalPreview()
+                        }
                     }
                     .buttonStyle(.borderless)
                     HStack {
@@ -312,10 +318,13 @@ struct ProjectDetailView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     HStack {
-                        Button("Review") { selectedRange = pendingAssistantMove.range }
+                        Button("Review") { reviewAssistantMove() }
                         Button("Apply") { applyAssistantMove() }
                             .disabled(editSession.isWorking || !editSession.canPersistEdits)
-                        Button("Dismiss") { self.pendingAssistantMove = nil }
+                        Button("Dismiss") {
+                            self.pendingAssistantMove = nil
+                            editSession.dismissProposalPreview()
+                        }
                     }
                     .buttonStyle(.borderless)
                     HStack {
@@ -538,6 +547,92 @@ struct ProjectDetailView: View {
                 pendingAssistantCuts = nil
                 selectedRange = nil
             }
+        }
+    }
+
+    private func reviewAssistantCuts() {
+        guard let proposal = pendingAssistantCuts,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        do {
+            var candidate = timeline
+            try candidate.delete(ranges: proposal.ranges)
+            selectedRange = proposal.ranges.first
+            Task {
+                guard let current = editSession.timeline,
+                      proposal.isCurrent(
+                        projectID: projectID, timeline: current,
+                        revision: editSession.editRevision
+                      ) else { return }
+                await editSession.previewProposal(
+                    timeline: candidate,
+                    at: min(proposal.ranges.first?.lowerBound ?? 0, candidate.duration)
+                )
+                assistantError = editSession.errorMessage
+            }
+        } catch {
+            assistantError = error.localizedDescription
+        }
+    }
+
+    private func reviewAssistantScene() {
+        guard let proposal = pendingAssistantScene,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), let current = editSession.scenePresentation(for: proposal.range),
+              (proposal.change.overlayID.map { overlayID in
+                  current.resolvedImageOverlays.contains { $0.id == overlayID }
+              } ?? true) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        selectedRange = proposal.range
+        Task {
+            guard let latest = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: latest,
+                    revision: editSession.editRevision
+                  ) else { return }
+            await editSession.previewScene(
+                to: proposal.range,
+                presentation: proposal.change.presentation(from: current),
+                displayID: proposal.change.displayID
+                    ?? editSession.sceneDisplayID(for: proposal.range),
+                transition: StudioSceneTransitionConfiguration(
+                    effect: proposal.change.transition, duration: proposal.change.duration
+                )
+            )
+            assistantError = editSession.errorMessage
+        }
+    }
+
+    private func reviewAssistantMove() {
+        guard let proposal = pendingAssistantMove,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        selectedRange = proposal.range
+        Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current,
+                    revision: editSession.editRevision
+                  ) else { return }
+            await editSession.previewMove(proposal.range, before: proposal.destination)
+            assistantError = editSession.errorMessage
         }
     }
 
@@ -910,7 +1005,23 @@ struct ProjectDetailView: View {
             .frame(height: 42)
             .background(detailPanel)
             Divider()
-            NativeVideoPlayer(player: editSession.player)
+            if editSession.proposalPlayer != nil {
+                HStack {
+                    Label("Proposed output preview", systemImage: "play.rectangle")
+                        .font(.caption)
+                    Text("Timeline marks show the current edit until Apply.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Close Preview") { editSession.dismissProposalPreview() }
+                        .font(.caption)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(detailPanel)
+                Divider()
+            }
+            NativeVideoPlayer(player: editSession.proposalPlayer ?? editSession.player)
                 .background(Color.black)
                 .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
