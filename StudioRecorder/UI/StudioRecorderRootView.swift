@@ -168,39 +168,30 @@ struct StudioRecorderRootView: View {
     }
 
     private var presentedRoot: some View {
-        HStack(spacing: 0) {
-            appSidebar
-                .frame(width: 220)
-
-            Rectangle()
-                .fill(shellStroke)
-                .frame(width: 1)
-
-            VStack(spacing: 0) {
-                appTopBar
-                Rectangle().fill(shellStroke).frame(height: 1)
-                Group {
-                    switch snapshot.route {
-                    case .projects:
-                        projectsView
-                    case .studio:
-                        studioDestination
-                    case .settings:
-                        SettingsView(
-                            model: model,
-                            preferencesStore: preferencesStore,
-                            streamingSettings: streamingSettings,
-                            managedYouTube: managedYouTube,
-                            embedded: true,
-                            selectedTab: selectedSettingsTab
-                        )
-                    case .recovery:
-                        recoveryView
-                    }
+        VStack(spacing: 0) {
+            appTopBar
+            Rectangle().fill(shellStroke).frame(height: 1)
+            Group {
+                switch snapshot.route {
+                case .projects:
+                    projectsView
+                case .studio:
+                    studioDestination
+                case .settings:
+                    SettingsView(
+                        model: model,
+                        preferencesStore: preferencesStore,
+                        streamingSettings: streamingSettings,
+                        managedYouTube: managedYouTube,
+                        embedded: true,
+                        selectedTab: selectedSettingsTab
+                    )
+                case .recovery:
+                    recoveryView
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(shellContent)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(shellContent)
         }
         .background(shellContent)
         .background(WindowChromeConfigurator())
@@ -310,128 +301,82 @@ struct StudioRecorderRootView: View {
         colorScheme == .dark ? Color.white.opacity(0.075) : Color.black.opacity(0.09)
     }
 
-    private var appSidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 9) {
-                Image(systemName: "recordingtape.circle.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(coral)
-                Text("Studio Recorder")
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .padding(.top, 46)
-            .padding(.horizontal, 18)
-            .padding(.bottom, 20)
-
-            VStack(spacing: 5) {
-                sidebarButton("Projects", icon: "square.stack", route: .projects)
-                sidebarButton("Studio", icon: "record.circle", route: .studio)
-                if !snapshot.interruptedProjects.isEmpty {
-                    sidebarButton(
-                        "Recovery",
-                        icon: "lifepreserver",
-                        route: .recovery,
-                        badge: snapshot.interruptedProjects.count
-                    )
-                }
-            }
-            .padding(.horizontal, 10)
-
-            Spacer()
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("LOCAL-FIRST MEDIA")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Text("Recoverable by default")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 18)
-            .padding(.bottom, 14)
-
-            Button {
-                openWindow(id: "settings")
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 12)
-        }
-        .background(shellPanel)
-    }
-
-    private func sidebarButton(
-        _ title: String,
-        icon: String,
-        route: MainRoute,
-        badge: Int? = nil
-    ) -> some View {
+    private func routeButton(_ title: String, icon: String, route: MainRoute) -> some View {
         let isSelected = snapshot.route == route
         return Button {
             resetManualZoomIfNeeded()
             model.send(.selectRoute(route))
         } label: {
-            HStack(spacing: 9) {
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(isSelected ? coral : Color.secondary)
-                    .frame(width: 18)
                 Text(title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                Spacer()
-                if let badge {
-                    Text("\(badge)")
-                        .font(.system(size: 9, weight: .bold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
+            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+            .padding(.horizontal, 11)
+            .frame(height: 29)
             .contentShape(Rectangle())
-            .background(isSelected ? shellRaised : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+            .background(isSelected ? shellRaised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var appTopBar: some View {
-        ZStack {
-            Text(routeTitle)
+        HStack(spacing: 10) {
+            Image(systemName: "recordingtape.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(coral)
+                .accessibilityHidden(true)
+            Text("Studio Recorder")
                 .font(.system(size: 12, weight: .semibold))
+                .fixedSize()
 
-            HStack(spacing: 8) {
-                Spacer()
-                if snapshot.route == .projects {
-                    Button { openVideoForGIF() } label: {
-                        Label("Video to GIF", systemImage: "photo.stack")
-                    }
-                        .buttonStyle(.bordered)
-                    Button { beginNewRecording() } label: {
-                        Label("New Recording", systemImage: "record.circle")
-                    }
-                        .buttonStyle(.borderedProminent)
-                        .tint(coral)
-                } else if snapshot.route == .studio {
-                    HStack(spacing: 6) {
-                        Circle().fill(statusColor).frame(width: 6, height: 6)
-                        Text(snapshot.captureState.label)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            Rectangle().fill(shellStroke).frame(width: 1, height: 19)
+                .padding(.horizontal, 3)
+            routeButton("Projects", icon: "square.stack", route: .projects)
+            routeButton("Studio", icon: "record.circle", route: .studio)
+
+            if let project = snapshot.projects.first(where: { $0.id == snapshot.selectedProjectID }) {
+                Text(projectTitle(project))
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 5)
+            } else if snapshot.route == .settings || snapshot.route == .recovery {
+                Text(routeTitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16)
+
+            Spacer(minLength: 8)
+
+            if !snapshot.interruptedProjects.isEmpty {
+                routeButton("Recovery (\(snapshot.interruptedProjects.count))", icon: "lifepreserver", route: .recovery)
+            }
+            if snapshot.route == .projects, snapshot.selectedProjectID == nil {
+                Button("Video to GIF", systemImage: "photo.stack", action: openVideoForGIF)
+                    .labelStyle(.iconOnly)
+                    .help("Video to GIF")
+            }
+            if snapshot.route == .studio {
+                Text(snapshot.captureState.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+            }
+            Button("New Recording", systemImage: "plus", action: beginNewRecording)
+                .disabled(isDeliveryActive || snapshot.captureState == .stopping || isPreparingProgram)
+            Button("Settings", systemImage: "gearshape") {
+                openWindow(id: "settings")
+            }
+            .labelStyle(.iconOnly)
+            .help("Settings")
         }
         .frame(height: 52)
+        .padding(.leading, 84)
+        .padding(.trailing, 16)
+        .buttonStyle(.borderless)
         .background(shellPanel)
         .simultaneousGesture(WindowDragGesture())
     }
@@ -931,12 +876,12 @@ struct StudioRecorderRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 20) {
+                        HStack(alignment: .center, spacing: 24) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Projects")
-                                    .font(.largeTitle.weight(.semibold))
-                                Text("Recordings, retained source tracks, and non-destructive edits.")
+                                    .font(.title2.weight(.semibold))
+                                Text("Your recordings and their current processing state.")
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -968,35 +913,28 @@ struct StudioRecorderRootView: View {
                             .foregroundStyle(.orange)
                         }
 
-                        if let featuredProject = filteredProjects.first {
-                            featuredProjectCard(featuredProject)
-
-                            if filteredProjects.count > 1 {
-                                Text("Recent recordings")
-                                    .font(.headline)
-
-                                VStack(spacing: 0) {
-                                    ForEach(Array(filteredProjects.dropFirst().enumerated()), id: \.element.id) { index, project in
-                                        Button {
-                                            model.send(.openProject(project.id))
-                                        } label: {
-                                            ProjectRow(project: project)
-                                                .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                        if index < filteredProjects.count - 2 {
-                                            Divider().padding(.leading, 108)
-                                        }
+                        if !filteredProjects.isEmpty {
+                            LazyVStack(spacing: 0) {
+                                ForEach(Array(filteredProjects.enumerated()), id: \.element.id) { index, project in
+                                    Button {
+                                        model.send(.openProject(project.id))
+                                    } label: {
+                                        ProjectRow(project: project)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    if index < filteredProjects.count - 1 {
+                                        Divider().padding(.leading, 108)
                                     }
                                 }
-                                .padding(.horizontal, 14)
-                                .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
                             }
+                            .padding(.horizontal, 14)
+                            .background(shellPanel.opacity(0.55))
                         } else {
                             ContentUnavailableView.search(text: projectSearchText)
                         }
                     }
-                    .padding(28)
+                    .padding(24)
                 }
                 .navigationTitle("Projects")
             }
@@ -1009,52 +947,6 @@ struct StudioRecorderRootView: View {
         return snapshot.projects.filter { project in
             projectTitle(project).localizedCaseInsensitiveContains(query)
                 || project.captureProfile.localizedCaseInsensitiveContains(query)
-        }
-    }
-
-    private func featuredProjectCard(_ project: RecordingProjectSnapshot) -> some View {
-        HStack(spacing: 22) {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(coral.opacity(0.16))
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .frame(width: 270)
-                .overlay {
-                    Image(systemName: project.lifecycle == .finalized ? "play.rectangle.fill" : "waveform.badge.exclamationmark")
-                        .font(.system(size: 38, weight: .light))
-                        .foregroundStyle(project.lifecycle == .finalized ? coral : Color.orange)
-                }
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("LATEST PROJECT")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(projectTitle(project))
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(2)
-                Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s")  ·  \(project.captureProfile)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                Spacer(minLength: 4)
-                HStack {
-                    Button("Open Project") { model.send(.openProject(project.id)) }
-                        .buttonStyle(.borderedProminent)
-                        .tint(coral)
-                    Button("Reveal in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([project.rootURL])
-                    }
-                }
-            }
-            .padding(.vertical, 4)
-            Spacer()
-        }
-        .padding(18)
-        .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.secondary.opacity(0.11), lineWidth: 1)
         }
     }
 
@@ -1307,7 +1199,7 @@ struct StudioRecorderRootView: View {
                             }
                         }
                 }
-                .padding(20)
+                .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 StudioInspector(
@@ -1387,7 +1279,7 @@ struct StudioRecorderRootView: View {
                         || isPreparingProgram,
                     isPresentationLocked: isPresentationEditingLocked
                 )
-                .frame(width: 304)
+                .frame(width: 280)
                 .background(shellPanel)
             }
 
@@ -2929,19 +2821,32 @@ private struct CaptureTransitionOverlay: View {
 
 private struct ProjectRow: View {
     let project: RecordingProjectSnapshot
+    @State private var previewImage: NSImage?
+    @State private var duration: TimeInterval?
 
     var body: some View {
         HStack(spacing: 14) {
             RoundedRectangle(cornerRadius: 7)
                 .fill(statusColor.opacity(0.18))
                 .frame(width: 92, height: 54)
-                .overlay(Image(systemName: statusIcon).foregroundStyle(statusColor))
+                .overlay {
+                    if let previewImage {
+                        Image(nsImage: previewImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 92, height: 54)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                    } else {
+                        Image(systemName: statusIcon).foregroundStyle(statusColor)
+                    }
+                }
             VStack(alignment: .leading, spacing: 4) {
                 Text(project.recordingName ?? project.presentation?.resolvedName ?? "Untitled Recording")
                     .fontWeight(.medium)
-                Text("\(project.displayCount) display\(project.displayCount == 1 ? "" : "s") · \(project.captureProfile)")
+                Text("\(retentionLabel) · \(project.captureProfile)")
                     .font(.caption).foregroundStyle(.secondary)
-                Text(project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                Text([project.createdAt.formatted(date: .abbreviated, time: .shortened), duration.map { formatDuration($0) }].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
             Spacer()
@@ -2949,14 +2854,65 @@ private struct ProjectRow: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(statusColor)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 9)
+        .task(id: "\(project.id)-\(project.lifecycle.rawValue)") {
+            await loadPreview()
+        }
+    }
+
+    private var retentionLabel: String {
+        if project.lifecycle == .recording || project.lifecycle == .finalizing {
+            return "Preparing sources"
+        }
+        if playableTracks.contains(where: { $0.kind == .screen || $0.kind == .camera }) {
+            return "Editable tracks"
+        }
+        if playableTracks.contains(where: { $0.kind == .program }) {
+            return "Program movie"
+        }
+        return "Sources unavailable"
+    }
+
+    private var playableTracks: [RecordingTrackDescriptor] {
+        project.recoveryReport.tracks.compactMap { track in
+            switch track.state {
+            case .finalized, .partialReadable: track.descriptor
+            case .missing, .unreadable, .unknownV1: nil
+            }
+        }
+    }
+
+    private func loadPreview() async {
+        previewImage = nil
+        duration = nil
+        guard project.lifecycle == .finalized || project.lifecycle == .recovered else { return }
+        guard let track = playableTracks.first(where: { $0.kind == .program })
+            ?? playableTracks.first(where: { $0.kind == .screen }) else { return }
+        let asset = AVURLAsset(url: project.rootURL.appending(path: track.relativePath))
+        let seconds = try? await asset.load(.duration).seconds
+        if let seconds, seconds.isFinite, seconds > 0 {
+            duration = seconds
+        }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        if let frame = try? await generator.image(at: .zero) {
+            previewImage = NSImage(cgImage: frame.image, size: .zero)
+        }
+    }
+
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        let whole = Int(seconds.rounded())
+        if whole >= 3_600 {
+            return String(format: "%d:%02d:%02d", whole / 3_600, (whole / 60) % 60, whole % 60)
+        }
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
     }
 
     private var statusLabel: String {
         switch project.lifecycle {
         case .recording: "Recording"
         case .finalizing: "Finalizing"
-        case .finalized: "Finalized"
+        case .finalized: "Ready"
         case .recovered: "Recovered"
         case .needsRecovery: "Needs recovery"
         case .unreadable: "Unreadable"
