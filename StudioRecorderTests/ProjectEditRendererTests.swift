@@ -126,6 +126,9 @@ final class ProjectEditRendererTests: XCTestCase {
         updatedPresentation.name = "Changed while reviewing"
         session.updatePresentation(updatedPresentation)
         XCTAssertNil(session.proposalPlayer)
+        await session.previewProposal(timeline: candidate, at: 0.75)
+        await session.addPrivacyOverlay(style: .solid)
+        XCTAssertNil(session.proposalPlayer)
         session.stop()
     }
 

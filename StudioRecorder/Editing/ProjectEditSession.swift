@@ -1201,6 +1201,7 @@ final class ProjectEditSession: ObservableObject {
               let timeline,
               let projectRootURL,
               var nextDocument = document else { return }
+        dismissProposalPreview()
         documentSaveTask?.cancel()
         presentationRenderTask?.cancel()
         let operationID = loadID
