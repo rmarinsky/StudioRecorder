@@ -18,6 +18,12 @@ struct OpenRouterAssistantContext: Codable, Equatable, Sendable {
     let words: [OpenRouterAssistantWord]
 }
 
+struct OpenRouterAssistantTurn: Equatable, Sendable {
+    enum Role: String, Sendable { case user, assistant }
+    let role: Role
+    let content: String
+}
+
 struct OpenRouterAssistantModel: Equatable, Identifiable, Sendable {
     let id: String
     let name: String
@@ -102,7 +108,7 @@ struct OpenRouterAssistantClient {
             let data: [Model]
         }
         return try JSONDecoder().decode(Catalog.self, from: data).data
-            .filter { $0.supportedParameters.contains("response_format")
+            .filter { $0.supportedParameters.contains("structured_outputs")
                 && $0.architecture.outputModalities.contains("text") }
             .map { OpenRouterAssistantModel(id: $0.id, name: $0.name) }
             .sorted { $0.id == defaultModel ? true : $1.id == defaultModel ? false : $0.name < $1.name }
@@ -121,13 +127,16 @@ struct OpenRouterAssistantClient {
 
     func draft(
         apiKey: String, model: String, prompt: String,
-        context: OpenRouterAssistantContext
+        context: OpenRouterAssistantContext,
+        history: [OpenRouterAssistantTurn] = []
     ) async throws -> OpenRouterAssistantDraft {
         let models = try await availableModels(apiKey: apiKey)
         guard models.contains(where: { $0.id == model }) else {
             throw OpenRouterAssistantError.unsupportedModel
         }
-        let request = try draftRequest(apiKey: apiKey, model: model, prompt: prompt, context: context)
+        let request = try draftRequest(
+            apiKey: apiKey, model: model, prompt: prompt, context: context, history: history
+        )
         let (data, response) = try await session.data(for: request)
         try Self.check(response)
         return try Self.parseDraft(from: data)
@@ -135,12 +144,18 @@ struct OpenRouterAssistantClient {
 
     func draftRequest(
         apiKey: String, model: String, prompt: String,
-        context: OpenRouterAssistantContext
+        context: OpenRouterAssistantContext,
+        history: [OpenRouterAssistantTurn] = []
     ) throws -> URLRequest {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw OpenRouterAssistantError.missingKey
         }
         guard !model.isEmpty, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              history.count <= 12,
+              history.allSatisfy({
+                  !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && $0.content.count <= 12_000
+              }),
               context.words.allSatisfy({
                   $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.start < $0.end
               }) else { throw OpenRouterAssistantError.invalidContext }
@@ -157,6 +172,9 @@ struct OpenRouterAssistantClient {
             "required": ["reply", "titles", "descriptions", "new_take_wording"],
             "additionalProperties": false,
         ]
+        let messages = [["role": "system", "content": "You assist with a recorded video. Return only reviewed text suggestions. New wording is a script for another take, never recorded speech. Do not invent word timings or claim to have changed media."]]
+            + history.map { ["role": $0.role.rawValue, "content": $0.content] }
+            + [["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"]]
         let body: [String: Any] = [
             "model": model,
             "provider": ["require_parameters": true],
@@ -164,10 +182,7 @@ struct OpenRouterAssistantClient {
                 "type": "json_schema",
                 "json_schema": ["name": "studio_recorder_draft", "strict": true, "schema": schema],
             ],
-            "messages": [
-                ["role": "system", "content": "You assist with a recorded video. Return only reviewed text suggestions. New wording is a script for another take, never recorded speech. Do not invent word timings or claim to have changed media."],
-                ["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"],
-            ],
+            "messages": messages,
         ]
         var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
         request.httpMethod = "POST"

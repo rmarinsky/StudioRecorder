@@ -5,6 +5,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ProjectDetailView: View {
+    private struct AssistantMessage: Identifiable {
+        let id = UUID()
+        let role: String
+        let text: String
+        let draft: OpenRouterAssistantDraft?
+    }
+
     let project: RecordingProjectSnapshot
     let onClose: () -> Void
     let exportRequest: Int
@@ -31,6 +38,12 @@ struct ProjectDetailView: View {
     @State private var transcriptSearch = ""
     @State private var selectedWordOccurrenceID: String?
     @State private var transcriptError: String?
+    @AppStorage("openRouter.model") private var assistantModel = OpenRouterAssistantClient.defaultModel
+    @State private var assistantPrompt = ""
+    @State private var assistantScope = OpenRouterAssistantScope.wholeProject
+    @State private var assistantMessages: [AssistantMessage] = []
+    @State private var assistantError: String?
+    @State private var isAssistantWorking = false
 
     private let exporter = ProjectMediaExporter()
 
@@ -65,13 +78,13 @@ struct ProjectDetailView: View {
                 HSplitView {
                     if isAssistantVisible {
                         assistantPanel
-                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 330)
+                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 260)
                     }
                     editorCenter
                         .frame(minWidth: 470, maxWidth: .infinity)
                     if isTranscriptVisible {
                         transcriptPanel
-                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 330)
+                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 260)
                     }
                 }
             } else {
@@ -90,6 +103,11 @@ struct ProjectDetailView: View {
         }
         .task(id: programScreenTrackID) { await loadProgram() }
         .task(id: project.id) { loadTranscript() }
+        .onChange(of: project.id) { _, _ in
+            assistantMessages = []
+            assistantPrompt = ""
+            assistantError = nil
+        }
         .onDisappear {
             editSession.stop()
             cancelGIFPreparation()
@@ -130,20 +148,136 @@ struct ProjectDetailView: View {
             }
             .padding(14)
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Local edit commands")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                ProjectQuickEditorView(session: editSession, onExportMovie: {}, commandsOnly: true)
-                Text("OpenRouter chat and reviewed suggestions are not connected yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if assistantMessages.isEmpty {
+                        Text("Ask for titles, descriptions, or wording for a new take.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("The assistant sends transcript text for the chosen scope. It cannot change the recording from this chat yet.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(assistantMessages) { message in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(message.role)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(message.text)
+                                .font(.caption)
+                                .textSelection(.enabled)
+                            if let draft = message.draft {
+                                ForEach(draft.titles, id: \.self) { title in
+                                    Label(title, systemImage: "textformat")
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                                ForEach(draft.descriptions, id: \.self) { description in
+                                    Text(description)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                                ForEach(draft.newTakeWording, id: \.self) { wording in
+                                    Label(wording, systemImage: "mic")
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                }
+                .padding(12)
             }
-            .padding(14)
-            Spacer()
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Context", selection: $assistantScope) {
+                    Text("Whole project").tag(OpenRouterAssistantScope.wholeProject)
+                    Text("Selection").tag(OpenRouterAssistantScope.selection)
+                }
+                .pickerStyle(.segmented)
+                if assistantScope == .selection, selectedRange == nil {
+                    Text("Select a range on the timeline first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                TextField("Ask Assistant", text: $assistantPrompt, axis: .vertical)
+                    .lineLimit(2...4)
+                    .onSubmit { sendAssistantPrompt() }
+                HStack {
+                    Text(assistantModel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(isAssistantWorking ? "Thinking…" : "Send") { sendAssistantPrompt() }
+                        .disabled(isAssistantWorking
+                                  || assistantPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || (assistantScope == .selection && selectedRange == nil))
+                }
+                if let assistantError {
+                    Text(assistantError)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(12)
+            Divider()
+            DisclosureGroup("Local edit tools") {
+                ProjectQuickEditorView(session: editSession, onExportMovie: {}, commandsOnly: true)
+            }
+            .font(.caption)
+            .padding(12)
         }
         .background(detailPanel)
+    }
+
+    private func sendAssistantPrompt() {
+        let prompt = assistantPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !isAssistantWorking,
+              let projectID = project.identity.manifestID else { return }
+        let scope = assistantScope
+        guard scope == .wholeProject || selectedRange != nil else { return }
+        let words: [OpenRouterAssistantWord] = {
+            guard let transcript, let timeline = editSession.timeline else { return [] }
+            return transcript.words(in: timeline)
+                .filter { word in
+                    guard scope == .selection, let selectedRange else { return true }
+                    return word.outputStart < selectedRange.upperBound
+                        && word.outputEnd > selectedRange.lowerBound
+                }
+                .map { OpenRouterAssistantWord(
+                    id: $0.sourceWordID, text: $0.text,
+                    start: $0.outputStart, end: $0.outputEnd
+                ) }
+        }()
+        let history = assistantMessages.suffix(12).map { message in
+            OpenRouterAssistantTurn(
+                role: message.role == "You" ? .user : .assistant,
+                content: message.text
+            )
+        }
+        assistantPrompt = ""
+        assistantError = nil
+        assistantMessages.append(AssistantMessage(role: "You", text: prompt, draft: nil))
+        isAssistantWorking = true
+        Task {
+            defer { isAssistantWorking = false }
+            do {
+                guard let key = try OpenRouterAssistantKeyStore().load() else {
+                    throw OpenRouterAssistantError.missingKey
+                }
+                let context = OpenRouterAssistantContext(projectID: projectID, scope: scope, words: words)
+                let draft = try await OpenRouterAssistantClient().draft(
+                    apiKey: key, model: assistantModel, prompt: prompt, context: context,
+                    history: history
+                )
+                assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
+            } catch {
+                assistantError = error.localizedDescription
+            }
+        }
     }
 
     private var transcriptPanel: some View {

@@ -3,6 +3,7 @@ import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Hashable {
     case general
+    case assistant
     case audio
     case streaming
     case storage
@@ -13,6 +14,7 @@ enum SettingsTab: String, CaseIterable, Hashable {
     var icon: String {
         switch self {
         case .general: "gearshape"
+        case .assistant: "sparkles"
         case .audio: "waveform"
         case .streaming: "dot.radiowaves.left.and.right"
         case .storage: "internaldrive"
@@ -33,6 +35,12 @@ struct SettingsView: View {
     @AppStorage("controlPanelShowsScenes") private var controlPanelShowsScenes = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingYouTubeAuthorization = false
+    @AppStorage("openRouter.model") private var selectedAssistantModel = OpenRouterAssistantClient.defaultModel
+    @State private var assistantKeyInput = ""
+    @State private var hasAssistantKey = false
+    @State private var assistantModels: [OpenRouterAssistantModel] = []
+    @State private var assistantStatus: String?
+    @State private var isLoadingAssistantModels = false
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
     private var windowTab: SettingsTab {
@@ -127,6 +135,7 @@ struct SettingsView: View {
     private func selectedSettings(for tab: SettingsTab) -> some View {
         switch tab {
         case .general: generalSettings
+        case .assistant: assistantSettings
         case .audio: audioSettings
         case .streaming: streamingSettingsView
         case .storage: storageSettings
@@ -149,6 +158,104 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var assistantSettings: some View {
+        Form {
+            Section("OpenRouter") {
+                SecureField("API key", text: $assistantKeyInput)
+                    .textContentType(.password)
+                HStack {
+                    Button("Save key") { saveAssistantKey() }
+                        .disabled(assistantKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Remove key") { removeAssistantKey() }
+                        .disabled(!hasAssistantKey)
+                    Text(hasAssistantKey ? "Key saved in Keychain" : "No key saved")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Requests send transcript text and timing IDs for the chosen scope. Raw audio and video stay on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Model") {
+                Picker("Structured reply model", selection: $selectedAssistantModel) {
+                    if assistantModels.isEmpty {
+                        Text(selectedAssistantModel).tag(selectedAssistantModel)
+                    } else {
+                        ForEach(assistantModels) { model in
+                            Text(model.name).tag(model.id)
+                        }
+                    }
+                }
+                .disabled(assistantModels.isEmpty)
+                Button(isLoadingAssistantModels ? "Checking…" : "Refresh compatible models") {
+                    Task { await refreshAssistantModels() }
+                }
+                .disabled(!hasAssistantKey || isLoadingAssistantModels)
+                if let assistantStatus {
+                    Text(assistantStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task { loadAssistantKeyStatus() }
+    }
+
+    private func loadAssistantKeyStatus() {
+        do {
+            hasAssistantKey = try OpenRouterAssistantKeyStore().load() != nil
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func saveAssistantKey() {
+        do {
+            try OpenRouterAssistantKeyStore().save(assistantKeyInput)
+            assistantKeyInput = ""
+            hasAssistantKey = true
+            assistantStatus = nil
+            Task { await refreshAssistantModels() }
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func removeAssistantKey() {
+        do {
+            try OpenRouterAssistantKeyStore().delete()
+            assistantKeyInput = ""
+            hasAssistantKey = false
+            assistantModels = []
+            assistantStatus = nil
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func refreshAssistantModels() async {
+        isLoadingAssistantModels = true
+        defer { isLoadingAssistantModels = false }
+        do {
+            guard let key = try OpenRouterAssistantKeyStore().load() else {
+                throw OpenRouterAssistantError.missingKey
+            }
+            assistantModels = try await OpenRouterAssistantClient().availableModels(apiKey: key)
+            if assistantModels.isEmpty {
+                assistantStatus = "No compatible text model is available for this key."
+            } else {
+                if !assistantModels.contains(where: { $0.id == selectedAssistantModel }) {
+                    selectedAssistantModel = assistantModels[0].id
+                }
+                assistantStatus = "\(assistantModels.count) compatible models available."
+            }
+        } catch {
+            assistantModels = []
+            assistantStatus = error.localizedDescription
+        }
     }
 
     private var audioSettings: some View {
