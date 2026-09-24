@@ -106,6 +106,7 @@ struct StudioRecorderRootView: View {
     @State private var newRecordingName = ""
     @State private var newRecordingProfileID: UUID?
     @State private var projectSearchText = ""
+    @State private var editorExportRequest = 0
     @FocusState private var isProjectSearchFocused: Bool
     @State private var gifImportError: String?
     @State private var recoveryOperationID: String?
@@ -364,6 +365,12 @@ struct StudioRecorderRootView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
+            }
+            if snapshot.route == .projects, snapshot.selectedProjectID != nil {
+                Button("Export", systemImage: "square.and.arrow.up") {
+                    editorExportRequest += 1
+                }
+                .help("Export the current edited movie")
             }
             Button("New Recording", systemImage: "plus", action: beginNewRecording)
                 .disabled(isDeliveryActive || snapshot.captureState == .stopping || isPreparingProgram)
@@ -853,7 +860,8 @@ struct StudioRecorderRootView: View {
             if let selectedProject = snapshot.projects.first(where: { $0.id == snapshot.selectedProjectID }) {
                 ProjectDetailView(
                     project: selectedProject,
-                    onClose: { model.send(.closeProject) }
+                    onClose: { model.send(.closeProject) },
+                    exportRequest: editorExportRequest
                 )
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {

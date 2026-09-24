@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct ProjectDetailView: View {
     let project: RecordingProjectSnapshot
     let onClose: () -> Void
+    let exportRequest: Int
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -21,12 +22,16 @@ struct ProjectDetailView: View {
     @State private var gifPreparationTask: Task<Void, Never>?
     @State private var gifPreparationID = UUID()
     @State private var isPreparingGIF = false
+    @State private var isAssistantVisible = true
+    @State private var isTranscriptVisible = true
+    @State private var isShowingDetails = false
 
     private let exporter = ProjectMediaExporter()
 
-    init(project: RecordingProjectSnapshot, onClose: @escaping () -> Void) {
+    init(project: RecordingProjectSnapshot, onClose: @escaping () -> Void, exportRequest: Int = 0) {
         self.project = project
         self.onClose = onClose
+        self.exportRequest = exportRequest
         let playableTrackIDs = Set(project.recoveryReport.tracks.compactMap { track in
             switch track.state {
             case .finalized, .partialReadable: track.id
@@ -44,55 +49,18 @@ struct ProjectDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-
             if let programScreenTrackURL, FileManager.default.fileExists(atPath: programScreenTrackURL.path) {
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        ZStack {
-                            detailContent
-                            NativeVideoPlayer(player: editSession.player)
-                                .background(Color.black)
-                                .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
-                                .frame(maxWidth: .infinity)
-                                .frame(maxHeight: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(.primary.opacity(0.10), lineWidth: 0.5)
-                                }
-                                .accessibilityLabel("Composed program preview")
-                                .padding(18)
-                        }
-                        .frame(minHeight: 250, maxHeight: .infinity)
-
-                        Divider()
-
-                        ScrollView {
-                            ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
-                                .padding(16)
-                        }
-                        .frame(height: 318)
-                        .background(detailPanel)
-
-                        if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
-                            Divider()
-                            HStack {
-                                shareActions(for: selectedTrackURL)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(detailPanel)
-                        }
+                HSplitView {
+                    if isAssistantVisible {
+                        assistantPanel
+                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 330)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .background(detailContent)
-
-                    inspector
-                        .frame(width: 316)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .background(detailPanel)
+                    editorCenter
+                        .frame(minWidth: 470, maxWidth: .infinity)
+                    if isTranscriptVisible {
+                        transcriptPanel
+                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 330)
+                    }
                 }
             } else {
                 ContentUnavailableView {
@@ -105,6 +73,9 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
+        .onChange(of: exportRequest) { _, _ in
+            if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
+        }
         .task(id: programScreenTrackID) { await loadProgram() }
         .onDisappear {
             editSession.stop()
@@ -134,34 +105,116 @@ struct ProjectDetailView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Button(action: onClose) {
-                Label("All Projects", systemImage: "chevron.left")
+    private var assistantPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Assistant").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Hide Assistant", systemImage: "sidebar.left") {
+                    isAssistantVisible = false
+                }
+                .labelStyle(.iconOnly)
             }
-            .keyboardShortcut(.escape, modifiers: [])
-
-            Divider().frame(height: 22)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(editSession.presentation.resolvedName)
-                    .font(.headline)
-                Text("Recorded \(project.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(project.displayCount) display\(project.displayCount == 1 ? "" : "s")")
+            .padding(14)
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Local edit commands")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ProjectQuickEditorView(session: editSession, onExportMovie: {}, commandsOnly: true)
+                Text("OpenRouter chat and reviewed suggestions are not connected yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
+            .padding(14)
             Spacer()
-
-            Label(lifecycleLabel, systemImage: lifecycleIcon)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(lifecycleColor)
-
-            Button("Reveal Project", systemImage: "folder") { revealProject() }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
         .background(detailPanel)
+    }
+
+    private var transcriptPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Transcript").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Hide Transcript", systemImage: "sidebar.right") {
+                    isTranscriptVisible = false
+                }
+                .labelStyle(.iconOnly)
+            }
+            .padding(14)
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "text.alignleft")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("No timed transcript")
+                    .font(.subheadline.weight(.medium))
+                Text("Word timing and transcript editing will appear here after local transcription is connected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            Spacer()
+        }
+        .background(detailPanel)
+    }
+
+    private var editorCenter: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button("All Projects", systemImage: "chevron.left", action: onClose)
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.escape, modifiers: [])
+                if !isAssistantVisible {
+                    Button("Show Assistant", systemImage: "sidebar.left") { isAssistantVisible = true }
+                        .labelStyle(.iconOnly)
+                }
+                Text("Editor").font(.subheadline.weight(.semibold))
+                Spacer()
+                Label(lifecycleLabel, systemImage: lifecycleIcon)
+                    .font(.caption)
+                    .foregroundStyle(lifecycleColor)
+                Button("Details", systemImage: "slider.horizontal.3") { isShowingDetails = true }
+                    .labelStyle(.iconOnly)
+                    .help("Scene, media and sharing details")
+                    .popover(isPresented: $isShowingDetails) {
+                        inspector.frame(width: 320, height: 560)
+                    }
+                if !isTranscriptVisible {
+                    Button("Show Transcript", systemImage: "sidebar.right") { isTranscriptVisible = true }
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(detailPanel)
+            Divider()
+            NativeVideoPlayer(player: editSession.player)
+                .background(Color.black)
+                .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("Composed program preview")
+                .padding(12)
+                .frame(minHeight: 220, maxHeight: .infinity)
+                .background(detailContent)
+            Divider()
+            ScrollView {
+                ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
+                    .padding(12)
+            }
+            .frame(height: 290)
+            .background(detailPanel)
+            if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                Divider()
+                HStack { shareActions(for: selectedTrackURL) }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(detailPanel)
+            }
+        }
     }
 
     private var detailContent: Color {

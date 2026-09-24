@@ -1,13 +1,22 @@
+import CoreMedia
 import SwiftUI
 
 struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
     let onExportMovie: () -> Void
+    let commandsOnly: Bool
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
     @State private var assistantCommand = ""
     @State private var assistantMessage: String?
+    @State private var selectedRange: Range<TimeInterval>?
+
+    init(session: ProjectEditSession, onExportMovie: @escaping () -> Void, commandsOnly: Bool = false) {
+        self.session = session
+        self.onExportMovie = onExportMovie
+        self.commandsOnly = commandsOnly
+    }
 
     var body: some View {
         Group {
@@ -20,8 +29,12 @@ struct ProjectQuickEditorView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else if let timeline = session.timeline {
-                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                    editor(timeline)
+                if commandsOnly {
+                    commandEditor(timeline)
+                } else {
+                    TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                        editor(timeline)
+                    }
                 }
             } else if let errorMessage = session.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
@@ -30,14 +43,13 @@ struct ProjectQuickEditorView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .padding(commandsOnly ? 0 : 4)
     }
 
     private func editor(_ timeline: ProjectEditTimeline) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("Quick Edit").font(.headline)
+                Text("Timeline").font(.headline)
                 Text("NON-DESTRUCTIVE")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
@@ -50,12 +62,35 @@ struct ProjectQuickEditorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            ProjectTimelineStrip(
+            ProjectLinkedTimeline(
                 timeline: timeline,
                 playhead: session.playhead,
-                selectedSegmentID: session.selectedSegmentID,
-                onSelect: { session.selectedSegmentID = $0 }
+                waveform: session.audioWaveform,
+                selectedRange: $selectedRange,
+                onSeek: { time in
+                    Task { await session.player.seek(to: CMTime(seconds: time, preferredTimescale: 600)) }
+                },
+                onDelete: {
+                    guard let selectedRange, !session.isWorking, session.canPersistEdits else { return }
+                    Task { await session.deleteOutputRange(selectedRange) }
+                }
             )
+            .onChange(of: timeline) { _, _ in selectedRange = nil }
+
+            HStack(spacing: 8) {
+                Text(selectedRange.map { "Selected \(format($0.lowerBound)) - \(format($0.upperBound))" }
+                     ?? "Drag on video or audio to select both tracks")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Delete Selection", systemImage: "trash") {
+                    guard let selectedRange else { return }
+                    Task { await session.deleteOutputRange(selectedRange) }
+                }
+                .disabled(selectedRange == nil || session.isWorking || !session.canPersistEdits)
+                .help("Remove the selected video and audio together; raw media stays intact")
+            }
+            .buttonStyle(.bordered)
 
             HStack(spacing: 8) {
                 Button("Trim Before", systemImage: "rectangle.leadingthird.inset.filled") {
@@ -83,8 +118,6 @@ struct ProjectQuickEditorView: View {
                 .help("Delete the selected segment from the edit")
             }
             .buttonStyle(.bordered)
-
-            commandEditor(timeline)
 
             audioEditor(timeline)
             zoomEditor(timeline)
@@ -851,58 +884,152 @@ private struct PrivacyOverlayInspector: View {
     }
 }
 
-private struct ProjectTimelineStrip: View {
+private struct ProjectLinkedTimeline: View {
     let timeline: ProjectEditTimeline
     let playhead: TimeInterval
-    let selectedSegmentID: UUID?
-    let onSelect: (UUID) -> Void
+    let waveform: ProjectAudioWaveform?
+    @Binding var selectedRange: Range<TimeInterval>?
+    let onSeek: (TimeInterval) -> Void
+    let onDelete: () -> Void
+    @State private var dragAnchor: TimeInterval?
+    @State private var zoomStep = 0
+    @State private var position = 0.0
+    @FocusState private var isFocused: Bool
 
-    private let timelineAccent = Color(red: 0.95, green: 0.34, blue: 0.31)
+    private let rulerHeight: CGFloat = 20
+    private let laneHeight: CGFloat = 40
 
-    var body: some View {
-        GeometryReader { proxy in
-            let availableWidth = max(proxy.size.width, 1)
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.black.opacity(0.16))
-
-                ForEach(Array(timeline.segments.enumerated()), id: \.element.id) { index, segment in
-                    let start = timeline.segments.prefix(index).reduce(0) { $0 + $1.duration }
-                    let x = availableWidth * (start / timeline.duration)
-                    let width = max(3, availableWidth * (segment.duration / timeline.duration) - 2)
-                    Button {
-                        onSelect(segment.id)
-                    } label: {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(selectedSegmentID == segment.id ? timelineAccent : timelineAccent.opacity(0.34))
-                            .overlay {
-                                if width > 72 {
-                                    Text("\(index + 1)  ·  \(sourceRange(segment))")
-                                        .font(.caption2.monospacedDigit().weight(.medium))
-                                        .foregroundStyle(selectedSegmentID == segment.id ? .white : .primary)
-                                        .lineLimit(1)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: width, height: 42)
-                    .offset(x: x)
-                    .accessibilityLabel("Segment \(index + 1), source \(sourceRange(segment))")
-                    .accessibilityAddTraits(selectedSegmentID == segment.id ? .isSelected : [])
-                }
-
-                Rectangle()
-                    .fill(.white)
-                    .frame(width: 2, height: 50)
-                    .shadow(color: .black.opacity(0.35), radius: 1)
-                    .offset(x: availableWidth * min(max(playhead / timeline.duration, 0), 1))
-                    .allowsHitTesting(false)
-            }
-        }
-        .frame(height: 50)
+    private var viewport: ProjectTimelineViewport {
+        ProjectTimelineViewport(duration: timeline.duration, zoomStep: zoomStep, position: position)
     }
 
-    private func sourceRange(_ segment: ProjectEditSegment) -> String {
-        String(format: "%.1f–%.1fs", segment.sourceStart, segment.sourceStart + segment.duration)
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 8) {
+                Button("Zoom Out", systemImage: "minus.magnifyingglass") { changeZoom(by: -1) }
+                    .disabled(zoomStep == 0)
+                Button("Zoom In", systemImage: "plus.magnifyingglass") { changeZoom(by: 1) }
+                    .disabled(zoomStep == 8)
+                Slider(value: $position, in: 0...1)
+                    .disabled(zoomStep == 0)
+                    .accessibilityLabel("Timeline position")
+                Text("\(Int(pow(2, Double(zoomStep))))×")
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 34, alignment: .trailing)
+            }
+            .buttonStyle(.borderless)
+            GeometryReader { proxy in
+                Canvas { context, size in
+                    drawTracks(context: context, size: size)
+                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 2)
+                        .onChanged { value in
+                            isFocused = true
+                            let anchor = dragAnchor ?? time(for: value.startLocation.x, width: proxy.size.width)
+                            dragAnchor = anchor
+                            let end = time(for: value.location.x, width: proxy.size.width)
+                            selectedRange = min(anchor, end)..<max(anchor, end)
+                        }
+                        .onEnded { _ in dragAnchor = nil }
+                )
+                .simultaneousGesture(
+                    SpatialTapGesture().onEnded { value in
+                        isFocused = true
+                        onSeek(time(for: value.location.x, width: proxy.size.width))
+                    }
+                )
+                .focusable()
+                .focused($isFocused)
+                .onDeleteCommand(perform: onDelete)
+                .accessibilityElement()
+                .accessibilityLabel("Linked video and audio timeline")
+                .accessibilityValue(selectedRange.map {
+                    String(format: "Selected %.2f to %.2f seconds", $0.lowerBound, $0.upperBound)
+                } ?? "No range selected")
+                .accessibilityHint("Drag across either track to select video and audio. Press Delete to remove the selection.")
+            }
+            .frame(height: rulerHeight + laneHeight * 2)
+        }
+        .frame(height: rulerHeight + laneHeight * 2 + 28)
+    }
+
+    private func time(for x: CGFloat, width: CGFloat) -> TimeInterval {
+        viewport.time(atFraction: Double(x / max(width, 1)))
+    }
+
+    private func changeZoom(by delta: Int) {
+        let center = viewport.time(atFraction: 0.5)
+        zoomStep = min(max(zoomStep + delta, 0), 8)
+        let remaining = timeline.duration - viewport.visibleDuration
+        position = remaining > 0 ? min(max((center - viewport.visibleDuration / 2) / remaining, 0), 1) : 0
+    }
+
+    private func drawTracks(context: GraphicsContext, size: CGSize) {
+        let width = size.width
+        let videoY = rulerHeight
+        let audioY = rulerHeight + laneHeight
+        context.fill(Path(CGRect(x: 0, y: 0, width: width, height: rulerHeight)), with: .color(.black.opacity(0.08)))
+        context.fill(Path(CGRect(x: 0, y: videoY, width: width, height: laneHeight)), with: .color(.accentColor.opacity(0.20)))
+        context.fill(Path(CGRect(x: 0, y: audioY, width: width, height: laneHeight)), with: .color(.black.opacity(0.13)))
+
+        for tick in 0...4 {
+            let x = width * CGFloat(tick) / 4
+            context.fill(Path(CGRect(x: x, y: rulerHeight - 5, width: 1, height: 5)), with: .color(.secondary.opacity(0.5)))
+            let seconds = viewport.time(atFraction: Double(tick) / 4)
+            let label = Text(String(format: "%d:%05.2f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60)))
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+            context.draw(label, at: CGPoint(x: min(max(x, 17), width - 17), y: 7))
+        }
+
+        var cursor: TimeInterval = 0
+        for (index, segment) in timeline.segments.enumerated() {
+            let x = width * (cursor - viewport.visibleStart) / viewport.visibleDuration
+            let segmentWidth = width * segment.duration / viewport.visibleDuration
+            context.fill(
+                Path(CGRect(x: x + 1, y: videoY + 2, width: max(segmentWidth - 2, 1), height: laneHeight - 4)),
+                with: .color(.accentColor.opacity(index.isMultiple(of: 2) ? 0.25 : 0.36))
+            )
+            if index > 0 {
+                context.fill(Path(CGRect(x: x, y: videoY, width: 1, height: laneHeight * 2)), with: .color(.primary.opacity(0.45)))
+            }
+            cursor += segment.duration
+        }
+
+        if let waveform, !waveform.buckets.isEmpty, waveform.duration > 0 {
+            let barCount = max(Int(width / 3), 1)
+            let barWidth = width / CGFloat(barCount)
+            for index in 0..<barCount {
+                let outputTime = viewport.time(atFraction: (Double(index) + 0.5) / Double(barCount))
+                guard let sourceTime = timeline.sourceTime(at: outputTime) else { continue }
+                let bucketIndex = min(max(Int(sourceTime / waveform.duration * Double(waveform.buckets.count)), 0), waveform.buckets.count - 1)
+                let peak = CGFloat(waveform.buckets[bucketIndex].peak)
+                let height = max(peak * (laneHeight - 8), 1)
+                context.fill(
+                    Path(CGRect(x: CGFloat(index) * barWidth, y: audioY + (laneHeight - height) / 2, width: max(barWidth - 1, 1), height: height)),
+                    with: .color(.accentColor.opacity(0.8))
+                )
+            }
+        } else {
+            context.fill(Path(CGRect(x: 0, y: audioY + laneHeight / 2, width: width, height: 1)), with: .color(.secondary.opacity(0.35)))
+        }
+
+        if let selectedRange, selectedRange.upperBound > selectedRange.lowerBound {
+            let x = width * (selectedRange.lowerBound - viewport.visibleStart) / viewport.visibleDuration
+            let selectedWidth = width * (selectedRange.upperBound - selectedRange.lowerBound) / viewport.visibleDuration
+            context.fill(Path(CGRect(x: x, y: videoY, width: selectedWidth, height: laneHeight * 2)), with: .color(.orange.opacity(0.32)))
+            for edge in [x, x + selectedWidth] {
+                context.fill(Path(CGRect(x: edge, y: videoY, width: 2, height: laneHeight * 2)), with: .color(.orange))
+            }
+        }
+
+        let playheadX = width * (playhead - viewport.visibleStart) / viewport.visibleDuration
+        if playheadX >= 0, playheadX <= width {
+            context.fill(Path(CGRect(x: playheadX, y: rulerHeight, width: 2, height: laneHeight * 2)), with: .color(.white))
+        }
+        context.draw(Text("VIDEO").font(.system(size: 9, weight: .semibold)), at: CGPoint(x: 26, y: videoY + 11))
+        context.draw(Text("AUDIO").font(.system(size: 9, weight: .semibold)), at: CGPoint(x: 26, y: audioY + 11))
     }
 }

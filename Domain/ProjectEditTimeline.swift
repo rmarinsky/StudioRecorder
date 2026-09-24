@@ -1,5 +1,23 @@
 import Foundation
 
+struct ProjectTimelineViewport: Equatable {
+    let duration: TimeInterval
+    let zoomStep: Int
+    let position: Double
+
+    var visibleDuration: TimeInterval {
+        duration / pow(2, Double(min(max(zoomStep, 0), 8)))
+    }
+
+    var visibleStart: TimeInterval {
+        max(duration - visibleDuration, 0) * min(max(position, 0), 1)
+    }
+
+    func time(atFraction fraction: Double) -> TimeInterval {
+        min(max(visibleStart + visibleDuration * min(max(fraction, 0), 1), 0), duration)
+    }
+}
+
 enum ProjectEditTimelineError: LocalizedError, Equatable {
     case invalidSourceDuration
     case invalidTimelineTime

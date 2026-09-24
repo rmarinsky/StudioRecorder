@@ -421,4 +421,14 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         XCTAssertEqual(timeline.segments, [ProjectEditSegment(id: firstID, sourceStart: 0, duration: 5)])
     }
+
+    func testTimelineViewportZoomAndPanMapPixelsToOutputTime() {
+        let viewport = ProjectTimelineViewport(duration: 2560, zoomStep: 8, position: 0.5)
+
+        XCTAssertEqual(viewport.visibleDuration, 10, accuracy: 0.001)
+        XCTAssertEqual(viewport.visibleStart, 1275, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 0), 1275, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 0.5), 1280, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 2), 1285, accuracy: 0.001)
+    }
 }
