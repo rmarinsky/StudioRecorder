@@ -45,7 +45,9 @@ struct ProjectDetailView: View {
     @State private var assistantError: String?
     @State private var isAssistantWorking = false
     @State private var assistantRequestID = UUID()
+    @State private var assistantTask: Task<Void, Never>?
     @State private var pendingAssistantCuts: OpenRouterReviewedCuts?
+    @State private var pendingAssistantScene: OpenRouterReviewedScene?
 
     private let exporter = ProjectMediaExporter()
 
@@ -80,13 +82,13 @@ struct ProjectDetailView: View {
                 HSplitView {
                     if isAssistantVisible {
                         assistantPanel
-                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 260)
+                            .frame(minWidth: 230, idealWidth: 235, maxWidth: 260)
                     }
                     editorCenter
                         .frame(minWidth: 470, maxWidth: .infinity)
                     if isTranscriptVisible {
                         transcriptPanel
-                            .frame(minWidth: 195, idealWidth: 235, maxWidth: 260)
+                            .frame(minWidth: 230, idealWidth: 235, maxWidth: 260)
                     }
                 }
             } else {
@@ -106,13 +108,24 @@ struct ProjectDetailView: View {
         .task(id: programScreenTrackID) { await loadProgram() }
         .task(id: project.id) { loadTranscript() }
         .onChange(of: project.id) { _, _ in
+            assistantTask?.cancel()
+            assistantTask = nil
+            isAssistantWorking = false
             assistantMessages = []
             assistantPrompt = ""
             assistantError = nil
             assistantRequestID = UUID()
             pendingAssistantCuts = nil
+            pendingAssistantScene = nil
+        }
+        .onChange(of: editSession.editRevision) { _, _ in
+            pendingAssistantCuts = nil
+            pendingAssistantScene = nil
         }
         .onDisappear {
+            assistantTask?.cancel()
+            assistantTask = nil
+            isAssistantWorking = false
             assistantRequestID = UUID()
             editSession.stop()
             cancelGIFPreparation()
@@ -156,10 +169,10 @@ struct ProjectDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if assistantMessages.isEmpty {
-                        Text("Ask for cuts, titles, descriptions, or wording for a new take.")
+                        Text("Ask for cuts, scene changes, titles, descriptions, or wording for a new take.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("The assistant sends transcript text for the chosen scope. Review proposed cuts before applying them.")
+                        Text("Transcript text and scene metadata are sent for the chosen scope. Review every media change before applying it.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -191,6 +204,11 @@ struct ProjectDetailView: View {
                                     Label(cut.reason, systemImage: "scissors")
                                         .font(.caption)
                                         .foregroundStyle(.red)
+                                }
+                                ForEach(draft.sceneChanges, id: \.reason) { change in
+                                    Label(change.reason, systemImage: "rectangle.on.rectangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.tint)
                                 }
                             }
                         }
@@ -225,12 +243,40 @@ struct ProjectDetailView: View {
                 .padding(12)
                 Divider()
             }
+            if let pendingAssistantScene {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Proposed scene change")
+                        .font(.caption.weight(.semibold))
+                    Text("\(pendingAssistantScene.change.layout.label) · \(pendingAssistantScene.change.transition.label)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Review") { selectedRange = pendingAssistantScene.range }
+                        Button("Apply") { applyAssistantScene() }
+                            .disabled(editSession.isWorking || !editSession.canEditRecordedScenes)
+                        Button("Dismiss") { self.pendingAssistantScene = nil }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed scene: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
+            }
             VStack(alignment: .leading, spacing: 8) {
+                Text("Context")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
                 Picker("Context", selection: $assistantScope) {
                     Text("Whole project").tag(OpenRouterAssistantScope.wholeProject)
                     Text("Selection").tag(OpenRouterAssistantScope.selection)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 HStack {
                     Button("Find pauses") { editSession.detectSilence() }
                         .disabled(editSession.isDetectingSilence || editSession.timeline == nil)
@@ -307,6 +353,16 @@ struct ProjectDetailView: View {
                 id: "silence-\(index)", start: range.lowerBound, end: range.upperBound
             )
         }
+        let sceneSelection: OpenRouterAssistantSceneSelection? = {
+            guard scope == .selection, editSession.canEditRecordedScenes,
+                  let selectedRange, let timeline = editSession.timeline,
+                  (try? timeline.sourceRange(for: selectedRange)) != nil else { return nil }
+            return OpenRouterAssistantSceneSelection(
+                start: selectedRange.lowerBound, end: selectedRange.upperBound,
+                capturedDisplayIDs: editSession.capturedDisplayIDs,
+                hasCapturedCamera: editSession.hasCapturedCamera
+            )
+        }()
         let history = assistantMessages.suffix(12).map { message in
             OpenRouterAssistantTurn(
                 role: message.role == "You" ? .user : .assistant,
@@ -321,33 +377,53 @@ struct ProjectDetailView: View {
         assistantError = nil
         assistantMessages.append(AssistantMessage(role: "You", text: prompt, draft: nil))
         isAssistantWorking = true
-        Task {
-            defer { isAssistantWorking = false }
+        assistantTask = Task {
+            defer {
+                if assistantRequestID == requestID {
+                    isAssistantWorking = false
+                    assistantTask = nil
+                }
+            }
             do {
                 guard let key = try OpenRouterAssistantKeyStore().load() else {
                     throw OpenRouterAssistantError.missingKey
                 }
                 let context = OpenRouterAssistantContext(
-                    projectID: projectID, scope: scope, words: words, silences: silences
+                    projectID: projectID, scope: scope, words: words, silences: silences,
+                    sceneSelection: sceneSelection
                 )
                 let draft = try await OpenRouterAssistantClient().draft(
                     apiKey: key, model: assistantModel, prompt: prompt, context: context,
                     history: history
                 )
                 guard assistantRequestID == requestID else { return }
-                assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
-                if !draft.cuts.isEmpty, let requestTimeline {
-                    let proposal = try draft.reviewedCuts(
+                guard let requestTimeline,
+                      editSession.timeline == requestTimeline,
+                      editSession.editRevision == requestRevision else {
+                    throw OpenRouterAssistantError.invalidProposal
+                }
+                let cutProposal: OpenRouterReviewedCuts? = if draft.cuts.isEmpty { nil } else {
+                    try draft.reviewedCuts(
                         context: context, timeline: requestTimeline, revision: requestRevision
                     )
-                    guard proposal.isCurrent(
-                        projectID: projectID,
-                        timeline: editSession.timeline ?? requestTimeline,
-                        revision: editSession.editRevision
-                    ) else { throw OpenRouterAssistantError.invalidProposal }
-                    pendingAssistantCuts = proposal
-                    selectedRange = proposal.ranges.first
                 }
+                let sceneProposal = try draft.reviewedScene(
+                    context: context, timeline: requestTimeline, revision: requestRevision
+                )
+                if let sceneProposal {
+                    guard let current = editSession.scenePresentation(for: sceneProposal.range),
+                          await editSession.canApplyScene(
+                            to: sceneProposal.range,
+                            presentation: sceneProposal.change.presentation(from: current),
+                            displayID: editSession.sceneDisplayID(for: sceneProposal.range)
+                          ) else { throw OpenRouterAssistantError.invalidProposal }
+                }
+                guard assistantRequestID == requestID,
+                      editSession.editRevision == requestRevision else { return }
+                assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
+                pendingAssistantCuts = cutProposal
+                pendingAssistantScene = sceneProposal
+                selectedRange = cutProposal?.ranges.first ?? sceneProposal?.range ?? selectedRange
             } catch {
                 if assistantRequestID == requestID { assistantError = error.localizedDescription }
             }
@@ -373,6 +449,31 @@ struct ProjectDetailView: View {
                 pendingAssistantCuts = nil
                 selectedRange = nil
             }
+        }
+    }
+
+    private func applyAssistantScene() {
+        guard let proposal = pendingAssistantScene,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), let current = editSession.scenePresentation(for: proposal.range) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantScene = nil
+            return
+        }
+        Task {
+            await editSession.applyScene(
+                to: proposal.range,
+                presentation: proposal.change.presentation(from: current),
+                displayID: editSession.sceneDisplayID(for: proposal.range),
+                transition: StudioSceneTransitionConfiguration(
+                    effect: proposal.change.transition, duration: proposal.change.duration
+                )
+            )
+            if let error = editSession.errorMessage { assistantError = error }
+            else { pendingAssistantScene = nil }
         }
     }
 

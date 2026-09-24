@@ -865,6 +865,10 @@ final class ProjectEditRendererTests: XCTestCase {
         await session.load(projectID: projectID, projectRootURL: directory, track: track,
                            sourceURL: screenURL, programSources: sources, initialPresentation: screen)
 
+        let canApplyCameraScene = await session.canApplyScene(
+            to: 0.5..<1.2, presentation: camera, displayID: nil
+        )
+        XCTAssertTrue(canApplyCameraScene)
         await session.applyScene(to: 0.5..<1.2, presentation: camera, displayID: nil, transition: .cut)
         XCTAssertNil(session.errorMessage)
         XCTAssertTrue(session.canUndo)
@@ -911,6 +915,10 @@ final class ProjectEditRendererTests: XCTestCase {
                            programSources: ProjectProgramSources(screenURL: screenURL, cameraURL: nil),
                            initialPresentation: .default)
 
+        let canApplyMissingCamera = await session.canApplyScene(
+            to: 0.2..<0.8, presentation: camera, displayID: nil
+        )
+        XCTAssertFalse(canApplyMissingCamera)
         await session.applyScene(to: 0.2..<0.8, presentation: camera, displayID: nil, transition: .cut)
 
         XCTAssertNotNil(session.errorMessage)
@@ -937,6 +945,10 @@ final class ProjectEditRendererTests: XCTestCase {
                             screenURL: screenURL, cameraURL: cameraURL, cameraTimeOffset: 1
                            ), initialPresentation: .default)
 
+        let canApplyBeforeCameraStarts = await session.canApplyScene(
+            to: 0.2..<0.8, presentation: camera, displayID: nil
+        )
+        XCTAssertFalse(canApplyBeforeCameraStarts)
         await session.applyScene(to: 0.2..<0.8, presentation: camera, displayID: nil, transition: .cut)
 
         XCTAssertNotNil(session.errorMessage)

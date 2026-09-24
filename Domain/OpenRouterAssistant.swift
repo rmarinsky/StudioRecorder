@@ -19,20 +19,30 @@ struct OpenRouterAssistantSilence: Codable, Equatable, Sendable {
     let end: TimeInterval
 }
 
+struct OpenRouterAssistantSceneSelection: Codable, Equatable, Sendable {
+    let start: TimeInterval
+    let end: TimeInterval
+    let capturedDisplayIDs: [UInt32]
+    let hasCapturedCamera: Bool
+}
+
 struct OpenRouterAssistantContext: Codable, Equatable, Sendable {
     let projectID: UUID
     let scope: OpenRouterAssistantScope
     let words: [OpenRouterAssistantWord]
     let silences: [OpenRouterAssistantSilence]
+    let sceneSelection: OpenRouterAssistantSceneSelection?
 
     init(
         projectID: UUID, scope: OpenRouterAssistantScope,
-        words: [OpenRouterAssistantWord], silences: [OpenRouterAssistantSilence] = []
+        words: [OpenRouterAssistantWord], silences: [OpenRouterAssistantSilence] = [],
+        sceneSelection: OpenRouterAssistantSceneSelection? = nil
     ) {
         self.projectID = projectID
         self.scope = scope
         self.words = words
         self.silences = silences
+        self.sceneSelection = sceneSelection
     }
 }
 
@@ -53,10 +63,37 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
     let descriptions: [String]
     let newTakeWording: [String]
     let cuts: [OpenRouterAssistantCutTarget]
+    let sceneChanges: [OpenRouterAssistantSceneChange]
 
     enum CodingKeys: String, CodingKey {
         case reply, titles, descriptions, cuts
         case newTakeWording = "new_take_wording"
+        case sceneChanges = "scene_changes"
+    }
+
+    init(
+        reply: String, titles: [String], descriptions: [String],
+        newTakeWording: [String], cuts: [OpenRouterAssistantCutTarget],
+        sceneChanges: [OpenRouterAssistantSceneChange] = []
+    ) {
+        self.reply = reply
+        self.titles = titles
+        self.descriptions = descriptions
+        self.newTakeWording = newTakeWording
+        self.cuts = cuts
+        self.sceneChanges = sceneChanges
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reply = try container.decode(String.self, forKey: .reply)
+        titles = try container.decode([String].self, forKey: .titles)
+        descriptions = try container.decode([String].self, forKey: .descriptions)
+        newTakeWording = try container.decode([String].self, forKey: .newTakeWording)
+        cuts = try container.decode([OpenRouterAssistantCutTarget].self, forKey: .cuts)
+        sceneChanges = try container.decodeIfPresent(
+            [OpenRouterAssistantSceneChange].self, forKey: .sceneChanges
+        ) ?? []
     }
 
     var isValid: Bool {
@@ -69,8 +106,12 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
             }
             && cuts.count <= 30
             && cuts.allSatisfy {
-                !$0.id.isEmpty && $0.reason.count <= 500
+                !$0.id.isEmpty && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && $0.reason.count <= 500
             }
+            && sceneChanges.count <= 1
+            && (sceneChanges.isEmpty || cuts.isEmpty)
+            && sceneChanges.allSatisfy { $0.isValid }
     }
 
     func reviewedCuts(
@@ -110,11 +151,91 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
             projectID: context.projectID, timeline: timeline, revision: revision, ranges: ranges
         )
     }
+
+    func reviewedScene(
+        context: OpenRouterAssistantContext,
+        timeline: ProjectEditTimeline,
+        revision: Int
+    ) throws -> OpenRouterReviewedScene? {
+        guard let change = sceneChanges.first else { return nil }
+        guard sceneChanges.count == 1, change.isValid,
+              context.scope == .selection,
+              let selection = context.sceneSelection,
+              selection.start.isFinite, selection.end.isFinite,
+              selection.start >= 0, selection.start < selection.end,
+              selection.end <= timeline.duration,
+              (try? timeline.sourceRange(for: selection.start..<selection.end)) != nil,
+              (!change.layout.usesCamera || selection.hasCapturedCamera),
+              (!change.layout.usesScreen || !selection.capturedDisplayIDs.isEmpty) else {
+            throw OpenRouterAssistantError.invalidProposal
+        }
+        return OpenRouterReviewedScene(
+            projectID: context.projectID, timeline: timeline, revision: revision,
+            range: selection.start..<selection.end, change: change
+        )
+    }
 }
 
 struct OpenRouterAssistantCutTarget: Codable, Equatable, Sendable {
     let id: String
     let reason: String
+}
+
+enum OpenRouterAssistantSceneLayout: String, Codable, Sendable {
+    case screenOnly = "screen_only"
+    case cameraOnly = "camera_only"
+    case screenAndCamera = "screen_and_camera"
+
+    var usesScreen: Bool { self != .cameraOnly }
+    var usesCamera: Bool { self != .screenOnly }
+    var label: String {
+        switch self {
+        case .screenOnly: "Screen"
+        case .cameraOnly: "Camera"
+        case .screenAndCamera: "Screen and Camera"
+        }
+    }
+}
+
+struct OpenRouterAssistantSceneChange: Codable, Equatable, Sendable {
+    let layout: OpenRouterAssistantSceneLayout
+    let transition: StudioSceneTransitionEffect
+    let duration: TimeInterval
+    let reason: String
+
+    var isValid: Bool {
+        duration.isFinite && (0.15...1).contains(duration)
+            && !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && reason.count <= 500
+    }
+
+    func presentation(from current: CapturePresentationSnapshot) -> CapturePresentationSnapshot {
+        var next = current
+        next.screen.isVisible = layout.usesScreen
+        next.camera.isVisible = layout.usesCamera
+        if layout == .cameraOnly {
+            next.camera.centerX = 0.5
+            next.camera.centerY = 0.5
+            next.camera.width = 1
+            next.camera.height = 1
+            next.camera.shape = .rectangle
+        } else if layout == .screenAndCamera && next.camera.width >= 0.8 {
+            next.camera = CapturePresentationSnapshot.default.camera
+        }
+        return next.validated()
+    }
+}
+
+struct OpenRouterReviewedScene: Equatable, Sendable {
+    let projectID: UUID
+    let timeline: ProjectEditTimeline
+    let revision: Int
+    let range: Range<TimeInterval>
+    let change: OpenRouterAssistantSceneChange
+
+    func isCurrent(projectID: UUID, timeline: ProjectEditTimeline, revision: Int) -> Bool {
+        self.projectID == projectID && self.timeline == timeline && self.revision == revision
+    }
 }
 
 struct OpenRouterReviewedCuts: Equatable, Sendable {
@@ -142,7 +263,7 @@ enum OpenRouterAssistantError: LocalizedError {
         case .unsupportedModel: "The selected model no longer supports structured replies. Choose another model."
         case .invalidContext: "The selected transcript contains invalid timing data."
         case .invalidReply: "The model returned an invalid reply. No edits were applied."
-        case .invalidProposal: "The proposed cuts do not match reviewed words or detected pauses in the current edit. No edits were applied."
+        case .invalidProposal: "The proposed edit does not match the current selection, captured sources, or reviewed word times. No edits were applied."
         case .requestFailed(let status): "OpenRouter request failed (HTTP \(status)). No edits were applied."
         }
     }
@@ -240,7 +361,12 @@ struct OpenRouterAssistantClient {
               }),
               context.silences.allSatisfy({
                   $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.start < $0.end
-              }) else { throw OpenRouterAssistantError.invalidContext }
+              }),
+              context.sceneSelection.map({
+                  $0.start.isFinite && $0.end.isFinite
+                      && $0.start >= 0 && $0.start < $0.end
+                      && Set($0.capturedDisplayIDs).count == $0.capturedDisplayIDs.count
+              }) ?? true else { throw OpenRouterAssistantError.invalidContext }
 
         let contextJSON = String(decoding: try JSONEncoder().encode(context), as: UTF8.self)
         let string: [String: Any] = ["type": "string"]
@@ -250,17 +376,29 @@ struct OpenRouterAssistantClient {
             "properties": ["id": string, "reason": string],
             "required": ["id", "reason"], "additionalProperties": false,
         ]
+        let sceneChange: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "layout": ["type": "string", "enum": ["screen_only", "camera_only", "screen_and_camera"]],
+                "transition": ["type": "string", "enum": ["cut", "dissolve", "smoothMove"]],
+                "duration": ["type": "number"],
+                "reason": string,
+            ],
+            "required": ["layout", "transition", "duration", "reason"],
+            "additionalProperties": false,
+        ]
         let schema: [String: Any] = [
             "type": "object",
             "properties": [
                 "reply": string, "titles": strings, "descriptions": strings,
                 "new_take_wording": strings,
                 "cuts": ["type": "array", "items": cut],
+                "scene_changes": ["type": "array", "items": sceneChange],
             ],
-            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts"],
+            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes"],
             "additionalProperties": false,
         ]
-        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Never invent IDs or time ranges. All cuts require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
+        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
             + history.map { ["role": $0.role.rawValue, "content": $0.content] }
             + [["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"]]
         let body: [String: Any] = [

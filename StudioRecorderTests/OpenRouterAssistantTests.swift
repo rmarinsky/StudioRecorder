@@ -124,4 +124,79 @@ final class OpenRouterAssistantTests: XCTestCase {
         )
         XCTAssertThrowsError(try unknown.reviewedCuts(context: context, timeline: timeline, revision: 2))
     }
+
+    func testSceneProposalRequiresSelectedRangeAndCapturedSources() throws {
+        let projectID = UUID()
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        let selected = 2.0..<4.0
+        let scene = OpenRouterAssistantSceneChange(
+            layout: .cameraOnly, transition: .dissolve, duration: 0.4,
+            reason: "Focus on the speaker"
+        )
+        let draft = OpenRouterAssistantDraft(
+            reply: "Use the camera here", titles: [], descriptions: [], newTakeWording: [],
+            cuts: [], sceneChanges: [scene]
+        )
+        let context = OpenRouterAssistantContext(
+            projectID: projectID, scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 2, end: 4, capturedDisplayIDs: [42], hasCapturedCamera: true
+            )
+        )
+        let reviewed = try draft.reviewedScene(context: context, timeline: timeline, revision: 3)
+        XCTAssertEqual(reviewed?.range, selected)
+        XCTAssertEqual(reviewed?.change.layout, .cameraOnly)
+        XCTAssertTrue(reviewed?.isCurrent(projectID: projectID, timeline: timeline, revision: 3) == true)
+        XCTAssertFalse(reviewed?.isCurrent(projectID: projectID, timeline: timeline, revision: 4) == true)
+
+        let noCamera = OpenRouterAssistantContext(
+            projectID: projectID, scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 2, end: 4, capturedDisplayIDs: [42], hasCapturedCamera: false
+            )
+        )
+        XCTAssertThrowsError(try draft.reviewedScene(context: noCamera, timeline: timeline, revision: 3))
+        XCTAssertThrowsError(try draft.reviewedScene(
+            context: OpenRouterAssistantContext(projectID: projectID, scope: .wholeProject, words: []),
+            timeline: timeline, revision: 3
+        ))
+    }
+
+    func testSceneProposalRejectsInvalidTransitionAndMissingDisplay() throws {
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        let context = OpenRouterAssistantContext(
+            projectID: UUID(), scope: .selection, words: [],
+            sceneSelection: OpenRouterAssistantSceneSelection(
+                start: 1, end: 3, capturedDisplayIDs: [], hasCapturedCamera: true
+            )
+        )
+        let screenDraft = OpenRouterAssistantDraft(
+            reply: "Show the screen", titles: [], descriptions: [], newTakeWording: [], cuts: [],
+            sceneChanges: [OpenRouterAssistantSceneChange(
+                layout: .screenOnly, transition: .cut, duration: 0.15, reason: "Show content"
+            )]
+        )
+        XCTAssertThrowsError(try screenDraft.reviewedScene(context: context, timeline: timeline, revision: 1))
+        let badDuration = OpenRouterAssistantDraft(
+            reply: "Show the camera", titles: [], descriptions: [], newTakeWording: [], cuts: [],
+            sceneChanges: [OpenRouterAssistantSceneChange(
+                layout: .cameraOnly, transition: .dissolve, duration: 4, reason: "Focus"
+            )]
+        )
+        XCTAssertThrowsError(try badDuration.reviewedScene(context: context, timeline: timeline, revision: 1))
+    }
+
+    func testCameraOnlySceneFillsFrameAndKeepsAudioIndependent() {
+        let change = OpenRouterAssistantSceneChange(
+            layout: .cameraOnly, transition: .cut, duration: 0.15, reason: "Speaker focus"
+        )
+        let presentation = change.presentation(from: .default)
+        XCTAssertFalse(presentation.screen.isVisible)
+        XCTAssertTrue(presentation.camera.isVisible)
+        XCTAssertEqual(presentation.camera.width, 1)
+        XCTAssertEqual(presentation.camera.height, 1)
+        XCTAssertEqual(presentation.camera.shape, .rectangle)
+        XCTAssertEqual(presentation.camera.centerX, 0.5)
+        XCTAssertEqual(presentation.camera.centerY, 0.5)
+    }
 }

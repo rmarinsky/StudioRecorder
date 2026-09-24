@@ -671,6 +671,35 @@ final class ProjectEditSession: ObservableObject {
             ?? programSources?.screenSources.first?.displayID
     }
 
+    func canApplyScene(
+        to outputRange: Range<TimeInterval>,
+        presentation nextPresentation: CapturePresentationSnapshot,
+        displayID: UInt32?
+    ) async -> Bool {
+        guard canEditRecordedScenes, let timeline, let programSources,
+              let sourceRange = try? timeline.sourceRange(for: outputRange),
+              nextPresentation.screen.isVisible || nextPresentation.camera.isVisible else { return false }
+        do {
+            if nextPresentation.screen.isVisible {
+                let screenSource = displayID.flatMap { id in
+                    programSources.screenSources.first { $0.displayID == id }
+                } ?? (displayID == nil ? programSources.screenSources.first : nil)
+                guard let screenSource,
+                      try await containsVideo(in: screenSource.url, throughout: sourceRange) else {
+                    return false
+                }
+            }
+            if nextPresentation.camera.isVisible {
+                guard let cameraURL = programSources.cameraURL,
+                      try await containsVideo(
+                        in: cameraURL,
+                        throughout: (sourceRange.lowerBound - programSources.cameraTimeOffset)..<(sourceRange.upperBound - programSources.cameraTimeOffset)
+                      ) else { return false }
+            }
+            return true
+        } catch { return false }
+    }
+
     func applyScene(
         to outputRange: Range<TimeInterval>,
         presentation nextPresentation: CapturePresentationSnapshot,
@@ -682,25 +711,9 @@ final class ProjectEditSession: ObservableObject {
         errorMessage = nil
         do {
             let sourceRange = try timeline.sourceRange(for: outputRange)
-            let screenSource = displayID.flatMap { id in
-                programSources.screenSources.first { $0.displayID == id }
-            } ?? (displayID == nil ? programSources.screenSources.first : nil)
-            if nextPresentation.screen.isVisible {
-                guard let screenSource,
-                      try await containsVideo(in: screenSource.url, throughout: sourceRange) else {
-                    throw StudioSceneEditError.unavailableSource
-                }
-            }
-            if nextPresentation.camera.isVisible {
-                guard let cameraURL = programSources.cameraURL,
-                      try await containsVideo(
-                        in: cameraURL,
-                        throughout: (sourceRange.lowerBound - programSources.cameraTimeOffset)..<(sourceRange.upperBound - programSources.cameraTimeOffset)
-                      ) else {
-                    throw StudioSceneEditError.unavailableSource
-                }
-            }
-            guard nextPresentation.screen.isVisible || nextPresentation.camera.isVisible else {
+            guard await canApplyScene(
+                to: outputRange, presentation: nextPresentation, displayID: displayID
+            ) else {
                 throw StudioSceneEditError.unavailableSource
             }
             var nextScenes = sceneTimeline ?? StudioSceneTimeline(

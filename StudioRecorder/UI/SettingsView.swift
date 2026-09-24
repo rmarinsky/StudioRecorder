@@ -174,7 +174,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("Requests send transcript text and timing IDs for the chosen scope. Raw audio and video stay on this Mac.")
+                Text("Requests send transcript text, timing IDs, and selected scene metadata. Raw audio and video stay on this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
