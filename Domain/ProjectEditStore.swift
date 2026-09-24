@@ -73,8 +73,7 @@ struct TimedTranscript: Codable, Equatable, Sendable {
     }
 
     func words(in timeline: ProjectEditTimeline) -> [EditedTranscriptWord] {
-        guard timeline.trackID == sourceTrackID,
-              abs(timeline.sourceDuration - sourceDuration) < 0.1 else { return [] }
+        guard isCompatible(with: timeline) else { return [] }
         var outputStart: TimeInterval = 0
         var result: [EditedTranscriptWord] = []
         let orderedWords = words.sorted {
@@ -102,6 +101,11 @@ struct TimedTranscript: Codable, Equatable, Sendable {
         return result
     }
 
+    func isCompatible(with timeline: ProjectEditTimeline) -> Bool {
+        timeline.trackID == sourceTrackID
+            && abs(timeline.sourceDuration - sourceDuration) < 0.1
+    }
+
     func reviewWord(_ id: UUID, sourceRange: Range<TimeInterval>) throws -> TimedTranscript {
         guard sourceRange.lowerBound.isFinite, sourceRange.upperBound.isFinite,
               sourceRange.lowerBound >= 0,
@@ -112,6 +116,11 @@ struct TimedTranscript: Codable, Equatable, Sendable {
         }
         var revised = words
         let original = revised[index]
+        if original.timingStatus == .uncertain,
+           abs(sourceRange.lowerBound - original.sourceStart) < 0.001,
+           abs(sourceRange.upperBound - original.sourceEnd) < 0.001 {
+            throw TimedTranscriptStoreError.invalidTranscript
+        }
         revised[index] = TimedTranscriptWord(
             id: original.id, text: original.text,
             sourceStart: sourceRange.lowerBound, sourceEnd: sourceRange.upperBound,

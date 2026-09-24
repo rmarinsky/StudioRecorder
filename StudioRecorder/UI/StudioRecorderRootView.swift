@@ -918,7 +918,9 @@ struct StudioRecorderRootView: View {
                     project: selectedProject,
                     onClose: { model.send(.closeProject) },
                     exportRequest: editorExportRequest,
-                    queueExport: { try await model.enqueueExport($0) }
+                    queueExport: { try await model.enqueueExport($0) },
+                    jobs: snapshot.jobs,
+                    queueTranscription: { try await model.enqueueTranscription($0) }
                 )
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {

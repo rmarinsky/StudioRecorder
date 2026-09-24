@@ -2,6 +2,113 @@ import Accelerate
 @preconcurrency import AVFoundation
 import Foundation
 
+enum WhisperAudioExtractionError: LocalizedError {
+    case unreadableAudio
+    case tooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableAudio: "The recording has no readable audio for transcription."
+        case .tooLarge: "The recording is too long for a single transcription WAV file."
+        }
+    }
+}
+
+struct WhisperAudioExtractor {
+    func writeWAV(from sourceURL: URL, to destinationURL: URL) async throws {
+        let asset = AVURLAsset(url: sourceURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !tracks.isEmpty else { throw WhisperAudioExtractionError.unreadableAudio }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.canAdd(output) else { throw WhisperAudioExtractionError.unreadableAudio }
+        reader.add(output)
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: destinationURL.path, contents: Data(repeating: 0, count: 44))
+        do {
+            let file = try FileHandle(forWritingTo: destinationURL)
+            defer { try? file.close() }
+            try file.seekToEnd()
+            guard reader.startReading() else { throw WhisperAudioExtractionError.unreadableAudio }
+            defer { reader.cancelReading() }
+            var byteCount: UInt64 = 0
+            var firstSample = true
+            while let sample = output.copyNextSampleBuffer() {
+                try Task.checkCancellation()
+                if firstSample {
+                    firstSample = false
+                    let start = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                    if start.isFinite && start > 0 {
+                        guard start < Double(UInt32.max / 2) / 16_000 else {
+                            throw WhisperAudioExtractionError.tooLarge
+                        }
+                        let leadingBytes = Int((start * 16_000).rounded()) * 2
+                        var remaining = leadingBytes
+                        while remaining > 0 {
+                            let count = min(remaining, 1_048_576)
+                            try file.write(contentsOf: Data(repeating: 0, count: count))
+                            remaining -= count
+                        }
+                        byteCount += UInt64(leadingBytes)
+                    }
+                }
+                guard let block = CMSampleBufferGetDataBuffer(sample) else {
+                    throw WhisperAudioExtractionError.unreadableAudio
+                }
+                let length = CMBlockBufferGetDataLength(block)
+                var bytes = Data(count: length)
+                let status = bytes.withUnsafeMutableBytes { destination in
+                    guard let address = destination.baseAddress else { return kCMBlockBufferBadLengthParameterErr }
+                    return CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: address)
+                }
+                guard status == kCMBlockBufferNoErr else { throw WhisperAudioExtractionError.unreadableAudio }
+                byteCount += UInt64(length)
+                guard byteCount <= UInt32.max - 36 else { throw WhisperAudioExtractionError.tooLarge }
+                try file.write(contentsOf: bytes)
+            }
+            guard reader.status == .completed, byteCount > 0 else {
+                throw WhisperAudioExtractionError.unreadableAudio
+            }
+            try file.seek(toOffset: 0)
+            try file.write(contentsOf: wavHeader(byteCount: UInt32(byteCount)))
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    private func wavHeader(byteCount: UInt32) -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        data.append(contentsOf: "RIFF".utf8)
+        append(byteCount + UInt32(36))
+        data.append(contentsOf: "WAVEfmt ".utf8)
+        append(UInt32(16))
+        append(UInt16(1))
+        append(UInt16(1))
+        append(UInt32(16_000))
+        append(UInt32(32_000))
+        append(UInt16(2))
+        append(UInt16(16))
+        data.append(contentsOf: "data".utf8)
+        append(byteCount)
+        return data
+    }
+}
+
 struct ProjectAudioWaveformBucket: Codable, Equatable, Sendable {
     let sourceStart: TimeInterval
     let duration: TimeInterval

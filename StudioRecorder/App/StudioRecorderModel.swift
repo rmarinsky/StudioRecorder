@@ -581,6 +581,12 @@ final class StudioRecorderModel: ObservableObject {
         synchronizeFromCoordinator()
     }
 
+    func enqueueTranscription(_ recipe: ProjectTranscriptionRecipe) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.enqueueTranscription(recipe)
+        synchronizeFromCoordinator()
+    }
+
     func moveRecoveryProjectToTrash(_ projectID: String) async throws {
         guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
         try await coordinator.moveRecoveryProjectToTrash(projectID)

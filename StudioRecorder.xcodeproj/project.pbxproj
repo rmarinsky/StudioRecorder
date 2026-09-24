@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D5898CC17C114D6F8AA15132 /* LocalWhisperTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD117AC2C4C1473D9E05F5A7 /* LocalWhisperTranscriber.swift */; };
+		3DCEEA6FB8DB40199B5982D3 /* whisper-cli in Resources */ = {isa = PBXBuildFile; fileRef = B90617E9FC454430BDBF57C7 /* whisper-cli */; };
+		72F89A2DDFB243668F0CC0DA /* Whisper-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = BB3BCD4EF4804699B24F7617 /* Whisper-LICENSE.txt */; };
 		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
 		02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */; };
 		B0A1A1A1A1A1A1A1A1A1A1A1 /* OpenRouterAssistantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A2A2A2A2A2A2A2A2A2A2A2 /* OpenRouterAssistantTests.swift */; };
@@ -87,6 +90,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		FD117AC2C4C1473D9E05F5A7 /* LocalWhisperTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWhisperTranscriber.swift; sourceTree = "<group>"; };
+		B90617E9FC454430BDBF57C7 /* whisper-cli */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = "whisper-cli"; sourceTree = "<group>"; };
+		BB3BCD4EF4804699B24F7617 /* Whisper-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Whisper-LICENSE.txt"; sourceTree = "<group>"; };
 		01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditTimelineTests.swift; sourceTree = "<group>"; };
 		B0A2A2A2A2A2A2A2A2A2A2A2 /* OpenRouterAssistantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistantTests.swift; sourceTree = "<group>"; };
 		B0A4A4A4A4A4A4A4A4A4A4A4 /* OpenRouterAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistant.swift; sourceTree = "<group>"; };
@@ -228,10 +234,20 @@
 		67CDD07686B91E7A4757E663 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				6CC5F290D1484329833AA3F3 /* Whisper */,
 				6F8286A5033B63337E4DD342 /* Info.plist */,
 				CE61898889994228EAC3F48D /* StudioRecorder.entitlements */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		6CC5F290D1484329833AA3F3 /* Whisper */ = {
+			isa = PBXGroup;
+			children = (
+				B90617E9FC454430BDBF57C7 /* whisper-cli */,
+				BB3BCD4EF4804699B24F7617 /* Whisper-LICENSE.txt */,
+			);
+			path = Whisper;
 			sourceTree = "<group>";
 		};
 		AEB60D501EAC087B4F803C04 /* StudioRecorderTests */ = {
@@ -289,6 +305,7 @@
 		CB745AD74D63EDF34EBCA822 /* Domain */ = {
 			isa = PBXGroup;
 			children = (
+				FD117AC2C4C1473D9E05F5A7 /* LocalWhisperTranscriber.swift */,
 				5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */,
 				B32A4624DC63A5C9C1A2B083 /* CapturePresentation.swift */,
 				39DAC799ABBEB02C029FD420 /* LiveProgramReadiness.swift */,
@@ -343,6 +360,7 @@
 			buildPhases = (
 				A77BB2CF2232BF266804EA4A /* Sources */,
 				5CFB72CDB48AC85184349881 /* Frameworks */,
+				821B55C2181943EF923FEEC1 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -409,6 +427,18 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		821B55C2181943EF923FEEC1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3DCEEA6FB8DB40199B5982D3 /* whisper-cli in Resources */,
+				72F89A2DDFB243668F0CC0DA /* Whisper-LICENSE.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		1A0BB5A010D6226E81F72FF7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -461,6 +491,7 @@
 				F195967D1996D9078D6FF408 /* ProjectEditRenderer.swift in Sources */,
 				D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */,
 				C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */,
+				D5898CC17C114D6F8AA15132 /* LocalWhisperTranscriber.swift in Sources */,
 				B0A3A3A3A3A3A3A3A3A3A3A3 /* OpenRouterAssistant.swift in Sources */,
 				196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */,
 				E9E0C0A0A54C9D2CC336B3DA /* ProjectMediaExporter.swift in Sources */,

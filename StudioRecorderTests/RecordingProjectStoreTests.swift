@@ -6,6 +6,104 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    private struct StubTranscriber: ProjectTranscribing {
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            await progress(0.5, "Recognizing")
+            return TimedTranscript(
+                projectID: recipe.projectID, sourceTrackID: recipe.sourceTrackID,
+                sourceDuration: recipe.sourceDuration, language: "uk",
+                recognitionModel: "test", alignmentModel: "test",
+                words: [TimedTranscriptWord(
+                    text: "Привіт", sourceStart: 0.1, sourceEnd: 0.4,
+                    timingStatus: .uncertain
+                )]
+            )
+        }
+    }
+
+    private struct MismatchedTranscriber: ProjectTranscribing {
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            TimedTranscript(
+                projectID: UUID(), sourceTrackID: recipe.sourceTrackID,
+                sourceDuration: recipe.sourceDuration, language: "uk",
+                recognitionModel: "test", alignmentModel: "test",
+                words: [TimedTranscriptWord(
+                    text: "Чуже", sourceStart: 0.1, sourceEnd: 0.4,
+                    timingStatus: .uncertain
+                )]
+            )
+        }
+    }
+
+    func testTranscriptionRejectsTranscriptForAnotherProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let jobStore = RecordingJobStore()
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: MismatchedTranscriber())
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .failed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .failed)
+        XCTAssertNil(try TimedTranscriptStore().load(in: project.rootURL, expectedProjectID: project.id))
+    }
+
+    func testInterruptedTranscriptionResumesAndPersistsTranscript() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let jobStore = RecordingJobStore()
+        var job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        job.state = .running
+        try jobStore.save(job, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: StubTranscriber())
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let transcript = try XCTUnwrap(TimedTranscriptStore().load(
+            in: project.rootURL, expectedProjectID: project.id
+        ))
+        XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
+    }
+
     func testHeavyJobsRunOldestQueuedRequestFirst() {
         let projectID = UUID()
         var olderExport = RecordingJob(projectID: projectID, kind: .export)
@@ -17,6 +115,48 @@ final class RecordingProjectStoreTests: XCTestCase {
             RecordingJobQueuePolicy.nextHeavyJob(in: [newerFinalization, olderExport])?.id,
             olderExport.id
         )
+    }
+
+    func testTranscriptionJobRetainsValidatedSourceAcrossRestartAndRetry() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let jobStore = RecordingJobStore()
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: project.rootURL.appending(path: "program.mov")
+        )
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        XCTAssertEqual(try jobStore.loadTranscription(for: job, in: project).sourceTrackID, "program")
+        XCTAssertEqual(RecordingJobQueuePolicy.nextHeavyJob(in: [job])?.id, job.id)
+
+        var failed = job
+        failed.state = .failed
+        failed.failure = "Offline"
+        try jobStore.save(failed, in: project)
+        let retried = try jobStore.retry(jobID: job.id, in: project)
+        XCTAssertEqual(retried.state, .queued)
+        XCTAssertEqual(retried.attempt, 2)
+        XCTAssertEqual(try jobStore.loadTranscription(for: retried, in: project).audioURL, recipe.audioURL)
+
+        let outside = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: destination.appending(path: "outside.mov")
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(outside, for: job, in: project))
+        let wrongTrack = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "another-track", sourceDuration: 10,
+            audioURL: recipe.audioURL
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(wrongTrack, for: job, in: project))
+        let wrongFile = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: project.rootURL.appending(path: "jobs/other.mov")
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(wrongFile, for: job, in: project))
     }
 
     func testInterruptedExportResumesItsCapturedEditRevision() async throws {

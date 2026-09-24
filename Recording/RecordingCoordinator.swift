@@ -207,9 +207,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private let projectStore: RecordingProjectStore
     private let projectEditStore = ProjectEditStore()
     private let jobStore = RecordingJobStore()
+    private let transcriber: any ProjectTranscribing
     private let retentionFinalizer = RecordingRetentionFinalizer()
     private var activeFinalizationJobID: UUID?
     private var activeExportJobID: UUID?
+    private var activeTranscriptionJobID: UUID?
+    private var didCheckAbandonedTranscriptionModels = false
     private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
@@ -250,11 +253,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     override init() {
         projectStore = RecordingProjectStore()
+        transcriber = WhisperProjectTranscriber()
         super.init()
     }
 
-    init(projectStore: RecordingProjectStore) {
+    init(
+        projectStore: RecordingProjectStore,
+        transcriber: any ProjectTranscribing = WhisperProjectTranscriber()
+    ) {
         self.projectStore = projectStore
+        self.transcriber = transcriber
         super.init()
     }
 
@@ -306,6 +314,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     func refreshProjects() async {
+        if !didCheckAbandonedTranscriptionModels {
+            didCheckAbandonedTranscriptionModels = true
+            Task.detached(priority: .background) {
+                WhisperTaskWorkspace.removeAbandonedWorkspaces()
+            }
+        }
         var snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
         var discoveredJobs: [RecordingJob] = []
         for index in snapshots.indices {
@@ -319,6 +333,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 projectJobs = []
             } else if loaded.contains(where: {
                 $0.id == activeFinalizationJobID || $0.id == activeExportJobID
+                    || $0.id == activeTranscriptionJobID
             }) {
                 projectJobs = loaded
             } else {
@@ -338,6 +353,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         interruptedProjects = snapshots.filter(\.isInterrupted)
         startNextFinalizationJob()
         startNextExportJob()
+        startNextTranscriptionJob()
     }
 
     func recoverProject(_ projectID: String) async throws {
@@ -693,8 +709,28 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
+    func enqueueTranscription(_ recipe: ProjectTranscriptionRecipe) async throws {
+        guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
+              snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
+            throw RecordingJobStoreError.invalidTranscription
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: recipe.projectID)
+        if let existing = try TimedTranscriptStore().load(
+            in: project.rootURL, expectedProjectID: project.id
+        ), existing.sourceTrackID == recipe.sourceTrackID,
+           abs(existing.sourceDuration - recipe.sourceDuration) < 0.1 { return }
+        guard !(try jobStore.load(in: project)).contains(where: {
+            $0.kind == .transcription && ($0.state == .queued || $0.state == .running || $0.state == .failed)
+        }) else { return }
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        await refreshProjects()
+    }
+
     private func startNextFinalizationJob() {
         guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
               let job = RecordingJobQueuePolicy.nextHeavyJob(
                 in: jobs, blockedIDs: blockedFinalizationJobIDs
               ), job.kind == .finalization else { return }
@@ -765,6 +801,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     private func startNextExportJob() {
         guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
               let job = RecordingJobQueuePolicy.nextHeavyJob(
                 in: jobs, blockedIDs: blockedFinalizationJobIDs
               ), job.kind == .export else { return }
@@ -849,6 +886,64 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
         }
         activeExportJobID = nil
+        await refreshProjects()
+    }
+
+    private func startNextTranscriptionJob() {
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(in: jobs, blockedIDs: blockedFinalizationJobIDs),
+              job.kind == .transcription else { return }
+        activeTranscriptionJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runTranscription(job)
+        }
+    }
+
+    private func runTranscription(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            let recipe = try jobStore.loadTranscription(for: job, in: project)
+            job.state = .running
+            job.stage = "Preparing local transcription"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+            let transcript = try await transcriber.transcribe(recipe) { [weak self, project] fraction, phase in
+                self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+            }
+            guard transcript.projectID == recipe.projectID,
+                  transcript.sourceTrackID == recipe.sourceTrackID,
+                  abs(transcript.sourceDuration - recipe.sourceDuration) < 0.1 else {
+                throw RecordingJobStoreError.invalidTranscription
+            }
+            try TimedTranscriptStore().save(transcript, in: project.rootURL)
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do { try persistJob(job, in: project) }
+                catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Transcription failed and its status could not be saved. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeTranscriptionJobID = nil
         await refreshProjects()
     }
 

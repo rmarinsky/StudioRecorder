@@ -16,6 +16,8 @@ struct ProjectDetailView: View {
     let onClose: () -> Void
     let exportRequest: Int
     let queueExport: (ProjectExportRecipe) async throws -> Void
+    let jobs: [RecordingJob]
+    let queueTranscription: (ProjectTranscriptionRecipe) async throws -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -38,6 +40,8 @@ struct ProjectDetailView: View {
     @State private var transcriptSearch = ""
     @State private var selectedWordOccurrenceID: String?
     @State private var transcriptError: String?
+    @State private var transcriptFileUnreadable = false
+    @State private var isQueuingTranscription = false
     @AppStorage("openRouter.model") private var assistantModel = OpenRouterAssistantClient.defaultModel
     @State private var assistantPrompt = ""
     @State private var assistantScope = OpenRouterAssistantScope.wholeProject
@@ -55,12 +59,16 @@ struct ProjectDetailView: View {
         project: RecordingProjectSnapshot,
         onClose: @escaping () -> Void,
         exportRequest: Int = 0,
-        queueExport: @escaping (ProjectExportRecipe) async throws -> Void
+        queueExport: @escaping (ProjectExportRecipe) async throws -> Void,
+        jobs: [RecordingJob],
+        queueTranscription: @escaping (ProjectTranscriptionRecipe) async throws -> Void
     ) {
         self.project = project
         self.onClose = onClose
         self.exportRequest = exportRequest
         self.queueExport = queueExport
+        self.jobs = jobs
+        self.queueTranscription = queueTranscription
         let playableTrackIDs = Set(project.recoveryReport.tracks.compactMap { track in
             switch track.state {
             case .finalized, .partialReadable: track.id
@@ -106,7 +114,16 @@ struct ProjectDetailView: View {
             if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
         }
         .task(id: programScreenTrackID) { await loadProgram() }
-        .task(id: project.id) { loadTranscript() }
+        .task(id: project.id) {
+            loadTranscript()
+            await queueMissingTranscript()
+        }
+        .onChange(of: editSession.timeline) { _, _ in
+            Task { await queueMissingTranscript() }
+        }
+        .onChange(of: jobs) { _, _ in
+            if transcriptionJob?.state == .completed { loadTranscript() }
+        }
         .onChange(of: project.id) { _, _ in
             assistantTask?.cancel()
             assistantTask = nil
@@ -490,7 +507,7 @@ struct ProjectDetailView: View {
             .padding(14)
             Divider()
             if let transcript, let timeline = editSession.timeline,
-               transcript.sourceTrackID == timeline.trackID {
+               transcript.isCompatible(with: timeline) {
                 TextField("Search transcript", text: $transcriptSearch)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 12)
@@ -546,16 +563,17 @@ struct ProjectDetailView: View {
                 }
                 HStack {
                     Button("Review Timing") { reviewSelectedWordTiming() }
-                        .disabled(selectedWordOccurrenceID == nil || selectedRange == nil)
+                        .disabled(!canReviewSelectedWordTiming)
                     Button("Delete Word") {
-                        guard let selectedRange else { return }
+                        guard let word = selectedTranscriptWord else { return }
+                        let wordRange = word.outputStart..<word.outputEnd
                         Task {
-                            await editSession.deleteOutputRange(selectedRange)
+                            await editSession.deleteOutputRange(wordRange)
                             selectedWordOccurrenceID = nil
                         }
                     }
                     .disabled(selectedTranscriptWord?.timingStatus == .uncertain
-                              || selectedWordOccurrenceID == nil || selectedRange == nil)
+                              || selectedWordOccurrenceID == nil)
                 }
                 .buttonStyle(.borderless)
                 .padding(10)
@@ -563,7 +581,7 @@ struct ProjectDetailView: View {
                     .buttonStyle(.borderless)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 10)
-                Text("Word cuts remove picture and sound together. Review uncertain boundaries on the waveform first.")
+                Text("Drag both timing handles on the waveform, audition the range, then review uncertain words. Word cuts remove picture and sound together.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
@@ -582,10 +600,23 @@ struct ProjectDetailView: View {
                         .foregroundStyle(.secondary)
                     Text("No timed transcript")
                         .font(.subheadline.weight(.medium))
-                    Text(transcriptError ?? "Local word recognition and alignment are not connected yet.")
+                    Text(transcriptError ?? transcriptionStatusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let transcriptionJob,
+                       transcriptionJob.state == .queued || transcriptionJob.state == .running {
+                        ProgressView(value: transcriptionJob.progress)
+                            .accessibilityLabel(transcriptionJob.stage)
+                    } else if transcriptFileUnreadable {
+                        Button("Reveal Project") { revealProject() }
+                    } else if transcriptionJob?.state != .failed {
+                        Button(isQueuingTranscription ? "Queuing…" : "Transcribe") {
+                            transcriptError = nil
+                            Task { await queueMissingTranscript() }
+                        }
+                        .disabled(isQueuingTranscription || editSession.timeline == nil)
+                    }
                 }
                 .padding(14)
                 Spacer()
@@ -605,25 +636,79 @@ struct ProjectDetailView: View {
         visibleTranscriptWords.first { $0.id == selectedWordOccurrenceID }
     }
 
+    private var canReviewSelectedWordTiming: Bool {
+        guard let transcript, let selectedTranscriptWord, let selectedRange,
+              let timeline = editSession.timeline,
+              let sourceRange = try? timeline.sourceRange(for: selectedRange),
+              let sourceWord = transcript.words.first(where: { $0.id == selectedTranscriptWord.sourceWordID })
+        else { return false }
+        return abs(sourceRange.lowerBound - sourceWord.sourceStart) >= 0.001
+            || abs(sourceRange.upperBound - sourceWord.sourceEnd) >= 0.001
+    }
+
     private func loadTranscript() {
         guard let projectID = project.identity.manifestID else { return }
         do {
             transcript = try TimedTranscriptStore().load(in: project.rootURL, expectedProjectID: projectID)
             transcriptError = nil
+            transcriptFileUnreadable = false
         } catch {
             transcript = nil
+            transcriptError = error.localizedDescription
+            transcriptFileUnreadable = true
+        }
+    }
+
+    private var transcriptionJob: RecordingJob? {
+        guard let projectID = project.identity.manifestID else { return nil }
+        return jobs.filter { $0.projectID == projectID && $0.kind == .transcription }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private var transcriptionStatusText: String {
+        if let transcriptionJob {
+            switch transcriptionJob.state {
+            case .queued, .running: return transcriptionJob.stage
+            case .failed: return "\(transcriptionJob.failure ?? "Transcription failed.") Retry from Jobs."
+            case .completed: return "The saved transcript is missing or belongs to another track."
+            }
+        }
+        return "Ukrainian words are recognized locally. Experimental word boundaries need waveform review before cutting."
+    }
+
+    private func queueMissingTranscript() async {
+        guard !isQueuingTranscription, transcriptError == nil,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              transcript?.isCompatible(with: timeline) != true,
+              transcriptionJob?.state != .queued,
+              transcriptionJob?.state != .running,
+              transcriptionJob?.state != .failed,
+              let audioURL = programSources?.audioURL ?? programScreenTrackURL else { return }
+        isQueuingTranscription = true
+        defer { isQueuingTranscription = false }
+        do {
+            try await queueTranscription(ProjectTranscriptionRecipe(
+                projectID: projectID, sourceTrackID: timeline.trackID,
+                sourceDuration: timeline.sourceDuration, audioURL: audioURL
+            ))
+        } catch {
             transcriptError = error.localizedDescription
         }
     }
 
     private func reviewSelectedWordTiming() {
-        guard let transcript, let selectedTranscriptWord, let selectedRange,
+        guard canReviewSelectedWordTiming,
+              let transcript, let selectedTranscriptWord, let selectedRange,
               let timeline = editSession.timeline else { return }
         do {
             let sourceRange = try timeline.sourceRange(for: selectedRange)
             let reviewed = try transcript.reviewWord(selectedTranscriptWord.sourceWordID, sourceRange: sourceRange)
             try TimedTranscriptStore().save(reviewed, in: project.rootURL)
             self.transcript = reviewed
+            if let revisedWord = reviewed.words(in: timeline).first(where: { $0.id == selectedTranscriptWord.id }) {
+                self.selectedRange = revisedWord.outputStart..<revisedWord.outputEnd
+            }
             transcriptError = nil
         } catch {
             transcriptError = error.localizedDescription

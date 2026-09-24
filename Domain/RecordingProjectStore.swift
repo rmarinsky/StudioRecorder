@@ -54,7 +54,7 @@ enum RecordingJobQueuePolicy {
     ) -> RecordingJob? {
         jobs.filter {
             $0.state == .queued
-                && ($0.kind == .finalization || $0.kind == .export)
+                && ($0.kind == .finalization || $0.kind == .export || $0.kind == .transcription)
                 && !blockedIDs.contains($0.id)
         }.min {
             $0.updatedAt == $1.updatedAt
@@ -106,6 +106,22 @@ struct ProjectExportRecipe: Codable, Sendable {
     }
 }
 
+struct ProjectTranscriptionRecipe: Codable, Sendable {
+    let schemaVersion: Int
+    let projectID: UUID
+    let sourceTrackID: String
+    let sourceDuration: TimeInterval
+    let audioURL: URL
+
+    init(projectID: UUID, sourceTrackID: String, sourceDuration: TimeInterval, audioURL: URL) {
+        schemaVersion = 1
+        self.projectID = projectID
+        self.sourceTrackID = sourceTrackID
+        self.sourceDuration = sourceDuration
+        self.audioURL = audioURL
+    }
+}
+
 enum RecordingJobStoreError: LocalizedError {
     case unsupportedSchema
     case projectMismatch
@@ -113,6 +129,7 @@ enum RecordingJobStoreError: LocalizedError {
     case jobNotFound
     case notRetryable
     case invalidExport
+    case invalidTranscription
 
     var errorDescription: String? {
         switch self {
@@ -122,6 +139,7 @@ enum RecordingJobStoreError: LocalizedError {
         case .jobNotFound: "The job no longer exists."
         case .notRetryable: "Only failed jobs can be retried."
         case .invalidExport: "The saved export request is invalid or references media outside this project."
+        case .invalidTranscription: "The saved transcription request is invalid or references media outside this project."
         }
     }
 }
@@ -183,6 +201,52 @@ final class RecordingJobStore {
         )
         try validateExport(recipe, project: project)
         return recipe
+    }
+
+    func saveTranscription(
+        _ recipe: ProjectTranscriptionRecipe, for job: RecordingJob, in project: RecordingProject
+    ) throws {
+        guard job.kind == .transcription else { throw RecordingJobStoreError.invalidTranscription }
+        try validateTranscription(recipe, project: project)
+        let url = transcriptionURL(for: job, in: project)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(recipe).write(to: url, options: .atomic)
+    }
+
+    func loadTranscription(for job: RecordingJob, in project: RecordingProject) throws -> ProjectTranscriptionRecipe {
+        guard job.kind == .transcription else { throw RecordingJobStoreError.invalidTranscription }
+        let recipe = try JSONDecoder().decode(
+            ProjectTranscriptionRecipe.self, from: Data(contentsOf: transcriptionURL(for: job, in: project))
+        )
+        try validateTranscription(recipe, project: project)
+        return recipe
+    }
+
+    private func transcriptionURL(for job: RecordingJob, in project: RecordingProject) -> URL {
+        project.rootURL.appending(path: "jobs/transcription-\(job.id.uuidString).json")
+    }
+
+    private func validateTranscription(
+        _ recipe: ProjectTranscriptionRecipe, project: RecordingProject
+    ) throws {
+        let root = project.rootURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let source = recipe.audioURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let manifestTracks = project.manifest.tracks ?? []
+        let knownSource = manifestTracks.isEmpty || manifestTracks.contains {
+            $0.id == recipe.sourceTrackID && ($0.kind == .screen || $0.kind == .program)
+        }
+        let knownAudio = manifestTracks.isEmpty || manifestTracks.contains {
+            ($0.kind == .screen || $0.kind == .audio || $0.kind == .program)
+                && project.rootURL.appending(path: $0.relativePath)
+                    .standardizedFileURL.resolvingSymlinksInPath().path == source
+        }
+        guard recipe.schemaVersion == 1, recipe.projectID == project.id,
+              !recipe.sourceTrackID.isEmpty,
+              recipe.sourceDuration.isFinite, recipe.sourceDuration > 0,
+              recipe.audioURL.isFileURL, source.hasPrefix(root + "/"),
+              knownSource, knownAudio else {
+            throw RecordingJobStoreError.invalidTranscription
+        }
     }
 
     private func exportURL(for job: RecordingJob, in project: RecordingProject) -> URL {

@@ -3,6 +3,28 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectAudioWaveformTests: XCTestCase {
+    func testWhisperAudioExtractorWrites16kMonoWAVFromRecordingAudio() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.caf")
+        let wavURL = directory.appending(path: "recognition.wav")
+        try writeAudioFile(to: sourceURL)
+        let original = try Data(contentsOf: sourceURL)
+
+        try await WhisperAudioExtractor().writeWAV(from: sourceURL, to: wavURL)
+
+        let wav = try Data(contentsOf: wavURL)
+        XCTAssertEqual(String(decoding: wav[0..<4], as: UTF8.self), "RIFF")
+        XCTAssertEqual(String(decoding: wav[8..<12], as: UTF8.self), "WAVE")
+        XCTAssertEqual(wav[22], 1) // mono
+        XCTAssertEqual(wav[24], 0x80) // 16_000 Hz, little endian
+        XCTAssertEqual(wav[25], 0x3e)
+        XCTAssertEqual(wav[34], 16) // signed 16-bit PCM
+        XCTAssertGreaterThan(wav.count, 31_000)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), original)
+    }
+
     func testSilenceDetectorFindsRealAudioGapWithoutChangingSource() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

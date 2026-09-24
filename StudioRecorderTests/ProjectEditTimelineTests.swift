@@ -1,7 +1,97 @@
+import AVFoundation
+import Darwin
 import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testWhisperCLIIsBundledAndRunsWithoutExternalLibraries() throws {
+        let resource = try XCTUnwrap(Bundle.main.url(forResource: "whisper-cli", withExtension: nil))
+        let process = Process()
+        process.executableURL = resource
+        process.arguments = ["-h"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
+    func testWhisperTaskWorkspaceRemovesModelsAfterFailure() async throws {
+        struct ExpectedFailure: Error {}
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let workspace = WhisperTaskWorkspace(rootURL: root)
+        do {
+            try await workspace.run { directory in
+                try Data("temporary model".utf8).write(to: directory.appending(path: "model.bin"))
+                throw ExpectedFailure()
+            }
+            XCTFail("Expected transcription failure")
+        } catch is ExpectedFailure {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
+    func testWhisperWorkspaceReapsOnlyAbandonedModelsAfterRestart() throws {
+        let parent = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let abandoned = parent.appending(path: "StudioRecorder-Whisper-2000000000-\(UUID().uuidString)")
+        let active = parent.appending(path: "StudioRecorder-Whisper-\(getpid())-\(UUID().uuidString)")
+        for directory in [abandoned, active] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("temporary model".utf8).write(to: directory.appending(path: "model.bin"))
+        }
+
+        WhisperTaskWorkspace.removeAbandonedWorkspaces(in: parent)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: active.path))
+    }
+
+    func testWhisperModelHashRejectsUnexpectedDownload() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try Data("wrong model".utf8).write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertFalse(try WhisperModelDownloader.matchesExpectedSHA256(at: root))
+    }
+
+    func testWhisperProcessRunnerProducesJSONAndDoesNotUseShellInput() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appending(path: "recognizer")
+        try Data("#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = '-of' ]; then shift; printf '{\"transcription\":[]}' > \"$1.json\"; exit 0; fi; shift; done\nexit 2\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let output = try await WhisperProcessRunner().run(
+            executableURL: executable,
+            modelURL: root.appending(path: "model.bin"),
+            wavURL: root.appending(path: "audio.wav"),
+            outputBaseURL: root.appending(path: "words")
+        )
+        XCTAssertEqual(try Data(contentsOf: output), Data("{\"transcription\":[]}".utf8))
+    }
+
+    func testLocalWhisperTranscribesApprovedUkrainianSample() async throws {
+        let movieURL = URL(fileURLWithPath: "/private/tmp/StudioRecorderSTTSample.mov")
+        let wavURL = URL(fileURLWithPath: "/private/tmp/StudioRecorderSTTSample.wav")
+        let sourceURL = FileManager.default.fileExists(atPath: movieURL.path) ? movieURL : wavURL
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw XCTSkip("Place an approved short Ukrainian recording at /private/tmp/StudioRecorderSTTSample.mov or .wav to run this integration check.")
+        }
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let transcript = try await WhisperProjectTranscriber().transcribe(recipe) { _, _ in }
+        XCTAssertGreaterThan(transcript.words.count, 30)
+        XCTAssertTrue(transcript.words.allSatisfy { $0.timingStatus == .uncertain })
+        XCTAssertTrue(transcript.words.allSatisfy {
+            $0.sourceStart >= 0 && $0.sourceStart < $0.sourceEnd && $0.sourceEnd <= duration
+        })
+    }
+
     func testWhisperWordImportKeepsOnlyBoundedSingleWordsAsUncertain() throws {
         let payload = Data("""
         {"transcription":[
@@ -52,6 +142,36 @@ final class ProjectEditTimelineTests: XCTestCase {
 
         let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 3)
         XCTAssertEqual(transcript.words(in: timeline).map(\.text), ["first", "second", "third"])
+    }
+
+    func testUncertainWordNeedsAChangedBoundaryBeforeManualReview() throws {
+        let word = TimedTranscriptWord(
+            text: "Привіт", sourceStart: 0.2, sourceEnd: 0.7, timingStatus: .uncertain
+        )
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "whisper", alignmentModel: "experimental",
+            words: [word]
+        )
+
+        XCTAssertThrowsError(try transcript.reviewWord(word.id, sourceRange: 0.2..<0.7))
+        let reviewed = try transcript.reviewWord(word.id, sourceRange: 0.18..<0.74)
+        XCTAssertEqual(reviewed.words[0].timingStatus, .reviewed)
+        XCTAssertEqual(reviewed.words[0].sourceStart, 0.18)
+        XCTAssertEqual(reviewed.words[0].sourceEnd, 0.74)
+    }
+
+    func testTranscriptRejectsSameTrackWithDifferentSourceDuration() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "whisper", alignmentModel: "experimental",
+            words: []
+        )
+        let matching = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let mismatched = try ProjectEditTimeline(trackID: "program", sourceDuration: 3)
+
+        XCTAssertTrue(transcript.isCompatible(with: matching))
+        XCTAssertFalse(transcript.isCompatible(with: mismatched))
     }
 
     func testTimedWordsFollowEditedVideoOrderAndMarkPartialWordsUncertain() throws {
