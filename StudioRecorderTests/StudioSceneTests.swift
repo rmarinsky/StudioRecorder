@@ -34,6 +34,23 @@ final class StudioSceneTests: XCTestCase {
         XCTAssertEqual(scenes.presentation(at: try XCTUnwrap(edit.sourceTime(at: 8))).name, "Camera")
     }
 
+    func testSceneOverrideRestoresRecordedSwitchJustInsideRoundedEnd() throws {
+        var initial = CapturePresentationSnapshot.default
+        initial.name = "Initial"
+        var recorded = initial
+        recorded.name = "Recorded"
+        var override = initial
+        override.name = "Override"
+        var scenes = StudioSceneTimeline(initialPresentation: initial)
+        scenes.append(recorded, at: 5)
+
+        try scenes.overrideScene(in: 2..<5.0000001, sourceDuration: 10,
+                                 with: override, displayID: nil, transition: .cut)
+
+        XCTAssertEqual(scenes.presentation(at: 4).name, "Override")
+        XCTAssertEqual(scenes.presentation(at: 6).name, "Recorded")
+    }
+
     func testAutomaticCameraOrientationPreservesTheSessionNativeRotation() {
         XCTAssertNil(CameraOrientationApplier.rotationAngle(for: .automatic))
         XCTAssertEqual(CameraOrientationApplier.rotationAngle(for: .landscape), 0)

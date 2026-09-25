@@ -28,6 +28,7 @@ final class OpenRouterAssistantTests: XCTestCase {
 
         XCTAssertEqual(request.url?.host, "127.0.0.1")
         XCTAssertEqual(request.url?.path, "/api/chat")
+        XCTAssertGreaterThanOrEqual(request.timeoutInterval, 300)
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertEqual(json["stream"] as? Bool, false)
         XCTAssertNotNil(json["format"] as? [String: Any])
@@ -144,9 +145,14 @@ final class OpenRouterAssistantTests: XCTestCase {
         """.utf8)
         XCTAssertEqual(try OpenRouterAssistantClient.parseDraft(from: valid).titles, ["A title"])
 
-        let invalid = Data("""
-        {"choices":[{"message":{"content":"{\\"reply\\":\\" \",\\"titles\\":[],\\"descriptions\\":[],\\"new_take_wording\\":[],\\"cuts\\":[]}"}}]}
-        """.utf8)
+        let blankReply = """
+        {"reply":" ","titles":[],"descriptions":[],"new_take_wording":[],"cuts":[]}
+        """
+        let invalid = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": blankReply]]]
+        ])
+        let outer = try XCTUnwrap(JSONSerialization.jsonObject(with: invalid) as? [String: Any])
+        XCTAssertNotNil(outer["choices"])
         XCTAssertThrowsError(try OpenRouterAssistantClient.parseDraft(from: invalid))
     }
 

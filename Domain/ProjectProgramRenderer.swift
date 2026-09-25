@@ -10,7 +10,7 @@ enum ProjectProgramExportPolicy {
         availablePresets: [String]
     ) -> String {
         if codecPolicy == .automatic,
-           renderSize.width * renderSize.height >= 3_840 * 2_160,
+           renderSize == CGSize(width: 3_840, height: 2_160),
            availablePresets.contains(AVAssetExportPresetHEVC3840x2160) {
             return AVAssetExportPresetHEVC3840x2160
         }

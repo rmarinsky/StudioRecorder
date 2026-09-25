@@ -224,6 +224,22 @@ final class ProjectEditRendererTests: XCTestCase {
         )
         XCTAssertEqual(
             ProjectProgramExportPolicy.presetName(
+                codecPolicy: .automatic,
+                renderSize: CGSize(width: 2_160, height: 3_840),
+                availablePresets: [AVAssetExportPresetHEVCHighestQuality, AVAssetExportPresetHEVC3840x2160]
+            ),
+            AVAssetExportPresetHEVCHighestQuality
+        )
+        XCTAssertEqual(
+            ProjectProgramExportPolicy.presetName(
+                codecPolicy: .automatic,
+                renderSize: CGSize(width: 4_096, height: 2_160),
+                availablePresets: [AVAssetExportPresetHEVCHighestQuality, AVAssetExportPresetHEVC3840x2160]
+            ),
+            AVAssetExportPresetHEVCHighestQuality
+        )
+        XCTAssertEqual(
+            ProjectProgramExportPolicy.presetName(
                 codecPolicy: .h264,
                 renderSize: CGSize(width: 3_840, height: 2_160),
                 availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]

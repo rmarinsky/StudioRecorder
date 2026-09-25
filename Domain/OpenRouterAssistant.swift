@@ -792,7 +792,7 @@ struct OllamaAssistantClient {
             "stream": false,
             "keep_alive": "5m",
         ]
-        var request = URLRequest(url: Self.baseURL.appending(path: "api/chat"))
+        var request = URLRequest(url: Self.baseURL.appending(path: "api/chat"), timeoutInterval: 300)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

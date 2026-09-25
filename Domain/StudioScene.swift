@@ -1078,11 +1078,11 @@ struct StudioSceneTimeline: Codable, Equatable, Sendable {
         }
         let restoredPresentation = self.presentation(at: sourceRange.upperBound)
         let restoredDisplayID = self.displayID(at: sourceRange.upperBound)
-        let hasRecordedSwitchAtEnd = transitions.contains {
-            abs($0.sourceTime - sourceRange.upperBound) < 0.001
-        }
         transitions.removeAll {
             $0.sourceTime >= sourceRange.lowerBound && $0.sourceTime < sourceRange.upperBound
+        }
+        let hasRecordedSwitchAtEnd = transitions.contains {
+            abs($0.sourceTime - sourceRange.upperBound) < 0.001
         }
         transitions.append(StudioSceneTransition(
             sourceTime: sourceRange.lowerBound,
