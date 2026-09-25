@@ -8,12 +8,18 @@ private struct SelectedSceneInterval: Identifiable {
     let presentation: CapturePresentationSnapshot
 }
 
+struct ProjectTimelineFocusRequest: Equatable {
+    let id = UUID()
+    let range: Range<TimeInterval>
+}
+
 struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
     let onExportMovie: () -> Void
     let commandsOnly: Bool
     let proposedRanges: [Range<TimeInterval>]
     let proposedMove: OpenRouterReviewedMove?
+    let focusRequest: ProjectTimelineFocusRequest?
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
@@ -29,6 +35,7 @@ struct ProjectQuickEditorView: View {
         selectedRange: Binding<Range<TimeInterval>?> = .constant(nil),
         proposedRanges: [Range<TimeInterval>] = [],
         proposedMove: OpenRouterReviewedMove? = nil,
+        focusRequest: ProjectTimelineFocusRequest? = nil,
         commandsOnly: Bool = false
     ) {
         self.session = session
@@ -36,6 +43,7 @@ struct ProjectQuickEditorView: View {
         _selectedRange = selectedRange
         self.proposedRanges = proposedRanges
         self.proposedMove = proposedMove
+        self.focusRequest = focusRequest
         self.commandsOnly = commandsOnly
     }
 
@@ -94,6 +102,7 @@ struct ProjectQuickEditorView: View {
                 sceneTransitions: session.sceneTimeline?.transitions ?? [],
                 proposedRanges: proposedRanges,
                 proposedMove: proposedMove,
+                focusRequest: focusRequest,
                 selectedRange: $selectedRange,
                 onSeek: { time in
                     session.selectedSegmentID = timeline.segment(at: time)?.id
@@ -309,7 +318,7 @@ struct ProjectQuickEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("Commands use the same non-destructive timeline actions as the buttons. Transcription, silence detection, and subtitles are not connected yet.")
+                Text("Commands use the same non-destructive timeline actions as the buttons. Use Transcript and Find Silences for timed edits.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1002,6 +1011,7 @@ private struct ProjectLinkedTimeline: View {
     let sceneTransitions: [StudioSceneTransition]
     let proposedRanges: [Range<TimeInterval>]
     let proposedMove: OpenRouterReviewedMove?
+    let focusRequest: ProjectTimelineFocusRequest?
     @Binding var selectedRange: Range<TimeInterval>?
     let onSeek: (TimeInterval) -> Void
     let onDelete: () -> Void
@@ -1100,6 +1110,14 @@ private struct ProjectLinkedTimeline: View {
             .frame(height: rulerHeight + laneHeight * 2)
         }
         .frame(height: rulerHeight + laneHeight * 2 + 28)
+        .onChange(of: focusRequest?.id) { _, _ in
+            guard let focusRequest,
+                  let focused = ProjectTimelineViewport.focusing(
+                    duration: timeline.duration, range: focusRequest.range
+                  ) else { return }
+            zoomStep = focused.zoomStep
+            position = focused.position
+        }
     }
 
     private func time(for x: CGFloat, width: CGFloat) -> TimeInterval {

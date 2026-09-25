@@ -36,6 +36,7 @@ struct ProjectDetailView: View {
     @State private var isTranscriptVisible = true
     @State private var isShowingDetails = false
     @State private var selectedRange: Range<TimeInterval>?
+    @State private var timelineFocusRequest: ProjectTimelineFocusRequest?
     @State private var transcript: TimedTranscript?
     @State private var transcriptSearch = ""
     @State private var selectedWordOccurrenceID: String?
@@ -747,6 +748,9 @@ struct ProjectDetailView: View {
                             Button {
                                 selectedWordOccurrenceID = word.id
                                 selectedRange = word.outputStart..<word.outputEnd
+                                timelineFocusRequest = ProjectTimelineFocusRequest(
+                                    range: word.outputStart..<word.outputEnd
+                                )
                                 Task { await editSession.player.seek(
                                     to: CMTime(seconds: word.outputStart, preferredTimescale: 600)
                                 ) }
@@ -964,7 +968,6 @@ struct ProjectDetailView: View {
             HStack(spacing: 8) {
                 Button("All Projects", systemImage: "chevron.left", action: onClose)
                     .labelStyle(.iconOnly)
-                    .keyboardShortcut(.escape, modifiers: [])
                 if !isAssistantVisible {
                     Button("Show Assistant", systemImage: "sidebar.left") { isAssistantVisible = true }
                         .labelStyle(.iconOnly)
@@ -1036,7 +1039,8 @@ struct ProjectDetailView: View {
                     onExportMovie: exportEditedMovie,
                     selectedRange: $selectedRange,
                     proposedRanges: pendingAssistantCuts?.ranges ?? [],
-                    proposedMove: pendingAssistantMove
+                    proposedMove: pendingAssistantMove,
+                    focusRequest: timelineFocusRequest
                 )
                     .padding(12)
             }

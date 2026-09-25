@@ -16,6 +16,24 @@ struct ProjectTimelineViewport: Equatable {
     func time(atFraction fraction: Double) -> TimeInterval {
         min(max(visibleStart + visibleDuration * min(max(fraction, 0), 1), 0), duration)
     }
+
+    static func focusing(
+        duration: TimeInterval, range: Range<TimeInterval>
+    ) -> ProjectTimelineViewport? {
+        guard duration.isFinite, duration > 0,
+              range.lowerBound.isFinite, range.upperBound.isFinite,
+              range.lowerBound >= 0, range.lowerBound < range.upperBound,
+              range.upperBound <= duration else { return nil }
+        let window = max(8, (range.upperBound - range.lowerBound) * 3)
+        let zoomStep = min(8, max(0, Int(ceil(log2(max(duration / window, 1))))))
+        let visibleDuration = duration / pow(2, Double(zoomStep))
+        let remaining = max(duration - visibleDuration, 0)
+        let center = (range.lowerBound + range.upperBound) / 2
+        let position = remaining > 0
+            ? min(max((center - visibleDuration / 2) / remaining, 0), 1)
+            : 0
+        return ProjectTimelineViewport(duration: duration, zoomStep: zoomStep, position: position)
+    }
 }
 
 enum ProjectEditTimelineError: LocalizedError, Equatable {

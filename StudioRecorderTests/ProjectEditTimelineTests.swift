@@ -698,6 +698,18 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(viewport.time(atFraction: 2), 1285, accuracy: 0.001)
     }
 
+    func testTimelineViewportFocusesSelectedWordInLongRecording() throws {
+        let viewport = try XCTUnwrap(ProjectTimelineViewport.focusing(
+            duration: 2_640, range: 13.58..<14.16
+        ))
+
+        XCTAssertEqual(viewport.zoomStep, 8)
+        XCTAssertLessThan(viewport.visibleStart, 13.58)
+        XCTAssertGreaterThan(viewport.visibleStart + viewport.visibleDuration, 14.16)
+        XCTAssertGreaterThan(13.58 - viewport.visibleStart, 2)
+        XCTAssertNil(ProjectTimelineViewport.focusing(duration: 2_640, range: 2_639..<2_641))
+    }
+
     func testMovingSegmentChangesOutputOrderWithoutChangingSourceRanges() throws {
         let firstID = UUID()
         let secondID = UUID()
