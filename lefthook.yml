@@ -7,3 +7,4 @@ pre-push:
   commands:
     secrets:
       run: ./scripts/check-secrets.sh outbound
+      use_stdin: true
