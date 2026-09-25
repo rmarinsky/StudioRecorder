@@ -65,6 +65,14 @@ enum RecordingOutputCompletionPolicy {
     }
 }
 
+enum RecordingStartContinuationPolicy {
+    static func canContinue(
+        attempt: UUID, activeAttempt: UUID?, state: RecordingState, isTearingDown: Bool
+    ) -> Bool {
+        activeAttempt == attempt && state == .preparing && !isTearingDown
+    }
+}
+
 struct AvailableDisplay: Identifiable, Equatable {
     let id: UInt32
     let title: String
@@ -246,6 +254,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
     private var outputCompletion: CheckedContinuation<Bool, Never>?
     private var isTearingDown = false
+    private var activeStartAttempt: UUID?
     private var terminalFailure: String?
     private var configuredProjectDirectories: Set<URL> = []
     private var lastCameraHealthDuration: TimeInterval = 0
@@ -390,6 +399,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func startRecording(_ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil) async {
         guard state == .ready else { return }
+        let startAttempt = UUID()
+        activeStartAttempt = startAttempt
         state = .preparing
         terminalFailure = nil
         finalizationWarning = nil
@@ -422,6 +433,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     availableCapacity: availableCapacity,
                     requiredCapacity: requiredCapacity
                ) {
+                activeStartAttempt = nil
                 state = .failed(
                     "Not enough free space for this recording. Keep at least "
                     + ByteCountFormatter.string(fromByteCount: requiredCapacity, countStyle: .file)
@@ -433,10 +445,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
         do {
             let content = try await SCShareableContent.current
+            guard canContinueRecordingStart(startAttempt) else { return }
             let displaysByID = Dictionary(uniqueKeysWithValues: content.displays.map { ($0.displayID, $0) })
             let selected = request.displaySources.compactMap { displaysByID[$0.id] }
             guard selected.count == request.displaySources.count,
                   !selected.isEmpty || request.camera != nil else {
+                activeStartAttempt = nil
                 state = .failed("A selected display is no longer available. Refresh sources before recording.")
                 return
             }
@@ -544,12 +558,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         existingSession: cameraPreviewSession
                     )
                 } catch {
+                    guard canContinueRecordingStart(startAttempt) else { return }
                     try? projectStore.markFailure(
                         trackID: project.trackID(for: .camera),
                         detail: error.localizedDescription,
                         in: project
                     )
                     throw error
+                }
+                guard canContinueRecordingStart(startAttempt) else {
+                    try? await recorder.stop()
+                    return
                 }
                 cameraRecorder = recorder
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
@@ -558,10 +577,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 expected: Set(selected.map { LiveSourceID.screen(displayID: $0.displayID) }),
                 startedAfter: Self.currentHostTime
             )
-            for capture in captures.values {
+            for capture in Array(captures.values) {
                 try await capture.stream.startCapture()
+                guard canContinueRecordingStart(startAttempt) else {
+                    try? await capture.stream.stopCapture()
+                    return
+                }
             }
-            guard await waitForFreshScreenFrames() else {
+            let hasFreshScreenFrames = await waitForFreshScreenFrames()
+            guard canContinueRecordingStart(startAttempt) else { return }
+            guard hasFreshScreenFrames else {
                 let sources = screenStartGate.missingSources.map(\.label).joined(separator: ", ")
                 await beginInterruptedTeardown(
                     reason: "Recording did not start because \(sources) did not produce a current screen frame. Review the selected display and try again."
@@ -581,9 +606,18 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             startDurationTimer()
             startSourceHealthTimer()
             state = .recording
+            activeStartAttempt = nil
         } catch {
+            guard canContinueRecordingStart(startAttempt) else { return }
             await beginInterruptedTeardown(reason: error.localizedDescription)
         }
+    }
+
+    private func canContinueRecordingStart(_ attempt: UUID) -> Bool {
+        RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: activeStartAttempt,
+            state: state, isTearingDown: isTearingDown
+        )
     }
 
     func pauseRecording() {
@@ -1445,6 +1479,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func beginInterruptedTeardown(reason: String) async {
         terminalFailure = terminalFailure ?? reason
         guard !isTearingDown else { return }
+        activeStartAttempt = nil
         isTearingDown = true
         state = .stopping
         durationTask?.cancel()
@@ -1468,6 +1503,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func clearCaptureState() {
+        activeStartAttempt = nil
         sourceHealthTask?.cancel()
         sourceHealthTask = nil
         sourceRecoveryTask?.cancel()

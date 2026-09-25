@@ -316,6 +316,22 @@ final class ProjectEditRendererTests: XCTestCase {
         )
     }
 
+    func testRecordingStartCannotResumeAfterItsTeardown() {
+        let attempt = UUID()
+        XCTAssertTrue(RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: attempt, state: .preparing, isTearingDown: false
+        ))
+        XCTAssertFalse(RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: nil, state: .failed("Capture stopped"), isTearingDown: false
+        ))
+        XCTAssertFalse(RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: attempt, state: .stopping, isTearingDown: true
+        ))
+        XCTAssertFalse(RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: UUID(), state: .preparing, isTearingDown: false
+        ))
+    }
+
     func testAudioMixAppliesIndependentSourceGainByPersistentTrackIdentity() throws {
         let composition = AVMutableComposition()
         _ = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: 11))
