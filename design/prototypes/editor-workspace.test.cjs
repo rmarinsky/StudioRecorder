@@ -35,6 +35,14 @@ test('the chat offers sentence analysis and keeps edit proposals reviewable', ()
   assert.match(app, /Select both recorded phrases or clear the selection/);
 });
 
+test('prototype editing shortcuts and intent stay in the visible editor', () => {
+  const app = fs.readFileSync(path.join(__dirname, 'editor-workspace-app.js'), 'utf8');
+  assert.match(app, /\/\\b\(reorder\|move\)\\b\//);
+  assert.match(app, /let keyboardAnchor = null/);
+  assert.match(app, /selectOutputRange\(keyboardAnchor, playhead, 'keyboard'\)/);
+  assert.match(app, /if \(byId\('editorScreen'\)\.hidden \|\| document\.querySelector\('dialog\[open\]'\)\) return/);
+});
+
 test('prototype controls reference unique elements', () => {
   const app = fs.readFileSync(path.join(__dirname, 'editor-workspace-app.js'), 'utf8');
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);

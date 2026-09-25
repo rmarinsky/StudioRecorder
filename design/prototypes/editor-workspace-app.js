@@ -23,6 +23,7 @@
   let viewStart = 68;
   let viewSpan = 16;
   let playhead = 72.16;
+  let keyboardAnchor = null;
   let wordAnchor = null;
   let visibleWords = [];
   let proposal = null;
@@ -280,6 +281,7 @@
   }
 
   function selectOutputRange(start, end, origin = 'timeline') {
+    if (origin !== 'keyboard') keyboardAnchor = null;
     selectionOrigin = origin;
     timeline.select(start, end);
     syncSelection();
@@ -302,6 +304,7 @@
   }
 
   function afterEdit(label) {
+    keyboardAnchor = null;
     proposal = null;
     if (proposalCard) proposalCard.remove();
     proposalCard = null;
@@ -418,7 +421,7 @@
       showProposal({ type: 'cut', title: 'Remove the long pause', description: formatTime(gap.start, true) + '–' + formatTime(gap.end, true) + ' · removes 1.35 s from video and audio.', start: gap.start, end: gap.end });
       return;
     }
-    if (query.includes('reorder') || query.includes('move') || query.includes('перестав') || query.includes('поміня')) {
+    if (/\b(reorder|move)\b/.test(query) || query.includes('перестав') || query.includes('поміня')) {
       const first = timeline.sourceRangeToOutput(72.16, 74.75);
       const second = timeline.sourceRangeToOutput(76.10, 78.72);
       if (first.length !== 1 || second.length !== 1 ||
@@ -554,6 +557,7 @@
     };
     track.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
+      keyboardAnchor = null;
       dragStart = outputAt(event.clientX);
       track.setPointerCapture(event.pointerId);
       playhead = dragStart;
@@ -578,13 +582,16 @@
       event.preventDefault();
       const prior = playhead;
       playhead = Math.max(0, Math.min(timeline.duration, playhead + (event.key === 'ArrowRight' ? .1 : -.1)));
-      if (event.shiftKey) selectOutputRange(timeline.selection ? timeline.selection.start : prior, playhead);
-      else { timeline.clearSelection(); syncSelection(); }
+      if (event.shiftKey) {
+        if (keyboardAnchor === null) keyboardAnchor = prior;
+        selectOutputRange(keyboardAnchor, playhead, 'keyboard');
+      } else { keyboardAnchor = null; timeline.clearSelection(); syncSelection(); }
       renderTimeline();
     });
   }
 
   byId('rulerMarks').addEventListener('click', event => {
+    keyboardAnchor = null;
     const rect = byId('rulerMarks').getBoundingClientRect();
     playhead = Math.max(0, Math.min(timeline.duration, viewStart + (event.clientX - rect.left) / rect.width * viewSpan));
     renderTimeline();
@@ -609,7 +616,7 @@
     selectWord(next, event.shiftKey);
   });
   byId('transcriptSearch').addEventListener('input', applyTranscriptSearch);
-  byId('clearScope').onclick = () => { timeline.clearSelection(); wordAnchor = null; selectionOrigin = 'timeline'; syncSelection(); };
+  byId('clearScope').onclick = () => { keyboardAnchor = null; timeline.clearSelection(); wordAnchor = null; selectionOrigin = 'timeline'; syncSelection(); };
   byId('cutRange').onclick = () => removeSelected();
   byId('cutWords').onclick = () => removeSelected(true);
   byId('undo').onclick = () => { if (timeline.undo()) afterEdit('Undo'); };
@@ -747,9 +754,10 @@
     if (event.key === 'Escape') {
       if (!byId('jobsDrawer').hidden) byId('closeJobs').click();
       else if (proposal) dismissProposal();
-      else if (timeline.selection) { timeline.clearSelection(); syncSelection(); }
+      else if (timeline.selection) { keyboardAnchor = null; timeline.clearSelection(); syncSelection(); }
     }
     if (typing) return;
+    if (byId('editorScreen').hidden || document.querySelector('dialog[open]')) return;
     if ((event.key === 'Delete' || event.key === 'Backspace') && timeline.selection) { event.preventDefault(); removeSelected(); }
     if (event.metaKey && event.key.toLowerCase() === 'z') { event.preventDefault(); byId(event.shiftKey ? 'redo' : 'undo').click(); }
     if (event.metaKey && event.key.toLowerCase() === 'f' && !byId('editorScreen').hidden) { event.preventDefault(); byId('transcriptSearch').focus(); }
