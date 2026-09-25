@@ -314,6 +314,7 @@ struct StudioRecorderRootView: View {
 
     private func routeButton(_ title: String, icon: String, route: MainRoute) -> some View {
         let isSelected = snapshot.route == route
+            && (route != .projects || snapshot.selectedProjectID == nil)
         return Button {
             resetManualZoomIfNeeded()
             model.send(.selectRoute(route))
