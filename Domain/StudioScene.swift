@@ -332,7 +332,7 @@ extension StudioDraft {
         cameras: [AvailableCamera]
     ) {
         let configuration = configuration.validated()
-        frameRate = configuration.frameRate
+        frameRate = CaptureDefaults.frameRate(configuration.frameRate, for: presentation.canvas)
         codecPolicy = configuration.codecPolicy
         retentionPolicy = configuration.retentionPolicy
         includeCursor = configuration.includeCursor
@@ -985,6 +985,18 @@ struct StudioManualZoomMarker: Equatable, Identifiable, Sendable {
     var zoomFactor: CGFloat { 1 / max(scale, 0.01) }
 }
 
+enum StudioSceneEditError: LocalizedError {
+    case invalidRange
+    case unavailableSource
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRange: "Choose an interval within the captured recording."
+        case .unavailableSource: "The requested screen or camera was not captured throughout this interval."
+        }
+    }
+}
+
 struct StudioSceneTimeline: Codable, Equatable, Sendable {
     let schemaVersion: Int
     private(set) var transitions: [StudioSceneTransition]
@@ -1048,6 +1060,45 @@ struct StudioSceneTimeline: Codable, Equatable, Sendable {
             transitions.append(transition)
             transitions.sort { $0.sourceTime < $1.sourceTime }
         }
+    }
+
+    mutating func overrideScene(
+        in sourceRange: Range<TimeInterval>,
+        sourceDuration: TimeInterval,
+        with presentation: CapturePresentationSnapshot,
+        displayID: UInt32?,
+        transition: StudioSceneTransitionConfiguration
+    ) throws {
+        guard sourceDuration.isFinite, sourceDuration > 0,
+              sourceRange.lowerBound.isFinite, sourceRange.upperBound.isFinite,
+              sourceRange.lowerBound >= 0,
+              sourceRange.lowerBound < sourceRange.upperBound,
+              sourceRange.upperBound <= sourceDuration else {
+            throw StudioSceneEditError.invalidRange
+        }
+        let restoredPresentation = self.presentation(at: sourceRange.upperBound)
+        let restoredDisplayID = self.displayID(at: sourceRange.upperBound)
+        transitions.removeAll {
+            $0.sourceTime >= sourceRange.lowerBound && $0.sourceTime < sourceRange.upperBound
+        }
+        let hasRecordedSwitchAtEnd = transitions.contains {
+            abs($0.sourceTime - sourceRange.upperBound) < 0.001
+        }
+        transitions.append(StudioSceneTransition(
+            sourceTime: sourceRange.lowerBound,
+            presentation: presentation.validated(),
+            transition: transition,
+            displayID: displayID
+        ))
+        if !hasRecordedSwitchAtEnd, sourceRange.upperBound < sourceDuration {
+            transitions.append(StudioSceneTransition(
+                sourceTime: sourceRange.upperBound,
+                presentation: restoredPresentation,
+                transition: transition,
+                displayID: restoredDisplayID
+            ))
+        }
+        transitions.sort { $0.sourceTime < $1.sourceTime }
     }
 
     mutating func offsetSceneSwitches(by offset: TimeInterval) {

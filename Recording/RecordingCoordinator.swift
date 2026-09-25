@@ -13,6 +13,64 @@ enum RecordingOutputFinalizationPolicy {
     ) -> Bool {
         isReadable && duration.isFinite && duration > 0 && videoTrackCount > 0
     }
+
+    static func isCompleteProgram(
+        isReadable: Bool,
+        actualDuration: TimeInterval,
+        expectedDuration: TimeInterval,
+        videoTrackCount: Int,
+        audioTrackCount: Int,
+        expectedAudioTrackCount: Int
+    ) -> Bool {
+        isUsable(isReadable: isReadable, duration: actualDuration, videoTrackCount: videoTrackCount)
+            && expectedDuration.isFinite && expectedDuration > 0
+            && abs(actualDuration - expectedDuration) <= 0.15
+            && audioTrackCount >= expectedAudioTrackCount
+    }
+}
+
+@MainActor
+enum RecordingCaptureClosureVerifier {
+    static func failure(in project: RecordingProject, store: RecordingProjectStore) async -> String? {
+        let tracks = (project.manifest.tracks ?? []).filter { $0.kind != .program }
+        guard !tracks.isEmpty else { return "The recording has no raw capture tracks." }
+        let events = store.journalEvents(for: project)
+        for track in tracks {
+            guard events.contains(where: { $0.kind == .trackFinished && $0.trackID == track.id }),
+                  !events.contains(where: { $0.kind == .trackFailed && $0.trackID == track.id }) else {
+                return "The \(track.id) capture file did not close successfully."
+            }
+            guard let url = store.rawTrackURL(for: track.id, in: project),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                return "The \(track.id) capture file is missing."
+            }
+            let asset = AVURLAsset(url: url)
+            let isReadable = (try? await asset.load(.isReadable)) == true
+            let duration = (try? await asset.load(.duration).seconds) ?? 0
+            let mediaType: AVMediaType = track.kind == .audio ? .audio : .video
+            let trackCount = (try? await asset.loadTracks(withMediaType: mediaType).count) ?? 0
+            guard RecordingOutputFinalizationPolicy.isUsable(
+                isReadable: isReadable, duration: duration, videoTrackCount: trackCount
+            ) else {
+                return "The \(track.id) capture file is unreadable or incomplete."
+            }
+        }
+        return nil
+    }
+}
+
+enum RecordingOutputCompletionPolicy {
+    static func shouldInterrupt(state: RecordingState, isTearingDown: Bool) -> Bool {
+        !isTearingDown && (state == .recording || state == .paused)
+    }
+}
+
+enum RecordingStartContinuationPolicy {
+    static func canContinue(
+        attempt: UUID, activeAttempt: UUID?, state: RecordingState, isTearingDown: Bool
+    ) -> Bool {
+        activeAttempt == attempt && state == .preparing && !isTearingDown
+    }
 }
 
 struct AvailableDisplay: Identifiable, Equatable {
@@ -139,6 +197,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var recordedDuration: TimeInterval = 0
     @Published private(set) var interruptedProjects: [RecordingProjectSnapshot] = []
     @Published private(set) var projects: [RecordingProjectSnapshot] = []
+    @Published private(set) var jobs: [RecordingJob] = []
     @Published private(set) var finalizationWarning: String?
     @Published private(set) var finalizationProgress: RecordingFinalizationProgress?
     @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
@@ -153,9 +212,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         let configuration: SCStreamConfiguration
     }
 
-    private let projectStore = RecordingProjectStore()
+    private let projectStore: RecordingProjectStore
     private let projectEditStore = ProjectEditStore()
+    private let jobStore = RecordingJobStore()
+    private let transcriber: any ProjectTranscribing
     private let retentionFinalizer = RecordingRetentionFinalizer()
+    private var activeFinalizationJobID: UUID?
+    private var activeExportJobID: UUID?
+    private var activeTranscriptionJobID: UUID?
+    private var didCheckAbandonedTranscriptionModels = false
+    private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
     nonisolated private let audioStemSession = RecordingAudioStemSessionState()
@@ -177,6 +243,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         contentLatencySystemUnits: CursorFrameSynchronizer.screenContentLatencySystemUnits
     )
     nonisolated private let sourceHealthMonitor = LiveSourceHealthMonitor()
+    nonisolated private let screenStartGate = RecordingScreenStartGate()
     nonisolated(unsafe) private var healthSourceByStreamID: [ObjectIdentifier: LiveSourceID] = [:]
     nonisolated private let healthSourceLock = NSLock()
     nonisolated private let cursorTelemetryQueue = DispatchQueue(
@@ -187,11 +254,24 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var pendingOutputIDs: Set<ObjectIdentifier> = []
     private var outputCompletion: CheckedContinuation<Bool, Never>?
     private var isTearingDown = false
+    private var activeStartAttempt: UUID?
     private var terminalFailure: String?
     private var configuredProjectDirectories: Set<URL> = []
     private var lastCameraHealthDuration: TimeInterval = 0
+    private var lastStorageCheckAt: TimeInterval = 0
 
     override init() {
+        projectStore = RecordingProjectStore()
+        transcriber = WhisperProjectTranscriber()
+        super.init()
+    }
+
+    init(
+        projectStore: RecordingProjectStore,
+        transcriber: any ProjectTranscribing = WhisperProjectTranscriber()
+    ) {
+        self.projectStore = projectStore
+        self.transcriber = transcriber
         super.init()
     }
 
@@ -243,9 +323,60 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     func refreshProjects() async {
-        let snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
+        if !didCheckAbandonedTranscriptionModels {
+            didCheckAbandonedTranscriptionModels = true
+            Task.detached(priority: .background) {
+                WhisperTaskWorkspace.removeAbandonedWorkspaces()
+            }
+        }
+        var snapshots = await projectStore.discoverProjects(in: Array(configuredProjectDirectories))
+        var discoveredJobs: [RecordingJob] = []
+        for index in snapshots.indices {
+            guard let projectID = snapshots[index].identity.manifestID,
+                  let project = try? projectStore.openProject(
+                    at: snapshots[index].rootURL, expectedID: projectID
+                  ) else { continue }
+            let loaded: [RecordingJob]
+            do {
+                loaded = try jobStore.load(in: project)
+            } catch {
+                snapshots[index].jobHistoryError = "Saved job history is unreadable. Background jobs cannot resume until this project is repaired."
+                continue
+            }
+            let projectJobs: [RecordingJob]
+            if loaded.contains(where: { blockedFinalizationJobIDs.contains($0.id) }) {
+                snapshots[index].jobHistoryError = "A job stopped, but its failure status could not be saved. Other jobs remain available; the stopped job will not resume automatically."
+                projectJobs = RecordingJobQueuePolicy.unblockedJobs(
+                    in: loaded, blockedIDs: blockedFinalizationJobIDs
+                )
+            } else if loaded.contains(where: {
+                $0.id == activeFinalizationJobID || $0.id == activeExportJobID
+                    || $0.id == activeTranscriptionJobID
+            }) {
+                projectJobs = loaded
+            } else {
+                do {
+                    projectJobs = try jobStore.reconcileFinalization(
+                        in: project, projectLifecycle: snapshots[index].lifecycle
+                    )
+                } catch {
+                    snapshots[index].jobHistoryError = "Saved job history could not be updated. Background jobs cannot resume until this project is repaired."
+                    continue
+                }
+            }
+            if projectJobs.contains(where: {
+                $0.kind == .finalization && ($0.state == .queued || $0.state == .running)
+            }) {
+                snapshots[index].lifecycle = .finalizing
+            }
+            discoveredJobs.append(contentsOf: projectJobs)
+        }
+        jobs = discoveredJobs.sorted { $0.updatedAt > $1.updatedAt }
         projects = snapshots
         interruptedProjects = snapshots.filter(\.isInterrupted)
+        startNextFinalizationJob()
+        startNextExportJob()
+        startNextTranscriptionJob()
     }
 
     func recoverProject(_ projectID: String) async throws {
@@ -268,6 +399,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func startRecording(_ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil) async {
         guard state == .ready else { return }
+        let startAttempt = UUID()
+        activeStartAttempt = startAttempt
         state = .preparing
         terminalFailure = nil
         finalizationWarning = nil
@@ -287,14 +420,37 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         sourceRecoveryState = .idle
         if let destinationURL = request.storage.destinationURL {
             configureProjectDestination(destinationURL)
+            let requiredCapacity = RecordingStoragePolicy.requiredCapacity(
+                displaySizes: request.displaySources.map {
+                    CGSize(width: $0.pixelWidth, height: $0.pixelHeight)
+                },
+                canvasSize: request.presentation.canvas.pixelSize,
+                frameRate: request.profile.frameRate,
+                capturesCamera: request.camera != nil
+            )
+            if let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+               !RecordingStoragePolicy.canStart(
+                    availableCapacity: availableCapacity,
+                    requiredCapacity: requiredCapacity
+               ) {
+                activeStartAttempt = nil
+                state = .failed(
+                    "Not enough free space for this recording. Keep at least "
+                    + ByteCountFormatter.string(fromByteCount: requiredCapacity, countStyle: .file)
+                    + " free."
+                )
+                return
+            }
         }
 
         do {
             let content = try await SCShareableContent.current
+            guard canContinueRecordingStart(startAttempt) else { return }
             let displaysByID = Dictionary(uniqueKeysWithValues: content.displays.map { ($0.displayID, $0) })
             let selected = request.displaySources.compactMap { displaysByID[$0.id] }
             guard selected.count == request.displaySources.count,
                   !selected.isEmpty || request.camera != nil else {
+                activeStartAttempt = nil
                 state = .failed("A selected display is no longer available. Refresh sources before recording.")
                 return
             }
@@ -350,8 +506,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     throw RecordingProjectStoreError.missingTrackDescriptor(displayID: display.displayID)
                 }
                 let output = try makeRecordingOutput(url: outputURL, codecPolicy: request.profile.codecPolicy)
-                let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-                try stream.addRecordingOutput(output)
+                let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: cursorTelemetryQueue)
                 healthSourceLock.withLock {
                     healthSourceByStreamID[ObjectIdentifier(stream)] = .screen(displayID: display.displayID)
@@ -403,6 +558,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         existingSession: cameraPreviewSession
                     )
                 } catch {
+                    guard canContinueRecordingStart(startAttempt) else { return }
                     try? projectStore.markFailure(
                         trackID: project.trackID(for: .camera),
                         detail: error.localizedDescription,
@@ -410,11 +566,35 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     )
                     throw error
                 }
+                guard canContinueRecordingStart(startAttempt) else {
+                    try? await recorder.stop()
+                    return
+                }
                 cameraRecorder = recorder
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
             }
-            for capture in captures.values {
+            screenStartGate.configure(
+                expected: Set(selected.map { LiveSourceID.screen(displayID: $0.displayID) }),
+                startedAfter: Self.currentHostTime
+            )
+            for capture in Array(captures.values) {
                 try await capture.stream.startCapture()
+                guard canContinueRecordingStart(startAttempt) else {
+                    try? await capture.stream.stopCapture()
+                    return
+                }
+            }
+            let hasFreshScreenFrames = await waitForFreshScreenFrames()
+            guard canContinueRecordingStart(startAttempt) else { return }
+            guard hasFreshScreenFrames else {
+                let sources = screenStartGate.missingSources.map(\.label).joined(separator: ", ")
+                await beginInterruptedTeardown(
+                    reason: "Recording did not start because \(sources) did not produce a current screen frame. Review the selected display and try again."
+                )
+                return
+            }
+            for capture in captures.values {
+                try capture.stream.addRecordingOutput(capture.output)
                 startedOutputIDs.insert(ObjectIdentifier(capture.output))
             }
 
@@ -426,9 +606,18 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             startDurationTimer()
             startSourceHealthTimer()
             state = .recording
+            activeStartAttempt = nil
         } catch {
+            guard canContinueRecordingStart(startAttempt) else { return }
             await beginInterruptedTeardown(reason: error.localizedDescription)
         }
+    }
+
+    private func canContinueRecordingStart(_ attempt: UUID) -> Bool {
+        RecordingStartContinuationPolicy.canContinue(
+            attempt: attempt, activeAttempt: activeStartAttempt,
+            state: state, isTearingDown: isTearingDown
+        )
     }
 
     func pauseRecording() {
@@ -496,7 +685,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         let stoppedAt = ProcessInfo.processInfo.systemUptime
         updateFinalizationProgress(0.22, "Finalizing media tracks…")
 
-        if let reason = terminalFailure ?? stopErrors.first {
+        let captureClosureFailure = if let activeProject {
+            await RecordingCaptureClosureVerifier.failure(in: activeProject, store: projectStore)
+        } else {
+            "The recording package was not created."
+        }
+
+        if let reason = terminalFailure ?? stopErrors.first ?? captureClosureFailure {
             await completeInterruptedTeardown(reason: reason)
             return
         }
@@ -521,31 +716,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                         in: activeProject.rootURL
                     )
                 }
-                try await retentionFinalizer.finalize(
-                    project: activeProject,
-                    request: activeCaptureRequest,
-                    projectStore: projectStore,
-                    cursorTimeline: recordedCursorTimeline,
-                    shortcutTimeline: safeShortcutTimeline.events.isEmpty ? nil : safeShortcutTimeline,
-                    sceneTimeline: studioSceneTimeline,
-                    editTimeline: pauseEditTimelines.first(where: {
-                        $0.trackID == preferredScreenTrackID(
-                            project: activeProject,
-                            request: activeCaptureRequest
-                        )
-                    }),
-                    progress: { [weak self] fraction, phase in
-                        self?.updateFinalizationProgress(0.30 + fraction * 0.62, phase)
-                    }
+                try jobStore.save(
+                    RecordingJob(projectID: activeProject.id, kind: .finalization),
+                    in: activeProject
                 )
             } catch {
-                do {
-                    try projectStore.close(activeProject)
-                    finalizationWarning = "The recording is safe, but automatic finalization did not complete. Editable tracks were kept. \(error.localizedDescription)"
-                } catch {
-                    await completeInterruptedTeardown(reason: error.localizedDescription)
-                    return
-                }
+                try? projectStore.markInterrupted(activeProject, detail: error.localizedDescription)
+                finalizationWarning = "The capture files were kept, but finalization could not be queued. Review this project in Recovery. \(error.localizedDescription)"
             }
         }
 
@@ -555,6 +732,295 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
         isTearingDown = false
         finalizationProgress = nil
+    }
+
+    func retryJob(_ jobID: UUID) async throws {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+        _ = try jobStore.retry(jobID: jobID, in: project)
+        blockedFinalizationJobIDs.remove(jobID)
+        await refreshProjects()
+    }
+
+    func enqueueExport(_ recipe: ProjectExportRecipe) async throws {
+        guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
+              snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
+            throw RecordingJobStoreError.invalidExport
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: recipe.projectID)
+        let job = RecordingJob(projectID: project.id, kind: .export)
+        try jobStore.saveExport(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        await refreshProjects()
+    }
+
+    func enqueueTranscription(_ recipe: ProjectTranscriptionRecipe) async throws {
+        guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
+              snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
+            throw RecordingJobStoreError.invalidTranscription
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: recipe.projectID)
+        if let existing = try TimedTranscriptStore().load(
+            in: project.rootURL, expectedProjectID: project.id
+        ), existing.sourceTrackID == recipe.sourceTrackID,
+           abs(existing.sourceDuration - recipe.sourceDuration) < 0.1 { return }
+        guard !(try jobStore.load(in: project)).contains(where: {
+            $0.kind == .transcription && ($0.state == .queued || $0.state == .running || $0.state == .failed)
+        }) else { return }
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        await refreshProjects()
+    }
+
+    private func startNextFinalizationJob() {
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(
+                in: jobs, blockedIDs: blockedFinalizationJobIDs
+              ), job.kind == .finalization else { return }
+        activeFinalizationJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runFinalization(job)
+        }
+    }
+
+    private func runFinalization(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            guard let request = project.manifest.captureRequest else {
+                throw RecordingJobStoreError.invalidJob
+            }
+            job.state = .running
+            job.stage = "Preparing finalization"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+
+            let editDocument = try await projectEditStore.load(
+                from: project.rootURL, expectedProjectID: project.id
+            )
+            let editTimeline = preferredScreenTrackID(project: project, request: request)
+                .flatMap { editDocument?.timeline(for: $0) }
+            try await retentionFinalizer.finalize(
+                project: project,
+                request: request,
+                projectStore: projectStore,
+                cursorTimeline: projectStore.cursorTimeline(in: project),
+                shortcutTimeline: projectStore.shortcutTimeline(in: project),
+                sceneTimeline: projectStore.studioSceneTimeline(in: project),
+                editTimeline: editTimeline,
+                progress: { [weak self, project] fraction, phase in
+                    self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+                }
+            )
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do {
+                    try persistJob(job, in: project)
+                } catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Finalization failed and its status could not be saved. The raw project remains in Recovery. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeFinalizationJobID = nil
+        await refreshProjects()
+    }
+
+    private func startNextExportJob() {
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(
+                in: jobs, blockedIDs: blockedFinalizationJobIDs
+              ), job.kind == .export else { return }
+        activeExportJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runExport(job)
+        }
+    }
+
+    private func runExport(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            let recipe = try jobStore.loadExport(for: job, in: project)
+            job.state = .running
+            job.stage = "Rendering selected edit revision"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+
+            if let sources = recipe.programSources {
+                try await ProjectProgramRenderer().exportMovie(
+                    sources: sources,
+                    timeline: recipe.timeline,
+                    presentation: recipe.presentation,
+                    privacyOverlays: recipe.privacyOverlays,
+                    audioAdjustment: recipe.audioAdjustment,
+                    sourceAudioAdjustments: recipe.sourceAudioAdjustments,
+                    segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    to: recipe.destinationURL,
+                    progress: { [weak self, project] fraction in
+                        self?.updateJobProgress(
+                            queuedJob.id, project: project, fraction: fraction,
+                            phase: "Rendering selected edit revision"
+                        )
+                    }
+                )
+            } else {
+                try await ProjectEditRenderer().exportMovie(
+                    from: recipe.sourceURL,
+                    timeline: recipe.timeline,
+                    audioAdjustment: recipe.audioAdjustment,
+                    segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    to: recipe.destinationURL
+                )
+            }
+            let exported = AVURLAsset(url: recipe.destinationURL)
+            let audioSource = AVURLAsset(url: recipe.programSources?.audioURL ?? recipe.sourceURL)
+            let expectedAudio = try await audioSource.loadTracks(withMediaType: .audio).isEmpty ? 0 : 1
+            guard RecordingOutputFinalizationPolicy.isCompleteProgram(
+                isReadable: try await exported.load(.isReadable),
+                actualDuration: try await exported.load(.duration).seconds,
+                expectedDuration: recipe.timeline.duration,
+                videoTrackCount: try await exported.loadTracks(withMediaType: .video).count,
+                audioTrackCount: try await exported.loadTracks(withMediaType: .audio).count,
+                expectedAudioTrackCount: expectedAudio
+            ) else {
+                throw RecordingJobStoreError.invalidExport
+            }
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do { try persistJob(job, in: project) }
+                catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Export failed and its status could not be saved. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeExportJobID = nil
+        await refreshProjects()
+    }
+
+    private func startNextTranscriptionJob() {
+        guard activeFinalizationJobID == nil, activeExportJobID == nil,
+              activeTranscriptionJobID == nil,
+              let job = RecordingJobQueuePolicy.nextHeavyJob(in: jobs, blockedIDs: blockedFinalizationJobIDs),
+              job.kind == .transcription else { return }
+        activeTranscriptionJobID = job.id
+        Task(priority: .background) { [weak self] in
+            await self?.runTranscription(job)
+        }
+    }
+
+    private func runTranscription(_ queuedJob: RecordingJob) async {
+        var job = queuedJob
+        do {
+            guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+                throw RecordingJobStoreError.jobNotFound
+            }
+            let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+            let recipe = try jobStore.loadTranscription(for: job, in: project)
+            job.state = .running
+            job.stage = "Preparing local transcription"
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+            let transcript = try await transcriber.transcribe(recipe) { [weak self, project] fraction, phase in
+                self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+            }
+            guard transcript.projectID == recipe.projectID,
+                  transcript.sourceTrackID == recipe.sourceTrackID,
+                  abs(transcript.sourceDuration - recipe.sourceDuration) < 0.1 else {
+                throw RecordingJobStoreError.invalidTranscription
+            }
+            try TimedTranscriptStore().save(transcript, in: project.rootURL)
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .completed
+            job.stage = "Completed"
+            job.progress = 1
+            job.failure = nil
+            job.updatedAt = Date()
+            try persistJob(job, in: project)
+        } catch {
+            job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
+            job.state = .failed
+            job.stage = "Failed"
+            job.failure = error.localizedDescription
+            job.updatedAt = Date()
+            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                do { try persistJob(job, in: project) }
+                catch {
+                    blockedFinalizationJobIDs.insert(job.id)
+                    finalizationWarning = "Transcription failed and its status could not be saved. \(error.localizedDescription)"
+                }
+            }
+        }
+        activeTranscriptionJobID = nil
+        await refreshProjects()
+    }
+
+    private func persistJob(_ job: RecordingJob, in project: RecordingProject) throws {
+        try jobStore.save(job, in: project)
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        } else {
+            jobs.append(job)
+        }
+    }
+
+    private func updateJobProgress(
+        _ jobID: UUID,
+        project: RecordingProject,
+        fraction: Double,
+        phase: String
+    ) {
+        guard var job = jobs.first(where: { $0.id == jobID }) else { return }
+        let progress = min(max(fraction, 0), 1)
+        guard phase != job.stage || progress - job.progress >= 0.02 else { return }
+        job.stage = phase
+        job.progress = progress
+        job.updatedAt = Date()
+        do {
+            try persistJob(job, in: project)
+        } catch {
+            finalizationWarning = "Job progress could not be saved. \(error.localizedDescription)"
+        }
     }
 
     private func updateFinalizationProgress(_ fraction: Double, _ phase: String) {
@@ -623,6 +1089,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func waitForFreshScreenFrames(timeout: Duration = .seconds(3)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if screenStartGate.isReady { return true }
+            try? await Task.sleep(for: .milliseconds(25))
+            if Task.isCancelled || isTearingDown { return false }
+        }
+        return screenStartGate.isReady
+    }
+
     private func startSourceHealthTimer() {
         sourceHealthTask?.cancel()
         sourceHealthTask = Task { [weak self] in
@@ -637,6 +1114,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 }
                 sourceHealth = sourceHealthMonitor.snapshot(at: now)
                 considerSourceRecovery(sourceHealth, at: now)
+                if now - lastStorageCheckAt >= 5 {
+                    lastStorageCheckAt = now
+                    if let destinationURL = activeCaptureRequest?.storage.destinationURL,
+                       let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+                       RecordingStoragePolicy.shouldStop(availableCapacity: availableCapacity) {
+                        await beginInterruptedTeardown(
+                            reason: "Recording stopped before macOS ran out of disk space."
+                        )
+                        return
+                    }
+                }
             }
         }
     }
@@ -991,6 +1479,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private func beginInterruptedTeardown(reason: String) async {
         terminalFailure = terminalFailure ?? reason
         guard !isTearingDown else { return }
+        activeStartAttempt = nil
         isTearingDown = true
         state = .stopping
         durationTask?.cancel()
@@ -1014,6 +1503,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func clearCaptureState() {
+        activeStartAttempt = nil
         sourceHealthTask?.cancel()
         sourceHealthTask = nil
         sourceRecoveryTask?.cancel()
@@ -1021,9 +1511,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         sourceRecoveryPolicy.reset()
         sourceRecoveryState = .idle
         sourceHealthMonitor.configure(expected: [], at: ProcessInfo.processInfo.systemUptime)
+        screenStartGate.reset()
         sourceHealth = .empty
         healthSourceLock.withLock { healthSourceByStreamID.removeAll() }
         lastCameraHealthDuration = 0
+        lastStorageCheckAt = 0
         stopCursorTelemetry()
         cursorSynchronizer.reset()
         captures.removeAll()
@@ -1107,6 +1599,14 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
             try? self.projectStore.markFinished(displayID: capture.displayID, in: project)
             self.finishOutput(recordingOutput)
+            if RecordingOutputCompletionPolicy.shouldInterrupt(
+                state: self.state,
+                isTearingDown: self.isTearingDown
+            ) {
+                await self.beginInterruptedTeardown(
+                    reason: "Screen recording stopped unexpectedly. Check available disk space before trying again."
+                )
+            }
         }
     }
 
@@ -1120,6 +1620,23 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
             self.terminalFailure = self.terminalFailure ?? error.localizedDescription
             self.finishOutput(recordingOutput)
             await self.beginInterruptedTeardown(reason: error.localizedDescription)
+        }
+    }
+}
+
+extension RecordingCoordinator: SCStreamDelegate {
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        let source = healthSourceLock.withLock {
+            healthSourceByStreamID[ObjectIdentifier(stream)]
+        }
+        guard let source else { return }
+        Task { @MainActor [weak self] in
+            guard let self, !self.isTearingDown else { return }
+            self.sourceHealthMonitor.invalidate(source)
+            let message = LiveScreenPreviewFramePolicy.isUserStopped(error)
+                ? "Screen sharing was stopped from macOS."
+                : "Screen capture stopped unexpectedly. \(error.localizedDescription)"
+            await self.beginInterruptedTeardown(reason: message)
         }
     }
 }
@@ -1147,6 +1664,13 @@ extension RecordingCoordinator: SCStreamOutput {
                     return
                 }
                 if let source = healthSourceLock.withLock({ healthSourceByStreamID[streamID] }) {
+                    screenStartGate.record(
+                        source,
+                        status: status,
+                        displayTime: displayTime,
+                        isValid: true,
+                        hasImageBuffer: sampleBuffer.imageBuffer != nil
+                    )
                     if status == .idle {
                         sourceHealthMonitor.recordIdle(source, at: ProcessInfo.processInfo.systemUptime)
                     } else if status == .complete {

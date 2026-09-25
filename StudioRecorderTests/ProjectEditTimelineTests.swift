@@ -1,7 +1,369 @@
+import AVFoundation
+import Darwin
 import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testEditorAutoTranscriptionRunsOnlyForFirstMissingTranscript() {
+        XCTAssertTrue(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: false, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: true, hasJob: false, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: true, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: false, fileUnreadable: true
+        ))
+    }
+
+    func testTranscriptWordSelectionExtendsFromAnchorAndWorksInReverse() {
+        let order = ["first", "second", "third", "fourth"]
+        var selection = TranscriptWordSelection()
+
+        selection.select("second", extendingWithShift: false, orderedIDs: order)
+        selection.select("fourth", extendingWithShift: true, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["second", "third", "fourth"])
+
+        selection.select("first", extendingWithShift: true, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["first", "second"])
+    }
+
+    func testTranscriptWordPlainClickResetsRangeAndStaleAnchorIsIgnored() {
+        let order = ["first", "second", "third"]
+        var selection = TranscriptWordSelection()
+
+        selection.select("first", extendingWithShift: false, orderedIDs: order)
+        selection.select("third", extendingWithShift: true, orderedIDs: order)
+        selection.select("second", extendingWithShift: false, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["second"])
+
+        selection.select("removed", extendingWithShift: true, orderedIDs: order)
+        XCTAssertTrue(selection.orderedIDs(in: order).isEmpty)
+    }
+
+    func testWhisperCLIIsBundledAndRunsWithoutExternalLibraries() throws {
+        let executableDirectory = try XCTUnwrap(Bundle.main.executableURL?.deletingLastPathComponent())
+        let resource = executableDirectory.appending(path: "whisper-cli")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: resource.path))
+        let process = Process()
+        process.executableURL = resource
+        process.arguments = ["-h"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
+    func testWhisperTaskWorkspaceRemovesModelsAfterFailure() async throws {
+        struct ExpectedFailure: Error {}
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let workspace = WhisperTaskWorkspace(rootURL: root)
+        do {
+            try await workspace.run { directory in
+                try Data("temporary model".utf8).write(to: directory.appending(path: "model.bin"))
+                throw ExpectedFailure()
+            }
+            XCTFail("Expected transcription failure")
+        } catch is ExpectedFailure {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
+    func testWhisperWorkspaceReapsOnlyAbandonedModelsAfterRestart() throws {
+        let parent = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let abandoned = parent.appending(path: "StudioRecorder-Whisper-2000000000-\(UUID().uuidString)")
+        let active = parent.appending(path: "StudioRecorder-Whisper-\(getpid())-\(UUID().uuidString)")
+        for directory in [abandoned, active] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("temporary model".utf8).write(to: directory.appending(path: "model.bin"))
+        }
+
+        WhisperTaskWorkspace.removeAbandonedWorkspaces(in: parent)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: active.path))
+    }
+
+    func testWhisperModelHashRejectsUnexpectedDownload() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try Data("wrong model".utf8).write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertFalse(try WhisperModelDownloader.matchesExpectedSHA256(at: root))
+    }
+
+    func testUkrainianModelUsesVerifiedSmallQuantization() {
+        XCTAssertEqual(WhisperModelDownloader.modelURL.lastPathComponent, "ggml-small-q5_1.bin")
+        XCTAssertEqual(
+            WhisperModelDownloader.expectedSHA256,
+            "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+        )
+    }
+
+    func testWhisperProcessRunnerProducesJSONAndDoesNotUseShellInput() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appending(path: "recognizer")
+        try Data("#!/bin/sh\npreset=\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -dtw) shift; preset=\"$1\" ;;\n    -of) shift; output=\"$1\" ;;\n  esac\n  shift\ndone\n[ \"$preset\" = small ] || exit 3\n[ -n \"$output\" ] || exit 2\nprintf '{\"transcription\":[]}' > \"$output.json\"\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let output = try await WhisperProcessRunner().run(
+            executableURL: executable,
+            modelURL: root.appending(path: "model.bin"),
+            wavURL: root.appending(path: "audio.wav"),
+            outputBaseURL: root.appending(path: "words")
+        )
+        XCTAssertEqual(try Data(contentsOf: output), Data("{\"transcription\":[]}".utf8))
+    }
+
+    func testLocalWhisperTranscribesApprovedUkrainianSample() async throws {
+        let movieURL = URL(fileURLWithPath: "/private/tmp/StudioRecorderSTTSample.mov")
+        let wavURL = URL(fileURLWithPath: "/private/tmp/StudioRecorderSTTSample.wav")
+        let sourceURL = FileManager.default.fileExists(atPath: movieURL.path) ? movieURL : wavURL
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw XCTSkip("Place an approved short Ukrainian recording at /private/tmp/StudioRecorderSTTSample.mov or .wav to run this integration check.")
+        }
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let transcript = try await WhisperProjectTranscriber().transcribe(recipe) { _, _ in }
+        XCTAssertGreaterThan(transcript.words.count, 30)
+        XCTAssertTrue(transcript.words.allSatisfy { $0.timingStatus == .uncertain })
+        XCTAssertTrue(transcript.words.allSatisfy {
+            $0.sourceStart >= 0 && $0.sourceStart < $0.sourceEnd && $0.sourceEnd <= duration
+        })
+    }
+
+    func testWhisperWordImportKeepsOnlyBoundedSingleWordsAsUncertain() throws {
+        let payload = Data("""
+        {"transcription":[
+          {"offsets":{"from":0,"to":0},"text":" "},
+          {"offsets":{"from":120,"to":460},"text":" Привіт"},
+          {"offsets":{"from":470,"to":1050},"text":" світе."},
+          {"offsets":{"from":1080,"to":1120},"text":"лишнє"}
+        ]}
+        """.utf8)
+        let transcript = try WhisperWordTranscriptImporter().transcript(
+            from: payload, projectID: UUID(), sourceTrackID: "program",
+            sourceDuration: 1.1
+        )
+        XCTAssertEqual(transcript.words.map(\.text), ["Привіт", "світе.", "лишнє"])
+        XCTAssertEqual(transcript.words.map(\.sourceStart), [0.12, 0.47, 1.08])
+        XCTAssertEqual(transcript.words.map(\.sourceEnd), [0.46, 1.05, 1.1])
+        XCTAssertEqual(transcript.words.map(\.timingStatus), [.uncertain, .uncertain, .uncertain])
+        XCTAssertEqual(transcript.language, "uk")
+        XCTAssertEqual(transcript.recognitionModel, "whisper.cpp/ggml-small-q5_1.bin")
+    }
+
+    func testWhisperWordImportRejectsPhraseInOneSegment() {
+        let payload = Data("""
+        {"transcription":[{"offsets":{"from":100,"to":800},"text":"два слова"}]}
+        """.utf8)
+        XCTAssertThrowsError(try WhisperWordTranscriptImporter().transcript(
+            from: payload, projectID: UUID(), sourceTrackID: "program", sourceDuration: 1
+        ))
+    }
+    func testDeletingReviewedRangesAppliesOneBatchAgainstOriginalOutputTime() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try timeline.delete(ranges: [1..<2, 4..<5])
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 2, 5])
+        XCTAssertEqual(timeline.segments.map(\.duration), [1, 2, 5])
+        XCTAssertEqual(timeline.duration, 8)
+        XCTAssertThrowsError(try timeline.delete(ranges: [0..<2, 1..<3]))
+    }
+
+    func testMovingArbitraryRecordedPhrasePreservesItsVideoAudioSourceTimes() throws {
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 10)
+        let originalID = timeline.segments[0].id
+
+        let splitParents = try timeline.move(range: 2..<4, before: 8)
+
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 4, 2, 8])
+        XCTAssertEqual(timeline.segments.map(\.duration), [2, 4, 2, 2])
+        XCTAssertEqual(timeline.sourceTime(at: 6.5), 2.5)
+        XCTAssertEqual(timeline.sourceTime(at: 8.5), 8.5)
+        XCTAssertEqual(splitParents.count, 3)
+        XCTAssertTrue(splitParents.values.allSatisfy { $0 == originalID })
+    }
+
+    func testPhraseMoveRejectsDestinationInsideSourceWithoutChangingEdit() throws {
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 10)
+        let original = timeline
+
+        XCTAssertThrowsError(try timeline.move(range: 2..<4, before: 3))
+        XCTAssertEqual(timeline, original)
+    }
+
+    func testTranscriptDisplaysWordsInSourceTimeOrderWithinEachEditedSegment() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "screen", sourceDuration: 3,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "third", sourceStart: 2, sourceEnd: 2.3, timingStatus: .aligned),
+                TimedTranscriptWord(text: "first", sourceStart: 0.2, sourceEnd: 0.5, timingStatus: .aligned),
+                TimedTranscriptWord(text: "second", sourceStart: 1, sourceEnd: 1.3, timingStatus: .aligned),
+            ]
+        )
+
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 3)
+        XCTAssertEqual(transcript.words(in: timeline).map(\.text), ["first", "second", "third"])
+    }
+
+    func testTranscriptGroupsEditedWordsIntoSelectablePhrases() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 7,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "Друга", sourceStart: 4.0, sourceEnd: 4.3, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "фраза.", sourceStart: 4.4, sourceEnd: 4.8, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "Привіт,", sourceStart: 0.2, sourceEnd: 0.5, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "світе!", sourceStart: 0.6, sourceEnd: 1.0, timingStatus: .uncertain),
+            ]
+        )
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 7)
+        try timeline.split(at: 3)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        let phrases = transcript.phrases(in: timeline)
+
+        XCTAssertEqual(phrases.map(\.text), ["Друга фраза.", "Привіт, світе!"])
+        XCTAssertEqual(phrases[0].outputRange.lowerBound, 1.0, accuracy: 0.001)
+        XCTAssertEqual(phrases[0].outputRange.upperBound, 1.8, accuracy: 0.001)
+        XCTAssertEqual(phrases[1].outputRange.lowerBound, 4.2, accuracy: 0.001)
+        XCTAssertEqual(phrases[1].outputRange.upperBound, 5.0, accuracy: 0.001)
+        XCTAssertEqual(phrases[0].words.map(\.text), ["Друга", "фраза."])
+        XCTAssertTrue(phrases[0].requiresTimingReview(for: phrases[0].outputRange))
+    }
+
+    func testUncertainWordNeedsAChangedBoundaryBeforeManualReview() throws {
+        let word = TimedTranscriptWord(
+            text: "Привіт", sourceStart: 0.2, sourceEnd: 0.7, timingStatus: .uncertain
+        )
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "whisper", alignmentModel: "experimental",
+            words: [word]
+        )
+
+        XCTAssertThrowsError(try transcript.reviewWord(word.id, sourceRange: 0.2..<0.7))
+        let reviewed = try transcript.reviewWord(word.id, sourceRange: 0.18..<0.74)
+        XCTAssertEqual(reviewed.words[0].timingStatus, .reviewed)
+        XCTAssertEqual(reviewed.words[0].sourceStart, 0.18)
+        XCTAssertEqual(reviewed.words[0].sourceEnd, 0.74)
+    }
+
+    func testUncertainTranscriptSelectionBlocksRangeDeletionUntilReviewed() {
+        let uncertain = EditedTranscriptWord(
+            id: "occurrence", sourceWordID: UUID(), text: "Привіт",
+            outputStart: 1, outputEnd: 1.5, sourceStart: 1, sourceEnd: 1.5,
+            timingStatus: .uncertain
+        )
+        let reviewed = EditedTranscriptWord(
+            id: uncertain.id, sourceWordID: uncertain.sourceWordID, text: uncertain.text,
+            outputStart: uncertain.outputStart, outputEnd: uncertain.outputEnd,
+            sourceStart: uncertain.sourceStart, sourceEnd: uncertain.sourceEnd,
+            timingStatus: .reviewed
+        )
+
+        XCTAssertTrue(uncertain.requiresTimingReview(for: 1..<1.5))
+        XCTAssertTrue(uncertain.requiresTimingReview(for: 1.1..<1.4))
+        XCTAssertFalse(uncertain.requiresTimingReview(for: 2..<2.5))
+        XCTAssertFalse(reviewed.requiresTimingReview(for: 1..<1.5))
+    }
+
+    func testTranscriptRejectsSameTrackWithDifferentSourceDuration() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "whisper", alignmentModel: "experimental",
+            words: []
+        )
+        let matching = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let mismatched = try ProjectEditTimeline(trackID: "program", sourceDuration: 3)
+
+        XCTAssertTrue(transcript.isCompatible(with: matching))
+        XCTAssertFalse(transcript.isCompatible(with: mismatched))
+    }
+
+    func testTimedWordsFollowEditedVideoOrderAndMarkPartialWordsUncertain() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "screen", sourceDuration: 2,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "Hello", sourceStart: 0.1, sourceEnd: 0.4, timingStatus: .aligned),
+                TimedTranscriptWord(text: "again", sourceStart: 1.1, sourceEnd: 1.5, timingStatus: .aligned),
+            ]
+        )
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        try timeline.split(at: 1)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        let reordered = transcript.words(in: timeline)
+        XCTAssertEqual(reordered.map(\.text), ["again", "Hello"])
+        XCTAssertEqual(reordered[0].outputStart, 0.1, accuracy: 0.001)
+        XCTAssertEqual(reordered[1].outputStart, 1.1, accuracy: 0.001)
+        XCTAssertTrue(reordered.allSatisfy { $0.timingStatus == .aligned })
+
+        try timeline.delete(range: 0.2..<0.4)
+        let clipped = transcript.words(in: timeline)
+        XCTAssertEqual(clipped.first?.text, "again")
+        XCTAssertEqual(clipped.first?.timingStatus, .uncertain)
+        XCTAssertEqual(Set(clipped.map(\.id)).count, clipped.count)
+    }
+
+    func testTranscriptStoreRejectsInvalidWordTimeAndPersistsValidWords() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let projectID = UUID()
+        let word = TimedTranscriptWord(text: "Привіт", sourceStart: 0.2, sourceEnd: 0.7, timingStatus: .reviewed)
+        let document = TimedTranscript(
+            projectID: projectID, sourceTrackID: "screen", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture", words: [word]
+        )
+        let store = TimedTranscriptStore()
+        try store.save(document, in: root)
+        XCTAssertEqual(try store.load(in: root, expectedProjectID: projectID)?.words, [word])
+        let reviewed = try document.reviewWord(word.id, sourceRange: 0.15..<0.75)
+        XCTAssertEqual(reviewed.words.first?.timingStatus, .reviewed)
+        XCTAssertEqual(reviewed.words.first?.sourceStart, 0.15)
+        try store.save(reviewed, in: root)
+        XCTAssertEqual(try store.load(in: root, expectedProjectID: projectID), reviewed)
+
+        let invalid = TimedTranscript(
+            projectID: projectID, sourceTrackID: "screen", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [TimedTranscriptWord(text: "bad", sourceStart: 1.2, sourceEnd: 1.1, timingStatus: .aligned)]
+        )
+        XCTAssertThrowsError(try store.save(invalid, in: root))
+    }
+
+    func testSceneSelectionMapsOneOutputSegmentToSourceAfterReorder() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try timeline.split(at: 5)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        XCTAssertEqual(try timeline.sourceRange(for: 0.5..<1.5), 5.5..<6.5)
+        XCTAssertEqual(try timeline.sourceRange(for: 5.5..<6.5), 0.5..<1.5)
+        XCTAssertThrowsError(try timeline.sourceRange(for: 4.5..<5.5))
+    }
+
+    func testSceneSelectionMapsAcrossReorderedSegmentsInOutputOrder() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 10)
+        try timeline.split(at: 5)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        XCTAssertEqual(try timeline.sourceRanges(for: 4.5..<5.5), [9.5..<10, 0..<0.5])
+        XCTAssertThrowsError(try timeline.sourceRanges(for: 9.5..<10.5))
+    }
+
     func testPauseTimelineCompactsMultiplePausedRangesWithoutTouchingSourceTime() throws {
         var pauses = RecordingPauseTimeline()
         XCTAssertTrue(pauses.pause(at: 103))
@@ -83,6 +445,41 @@ final class ProjectEditTimelineTests: XCTestCase {
             [ProjectEditSegment(id: splitSegmentID, sourceStart: 6.5, duration: 4)]
         )
         XCTAssertEqual(timeline.sourceDuration, 12, accuracy: 0.001)
+    }
+
+    func testDeletingArbitraryOutputRangeCutsAcrossSegmentsAndPreservesSourceMedia() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        try timeline.split(at: 5)
+        try timeline.split(at: 8)
+
+        try timeline.delete(range: 3..<9)
+
+        XCTAssertEqual(timeline.duration, 6, accuracy: 0.001)
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 9])
+        XCTAssertEqual(timeline.segments.map(\.duration), [3, 3])
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 3)), 9, accuracy: 0.001)
+        XCTAssertEqual(timeline.sourceDuration, 12, accuracy: 0.001)
+    }
+
+    func testDeletingEntireOutputIsRejectedWithoutChangingTheTimeline() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        let original = timeline
+
+        XCTAssertThrowsError(try timeline.delete(range: 0..<12))
+        XCTAssertEqual(timeline, original)
+    }
+
+    func testDeletingWithinOneSegmentKeepsDistinctPiecesAndRejectsInvalidBounds() throws {
+        var timeline = try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 12)
+        try timeline.delete(range: 3..<5)
+
+        XCTAssertEqual(timeline.segments.map(\.sourceStart), [0, 5])
+        XCTAssertEqual(timeline.segments.map(\.duration), [3, 7])
+        XCTAssertNotEqual(timeline.segments[0].id, timeline.segments[1].id)
+
+        let saved = timeline
+        XCTAssertThrowsError(try timeline.delete(range: 9..<11))
+        XCTAssertEqual(timeline, saved)
     }
 
     func testEditStoreRoundTripsTheDocumentWithoutTouchingRawTracks() async throws {
@@ -385,5 +782,41 @@ final class ProjectEditTimelineTests: XCTestCase {
         try timeline.trimEnd(to: 5)
 
         XCTAssertEqual(timeline.segments, [ProjectEditSegment(id: firstID, sourceStart: 0, duration: 5)])
+    }
+
+    func testTimelineViewportZoomAndPanMapPixelsToOutputTime() {
+        let viewport = ProjectTimelineViewport(duration: 2560, zoomStep: 8, position: 0.5)
+
+        XCTAssertEqual(viewport.visibleDuration, 10, accuracy: 0.001)
+        XCTAssertEqual(viewport.visibleStart, 1275, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 0), 1275, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 0.5), 1280, accuracy: 0.001)
+        XCTAssertEqual(viewport.time(atFraction: 2), 1285, accuracy: 0.001)
+    }
+
+    func testTimelineViewportFocusesSelectedWordInLongRecording() throws {
+        let viewport = try XCTUnwrap(ProjectTimelineViewport.focusing(
+            duration: 2_640, range: 13.58..<14.16
+        ))
+
+        XCTAssertEqual(viewport.zoomStep, 8)
+        XCTAssertLessThan(viewport.visibleStart, 13.58)
+        XCTAssertGreaterThan(viewport.visibleStart + viewport.visibleDuration, 14.16)
+        XCTAssertGreaterThan(13.58 - viewport.visibleStart, 2)
+        XCTAssertNil(ProjectTimelineViewport.focusing(duration: 2_640, range: 2_639..<2_641))
+    }
+
+    func testMovingSegmentChangesOutputOrderWithoutChangingSourceRanges() throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2.5, initialSegmentID: firstID)
+        try timeline.split(at: 1, newSegmentID: secondID)
+
+        try timeline.move(segmentID: firstID, toIndex: 1)
+
+        XCTAssertEqual(timeline.segments.map(\.id), [secondID, firstID])
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 0.25)), 1.25, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sourceTime(at: 1.75)), 0.25, accuracy: 0.001)
+        XCTAssertEqual(timeline.duration, 2.5, accuracy: 0.001)
     }
 }

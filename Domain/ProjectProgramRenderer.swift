@@ -6,8 +6,14 @@ import Foundation
 enum ProjectProgramExportPolicy {
     static func presetName(
         codecPolicy: RecordingCodecPolicy,
+        renderSize: CGSize,
         availablePresets: [String]
     ) -> String {
+        if codecPolicy == .automatic,
+           renderSize == CGSize(width: 3_840, height: 2_160),
+           availablePresets.contains(AVAssetExportPresetHEVC3840x2160) {
+            return AVAssetExportPresetHEVC3840x2160
+        }
         if codecPolicy == .automatic,
            availablePresets.contains(AVAssetExportPresetHEVCHighestQuality) {
             return AVAssetExportPresetHEVCHighestQuality
@@ -16,12 +22,18 @@ enum ProjectProgramExportPolicy {
     }
 }
 
-struct ProjectScreenSource: Sendable, Equatable {
+enum ProjectProgramRenderPolicy {
+    static func frameRate(requested: Int, renderSize: CGSize) -> Int {
+        CaptureDefaults.frameRate(requested, for: renderSize)
+    }
+}
+
+struct ProjectScreenSource: Codable, Sendable, Equatable {
     let url: URL
     let displayID: UInt32?
 }
 
-struct ProjectProgramSources: Sendable {
+struct ProjectProgramSources: Codable, Sendable {
     let screenURL: URL
     let screenSources: [ProjectScreenSource]
     let cameraURL: URL?
@@ -151,7 +163,12 @@ final class ProjectProgramRenderer {
         )
         let preferredPreset = ProjectProgramExportPolicy.presetName(
             codecPolicy: codecPolicy,
-            availablePresets: [AVAssetExportPresetHighestQuality, AVAssetExportPresetHEVCHighestQuality]
+            renderSize: rendered.videoComposition.renderSize,
+            availablePresets: [
+                AVAssetExportPresetHighestQuality,
+                AVAssetExportPresetHEVCHighestQuality,
+                AVAssetExportPresetHEVC3840x2160
+            ]
         )
         guard let session = AVAssetExportSession(asset: rendered.asset, presetName: preferredPreset)
             ?? AVAssetExportSession(asset: rendered.asset, presetName: AVAssetExportPresetHighestQuality) else {
@@ -300,6 +317,10 @@ final class ProjectProgramRenderer {
         }
 
         let validated = presentation.validated()
+        let frameRate = ProjectProgramRenderPolicy.frameRate(
+            requested: sources.frameRate,
+            renderSize: validated.canvas.pixelSize
+        )
         let instruction = ProjectProgramInstruction(
             timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: timeline.duration, preferredTimescale: 600)),
             primaryScreenTrackID: primaryScreenTrackID,
@@ -315,13 +336,13 @@ final class ProjectProgramRenderer {
             rendersCursor: sources.rendersCursor,
             screenTransforms: screenTransforms,
             cameraTransform: cameraTransform,
-            frameRate: sources.frameRate
+            frameRate: frameRate
         )
         let videoComposition = AVMutableVideoComposition()
         videoComposition.customVideoCompositorClass = ProjectVideoCompositor.self
         videoComposition.instructions = [instruction]
         videoComposition.renderSize = validated.canvas.pixelSize
-        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(sources.frameRate))
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         return CompositionResult(
             asset: composition,
             videoComposition: videoComposition,

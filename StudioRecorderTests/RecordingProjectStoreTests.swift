@@ -6,6 +6,424 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    private struct StubTranscriber: ProjectTranscribing {
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            await progress(0.5, "Recognizing")
+            return TimedTranscript(
+                projectID: recipe.projectID, sourceTrackID: recipe.sourceTrackID,
+                sourceDuration: recipe.sourceDuration, language: "uk",
+                recognitionModel: "test", alignmentModel: "test",
+                words: [TimedTranscriptWord(
+                    text: "Привіт", sourceStart: 0.1, sourceEnd: 0.4,
+                    timingStatus: .uncertain
+                )]
+            )
+        }
+    }
+
+    private struct MismatchedTranscriber: ProjectTranscribing {
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            TimedTranscript(
+                projectID: UUID(), sourceTrackID: recipe.sourceTrackID,
+                sourceDuration: recipe.sourceDuration, language: "uk",
+                recognitionModel: "test", alignmentModel: "test",
+                words: [TimedTranscriptWord(
+                    text: "Чуже", sourceStart: 0.1, sourceEnd: 0.4,
+                    timingStatus: .uncertain
+                )]
+            )
+        }
+    }
+
+    func testTranscriptionRejectsTranscriptForAnotherProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let jobStore = RecordingJobStore()
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: MismatchedTranscriber())
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .failed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .failed)
+        XCTAssertNil(try TimedTranscriptStore().load(in: project.rootURL, expectedProjectID: project.id))
+    }
+
+    func testInterruptedTranscriptionResumesAndPersistsTranscript() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let jobStore = RecordingJobStore()
+        var job = RecordingJob(projectID: project.id, kind: .transcription)
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        job.state = .running
+        try jobStore.save(job, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: StubTranscriber())
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let transcript = try XCTUnwrap(TimedTranscriptStore().load(
+            in: project.rootURL, expectedProjectID: project.id
+        ))
+        XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
+    }
+
+    func testUnreadableJobHistoryRemainsVisibleOnReadyProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        try Data("broken jobs".utf8).write(to: project.rootURL.appending(path: "jobs.json"))
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+
+        let snapshot = try XCTUnwrap(coordinator.projects.first(where: { $0.identity.manifestID == project.id }))
+        XCTAssertEqual(snapshot.lifecycle, .finalized)
+        XCTAssertNotNil(snapshot.jobHistoryError)
+        XCTAssertTrue(coordinator.jobs.isEmpty)
+    }
+
+    func testHeavyJobsRunOldestQueuedRequestFirst() {
+        let projectID = UUID()
+        var olderExport = RecordingJob(projectID: projectID, kind: .export)
+        olderExport.updatedAt = Date(timeIntervalSinceReferenceDate: 1)
+        var newerFinalization = RecordingJob(projectID: projectID, kind: .finalization)
+        newerFinalization.updatedAt = Date(timeIntervalSinceReferenceDate: 2)
+
+        XCTAssertEqual(
+            RecordingJobQueuePolicy.nextHeavyJob(in: [newerFinalization, olderExport])?.id,
+            olderExport.id
+        )
+    }
+
+    func testBlockedJobDoesNotHideOtherProjectJobs() {
+        let projectID = UUID()
+        let blocked = RecordingJob(projectID: projectID, kind: .finalization)
+        let available = RecordingJob(projectID: projectID, kind: .transcription)
+
+        XCTAssertEqual(
+            RecordingJobQueuePolicy.unblockedJobs(in: [blocked, available], blockedIDs: [blocked.id]),
+            [available]
+        )
+    }
+
+    func testTranscriptionJobRetainsValidatedSourceAcrossRestartAndRetry() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let jobStore = RecordingJobStore()
+        let job = RecordingJob(projectID: project.id, kind: .transcription)
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: project.rootURL.appending(path: "program.mov")
+        )
+        try jobStore.saveTranscription(recipe, for: job, in: project)
+        try jobStore.save(job, in: project)
+        XCTAssertEqual(try jobStore.loadTranscription(for: job, in: project).sourceTrackID, "program")
+        XCTAssertEqual(RecordingJobQueuePolicy.nextHeavyJob(in: [job])?.id, job.id)
+
+        var failed = job
+        failed.state = .failed
+        failed.failure = "Offline"
+        try jobStore.save(failed, in: project)
+        let retried = try jobStore.retry(jobID: job.id, in: project)
+        XCTAssertEqual(retried.state, .queued)
+        XCTAssertEqual(retried.attempt, 2)
+        XCTAssertEqual(try jobStore.loadTranscription(for: retried, in: project).audioURL, recipe.audioURL)
+
+        let outside = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: destination.appending(path: "outside.mov")
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(outside, for: job, in: project))
+        let wrongTrack = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "another-track", sourceDuration: 10,
+            audioURL: recipe.audioURL
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(wrongTrack, for: job, in: project))
+        let wrongFile = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 10,
+            audioURL: project.rootURL.appending(path: "jobs/other.mov")
+        )
+        XCTAssertThrowsError(try jobStore.saveTranscription(wrongFile, for: job, in: project))
+    }
+
+    func testInterruptedExportResumesItsCapturedEditRevision() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        let exportedURL = destination.appending(path: "edited.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 61)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        var selectedTimeline = try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration)
+        try selectedTimeline.delete(range: 0.5..<1.2)
+        let recipe = ProjectExportRecipe(
+            projectID: project.id, sourceURL: sourceURL, destinationURL: exportedURL,
+            timeline: selectedTimeline, presentation: .default,
+            programSources: nil
+        )
+        let jobStore = RecordingJobStore()
+        var job = RecordingJob(projectID: project.id, kind: .export)
+        try jobStore.saveExport(recipe, for: job, in: project)
+        job.state = .running
+        try jobStore.save(job, in: project)
+        try await ProjectEditStore().save(
+            ProjectEditDocument(
+                projectID: project.id,
+                timelines: [try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration)]
+            ), in: project.rootURL
+        )
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
+        XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
+    }
+
+    func testFailedExportRetainsRecipeAndRetryWritesOutput() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let outputDirectory = destination.appending(path: "missing", directoryHint: .isDirectory)
+        let outputURL = outputDirectory.appending(path: "retry.mov")
+        let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectExportRecipe(
+            projectID: project.id, sourceURL: sourceURL, destinationURL: outputURL,
+            timeline: try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration),
+            presentation: .default, programSources: nil
+        )
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueExport(recipe)
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.kind == .export })?.state != .failed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let failed = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .export }))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertNotNil(failed.failure)
+        XCTAssertEqual(try RecordingJobStore().loadExport(for: failed, in: project).destinationURL, outputURL)
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try await coordinator.retryJob(failed.id)
+        for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == failed.id })?.state != .completed {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == failed.id })?.attempt, 2)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == failed.id })?.state, .completed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    func testProgramVerificationRejectsReadableButTruncatedRender() {
+        XCTAssertFalse(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 8, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 1, expectedAudioTrackCount: 1
+        ))
+        XCTAssertTrue(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 9.97, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 1, expectedAudioTrackCount: 1
+        ))
+        XCTAssertFalse(RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: true, actualDuration: 10, expectedDuration: 10,
+            videoTrackCount: 1, audioTrackCount: 0, expectedAudioTrackCount: 1
+        ))
+    }
+
+    func testCaptureClosureRequiresEveryExpectedRawTrackToBeReadableAndFinished() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(
+            sources: [.display(id: 1)], primaryAudioDisplayID: nil, capturesMicrophone: false
+        )
+
+        let missing = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNotNil(missing)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 1, in: project)))
+        let unfinished = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNotNil(unfinished)
+        try store.markStarted(displayID: 1, in: project)
+        try store.markFinished(displayID: 1, in: project)
+        let closed = await RecordingCaptureClosureVerifier.failure(in: project, store: store)
+        XCTAssertNil(closed)
+    }
+
+    func testInterruptedProgramFinalizationResumesFromPackageAndPublishesCompletedProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+        let request = CaptureRequest(
+            id: UUID(), createdAt: Date(),
+            displaySources: [.init(id: 9, name: "Display", pixelWidth: 64, pixelHeight: 64, metadataState: .known)],
+            audio: .init(capturesSystemAudio: false, capturesMicrophone: false, microphone: nil,
+                         primaryAudioDisplayID: 9, excludesStudioRecorderAudio: true),
+            profile: .init(frameRate: 30, codecPolicy: .h264, includeCursor: false,
+                           excludeStudioRecorder: true, programResolutionTarget: "64x64"),
+            presentation: presentation,
+            storage: .init(destinationURL: destination, destinationBookmarkID: "queue-test",
+                           fallbackPath: destination.path, retentionPolicy: .programOnly)
+        )
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: request)
+        try await writeReadableMovie(to: try XCTUnwrap(store.rawTrackURL(for: 9, in: project)), frameCount: 31)
+        try store.markStarted(displayID: 9, in: project)
+        try store.markFinished(displayID: 9, in: project)
+        var interruptedJob = RecordingJob(projectID: project.id, kind: .finalization)
+        interruptedJob.state = .running
+        interruptedJob.stage = "Rendering"
+        interruptedJob.progress = 0.5
+        try RecordingJobStore().save(interruptedJob, in: project)
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalizing)
+
+        for _ in 0..<100 where coordinator.jobs.first?.state != .completed ||
+            coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle != .finalized {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.jobs.first?.state, .completed)
+        XCTAssertEqual(coordinator.jobs.first?.attempt, 2)
+        XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalized)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "program.mov").path))
+    }
+
+    func testFailedBackgroundFinalizationKeepsProjectInRecoveryWithRetryableJob() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: destination))
+        try RecordingJobStore().save(RecordingJob(projectID: project.id, kind: .finalization), in: project)
+        let coordinator = RecordingCoordinator(projectStore: store)
+
+        await coordinator.refreshProjects()
+        for _ in 0..<100 where coordinator.jobs.first?.state != .failed ||
+            coordinator.projects.first?.lifecycle != .needsRecovery {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(coordinator.jobs.first?.state, .failed)
+        XCTAssertNotNil(coordinator.jobs.first?.failure)
+        XCTAssertEqual(coordinator.projects.first?.lifecycle, .needsRecovery)
+        XCTAssertNil(try decodeManifest(at: project.rootURL).stoppedAt)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "raw-tracks").path))
+    }
+
+    func testFinalizationJobSurvivesRestartAndRetryKeepsProjectIdentity() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProject(
+            sources: [.display(id: 1)],
+            primaryAudioDisplayID: 1,
+            capturesMicrophone: false
+        )
+        let jobStore = RecordingJobStore()
+        let queued = RecordingJob(projectID: project.id, kind: .finalization)
+
+        try jobStore.save(queued, in: project)
+        XCTAssertEqual(try RecordingJobStore().load(in: project), [queued])
+
+        var failed = queued
+        failed.state = .failed
+        failed.failure = "The disk is full"
+        failed.progress = 0.4
+        try jobStore.save(failed, in: project)
+
+        let retried = try jobStore.retry(jobID: queued.id, in: project)
+        XCTAssertEqual(retried.projectID, project.id)
+        XCTAssertEqual(retried.state, .queued)
+        XCTAssertEqual(retried.attempt, 2)
+        XCTAssertNil(retried.failure)
+        XCTAssertEqual(retried.progress, 0)
+        XCTAssertEqual(try RecordingJobStore().load(in: project), [retried])
+    }
+
+    func testRunningFinalizationJobReconcilesAfterRestartWithoutClaimingReady() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let project = try RecordingProjectStore(baseDirectory: destination).createProject(
+            sources: [.display(id: 1)], primaryAudioDisplayID: 1, capturesMicrophone: false
+        )
+        let store = RecordingJobStore()
+        var running = RecordingJob(projectID: project.id, kind: .finalization)
+        running.state = .running
+        running.stage = "Rendering"
+        running.progress = 0.6
+        try store.save(running, in: project)
+
+        let resumed = try store.reconcileFinalization(in: project, projectLifecycle: .needsRecovery)
+        XCTAssertEqual(resumed.single?.state, .queued)
+        XCTAssertEqual(resumed.single?.progress, 0)
+        XCTAssertEqual(resumed.single?.attempt, 2)
+        XCTAssertEqual(try store.load(in: project), resumed)
+
+        let completed = try store.reconcileFinalization(in: project, projectLifecycle: .finalized)
+        XCTAssertEqual(completed.single?.state, .completed)
+        XCTAssertEqual(completed.single?.progress, 1)
+    }
+
     func testShortcutTimelinePersistsInsideTheRecoverableScenePackage() throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }

@@ -151,6 +151,13 @@ jobs:
           NOTARIZATION_ZIP="$RUNNER_TEMP/notarization.zip"
           RELEASE_DIR="$RUNNER_TEMP/release"
           mkdir -p "$RELEASE_DIR"
+          HELPER="$APP/Contents/MacOS/whisper-cli"
+          test -x "$HELPER"
+          codesign --force --sign "Developer ID Application" --options runtime --timestamp "$HELPER"
+          codesign --force --sign "Developer ID Application" \
+            --preserve-metadata=entitlements,requirements,flags \
+            --options runtime --timestamp "$APP"
+          codesign --verify --strict --verbose=2 "$HELPER"
           codesign --verify --deep --strict --verbose=2 "$APP"
           ditto -c -k --keepParent "$APP" "$NOTARIZATION_ZIP"
           xcrun notarytool submit "$NOTARIZATION_ZIP" \

@@ -3,6 +3,7 @@ import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Hashable {
     case general
+    case assistant
     case audio
     case streaming
     case storage
@@ -13,6 +14,7 @@ enum SettingsTab: String, CaseIterable, Hashable {
     var icon: String {
         switch self {
         case .general: "gearshape"
+        case .assistant: "sparkles"
         case .audio: "waveform"
         case .streaming: "dot.radiowaves.left.and.right"
         case .storage: "internaldrive"
@@ -33,6 +35,20 @@ struct SettingsView: View {
     @AppStorage("controlPanelShowsScenes") private var controlPanelShowsScenes = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingYouTubeAuthorization = false
+    @AppStorage("openRouter.model") private var selectedAssistantModel = OpenRouterAssistantClient.defaultModel
+    @AppStorage("assistant.provider") private var assistantProviderRaw = AssistantProvider.openRouter.rawValue
+    @AppStorage("assistant.ollamaModel") private var selectedLocalAssistantModel = "gemma3:4b"
+    @State private var assistantKeyInput = ""
+    @State private var hasAssistantKey = false
+    @State private var assistantModels: [OpenRouterAssistantModel] = []
+    @State private var localAssistantModels: [OpenRouterAssistantModel] = []
+    @State private var assistantStatus: String?
+    @State private var isLoadingAssistantModels = false
+    @State private var isLoadingLocalAssistantModels = false
+
+    private var selectedAssistantProvider: AssistantProvider {
+        AssistantProvider(rawValue: assistantProviderRaw) ?? .openRouter
+    }
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
     private var windowTab: SettingsTab {
@@ -127,6 +143,7 @@ struct SettingsView: View {
     private func selectedSettings(for tab: SettingsTab) -> some View {
         switch tab {
         case .general: generalSettings
+        case .assistant: assistantSettings
         case .audio: audioSettings
         case .streaming: streamingSettingsView
         case .storage: storageSettings
@@ -149,6 +166,179 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var assistantSettings: some View {
+        Form {
+            Section("Assistant") {
+                Picker("Run requests on", selection: $assistantProviderRaw) {
+                    ForEach(AssistantProvider.allCases) { provider in
+                        Text(provider.title).tag(provider.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(selectedAssistantProvider == .ollama
+                     ? "Transcript text stays on this Mac and is sent to the local Ollama service."
+                     : "Requests send transcript text, timing IDs, and selected scene metadata. Raw audio and video stay on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if selectedAssistantProvider == .openRouter {
+                Section("OpenRouter") {
+                    SecureField("API key", text: $assistantKeyInput)
+                        .textContentType(.password)
+                    HStack {
+                        Button("Save key") { saveAssistantKey() }
+                            .disabled(assistantKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Remove key") { removeAssistantKey() }
+                            .disabled(!hasAssistantKey)
+                        Text(hasAssistantKey ? "Key saved in Keychain" : "No key saved")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("Model") {
+                    Picker("Structured reply model", selection: $selectedAssistantModel) {
+                        if assistantModels.isEmpty {
+                            Text(selectedAssistantModel).tag(selectedAssistantModel)
+                        } else {
+                            ForEach(assistantModels) { model in
+                                Text(model.name).tag(model.id)
+                            }
+                        }
+                    }
+                    .disabled(assistantModels.isEmpty)
+                    Button(isLoadingAssistantModels ? "Checking…" : "Refresh compatible models") {
+                        Task { await refreshAssistantModels() }
+                    }
+                    .disabled(!hasAssistantKey || isLoadingAssistantModels)
+                    if let assistantStatus {
+                        Text(assistantStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Section("Local models") {
+                    Picker("Model", selection: $selectedLocalAssistantModel) {
+                        if localAssistantModels.isEmpty {
+                            Text("No installed models").tag(selectedLocalAssistantModel)
+                        } else {
+                            ForEach(localAssistantModels) { model in
+                                Text(model.name).tag(model.id)
+                            }
+                        }
+                    }
+                    .disabled(localAssistantModels.isEmpty)
+                    HStack {
+                        Button(isLoadingLocalAssistantModels ? "Checking…" : "Refresh installed models") {
+                            Task { await refreshLocalAssistantModels() }
+                        }
+                        .disabled(isLoadingLocalAssistantModels)
+                        Link("Browse Gemma models", destination: URL(string: "https://ollama.com/library/gemma3")!)
+                    }
+                    Text("Install a model in Ollama first. Studio Recorder does not download model files or send transcript data to an online service in this mode.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let assistantStatus {
+                        Text(assistantStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            if selectedAssistantProvider == .ollama {
+                await refreshLocalAssistantModels()
+            } else {
+                loadAssistantKeyStatus()
+            }
+        }
+        .onChange(of: assistantProviderRaw) { _, value in
+            assistantStatus = nil
+            if AssistantProvider(rawValue: value) == .ollama {
+                Task { await refreshLocalAssistantModels() }
+            } else {
+                loadAssistantKeyStatus()
+            }
+        }
+    }
+
+    private func loadAssistantKeyStatus() {
+        do {
+            hasAssistantKey = try OpenRouterAssistantKeyStore().load() != nil
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func saveAssistantKey() {
+        do {
+            try OpenRouterAssistantKeyStore().save(assistantKeyInput)
+            assistantKeyInput = ""
+            hasAssistantKey = true
+            assistantStatus = nil
+            Task { await refreshAssistantModels() }
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func removeAssistantKey() {
+        do {
+            try OpenRouterAssistantKeyStore().delete()
+            assistantKeyInput = ""
+            hasAssistantKey = false
+            assistantModels = []
+            assistantStatus = nil
+        } catch {
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func refreshAssistantModels() async {
+        isLoadingAssistantModels = true
+        defer { isLoadingAssistantModels = false }
+        do {
+            guard let key = try OpenRouterAssistantKeyStore().load() else {
+                throw OpenRouterAssistantError.missingKey
+            }
+            assistantModels = try await OpenRouterAssistantClient().availableModels(apiKey: key)
+            if assistantModels.isEmpty {
+                assistantStatus = "No compatible text model is available for this key."
+            } else {
+                if !assistantModels.contains(where: { $0.id == selectedAssistantModel }) {
+                    selectedAssistantModel = assistantModels[0].id
+                }
+                assistantStatus = "\(assistantModels.count) compatible models available."
+            }
+        } catch {
+            assistantModels = []
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func refreshLocalAssistantModels() async {
+        isLoadingLocalAssistantModels = true
+        defer { isLoadingLocalAssistantModels = false }
+        do {
+            localAssistantModels = try await OllamaAssistantClient().availableModels()
+            if localAssistantModels.isEmpty {
+                assistantStatus = "No local models found. Start Ollama, install Gemma or another model, then refresh."
+            } else {
+                if !localAssistantModels.contains(where: { $0.id == selectedLocalAssistantModel }) {
+                    selectedLocalAssistantModel = localAssistantModels.first(where: { $0.id == "gemma3:4b" })?.id
+                        ?? localAssistantModels[0].id
+                }
+                assistantStatus = "\(localAssistantModels.count) local model(s) available."
+            }
+        } catch {
+            localAssistantModels = []
+            assistantStatus = error.localizedDescription
+        }
     }
 
     private var audioSettings: some View {
@@ -427,16 +617,16 @@ struct SettingsView: View {
     }
 
     private var systemAudioBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.capturesSystemAudio },
-            change: PreferenceChange.capturesSystemAudio
+            set: { model.send(.changePreference(.capturesSystemAudio($0))) }
         )
     }
 
     private var microphoneCaptureBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.capturesMicrophone },
-            change: PreferenceChange.capturesMicrophone
+            set: { model.send(.changePreference(.capturesMicrophone($0))) }
         )
     }
 
@@ -448,17 +638,10 @@ struct SettingsView: View {
     }
 
     private var excludeAppAudioBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.excludeStudioRecorderAudio },
-            change: PreferenceChange.excludeStudioRecorderAudio
+            set: { model.send(.changePreference(.excludeStudioRecorderAudio($0))) }
         )
-    }
-
-    private func preferenceBinding(
-        get: @escaping @Sendable () -> Bool,
-        change: @escaping @Sendable (Bool) -> PreferenceChange
-    ) -> Binding<Bool> {
-        Binding(get: get, set: { model.send(.changePreference(change($0))) })
     }
 
     private func shortcut(_ title: String, keys: String) -> some View {

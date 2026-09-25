@@ -1,10 +1,48 @@
 import Foundation
 
+struct ProjectTimelineViewport: Equatable {
+    let duration: TimeInterval
+    let zoomStep: Int
+    let position: Double
+
+    var visibleDuration: TimeInterval {
+        duration / pow(2, Double(min(max(zoomStep, 0), 8)))
+    }
+
+    var visibleStart: TimeInterval {
+        max(duration - visibleDuration, 0) * min(max(position, 0), 1)
+    }
+
+    func time(atFraction fraction: Double) -> TimeInterval {
+        min(max(visibleStart + visibleDuration * min(max(fraction, 0), 1), 0), duration)
+    }
+
+    static func focusing(
+        duration: TimeInterval, range: Range<TimeInterval>
+    ) -> ProjectTimelineViewport? {
+        guard duration.isFinite, duration > 0,
+              range.lowerBound.isFinite, range.upperBound.isFinite,
+              range.lowerBound >= 0, range.lowerBound < range.upperBound,
+              range.upperBound <= duration else { return nil }
+        let window = max(8, (range.upperBound - range.lowerBound) * 3)
+        let zoomStep = min(8, max(0, Int(ceil(log2(max(duration / window, 1))))))
+        let visibleDuration = duration / pow(2, Double(zoomStep))
+        let remaining = max(duration - visibleDuration, 0)
+        let center = (range.lowerBound + range.upperBound) / 2
+        let position = remaining > 0
+            ? min(max((center - visibleDuration / 2) / remaining, 0), 1)
+            : 0
+        return ProjectTimelineViewport(duration: duration, zoomStep: zoomStep, position: position)
+    }
+}
+
 enum ProjectEditTimelineError: LocalizedError, Equatable {
     case invalidSourceDuration
     case invalidTimelineTime
     case splitAtSegmentBoundary
     case segmentNotFound
+    case invalidSegmentDestination
+    case rangeCrossesSegments
     case cannotDeleteOnlySegment
     case recordingContainsOnlyPausedTime
 
@@ -18,6 +56,10 @@ enum ProjectEditTimelineError: LocalizedError, Equatable {
             "The playhead is already at a cut."
         case .segmentNotFound:
             "The selected edit segment no longer exists."
+        case .invalidSegmentDestination:
+            "The selected segment cannot move beyond the timeline."
+        case .rangeCrossesSegments:
+            "Select a range within one recorded segment to change its scene."
         case .cannotDeleteOnlySegment:
             "At least one segment must remain in the edit."
         case .recordingContainsOnlyPausedTime:
@@ -258,6 +300,43 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
         return segmentLocation(at: min(timelineTime, max(duration - 0.000_001, 0)))?.segment
     }
 
+    func sourceRange(for outputRange: Range<TimeInterval>) throws -> Range<TimeInterval> {
+        guard outputRange.lowerBound.isFinite, outputRange.upperBound.isFinite,
+              outputRange.lowerBound >= 0,
+              outputRange.lowerBound < outputRange.upperBound,
+              outputRange.upperBound <= duration,
+              let start = segmentLocation(at: outputRange.lowerBound),
+              let end = segmentLocation(at: outputRange.upperBound.nextDown),
+              start.index == end.index else {
+            throw ProjectEditTimelineError.rangeCrossesSegments
+        }
+        let lower = start.segment.sourceStart + outputRange.lowerBound - start.timelineStart
+        let upper = start.segment.sourceStart + outputRange.upperBound - start.timelineStart
+        return lower..<upper
+    }
+
+    func sourceRanges(for outputRange: Range<TimeInterval>) throws -> [Range<TimeInterval>] {
+        guard outputRange.lowerBound.isFinite, outputRange.upperBound.isFinite,
+              outputRange.lowerBound >= 0,
+              outputRange.lowerBound < outputRange.upperBound,
+              outputRange.upperBound <= duration else {
+            throw ProjectEditTimelineError.rangeCrossesSegments
+        }
+        var outputStart: TimeInterval = 0
+        var ranges: [Range<TimeInterval>] = []
+        for segment in segments {
+            let lower = max(outputRange.lowerBound, outputStart)
+            let upper = min(outputRange.upperBound, outputStart + segment.duration)
+            if lower < upper {
+                let sourceStart = segment.sourceStart + lower - outputStart
+                ranges.append(sourceStart..<(sourceStart + upper - lower))
+            }
+            outputStart += segment.duration
+            if outputStart >= outputRange.upperBound { break }
+        }
+        return ranges
+    }
+
     init(
         trackID: String,
         sourceDuration: TimeInterval,
@@ -302,6 +381,117 @@ struct ProjectEditTimeline: Codable, Equatable, Sendable {
             throw ProjectEditTimelineError.cannotDeleteOnlySegment
         }
         segments.remove(at: index)
+    }
+
+    mutating func move(segmentID: UUID, toIndex: Int) throws {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else {
+            throw ProjectEditTimelineError.segmentNotFound
+        }
+        guard segments.indices.contains(toIndex) else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        guard index != toIndex else { return }
+        let segment = segments.remove(at: index)
+        segments.insert(segment, at: toIndex)
+    }
+
+    @discardableResult
+    mutating func move(
+        range: Range<TimeInterval>, before destination: TimeInterval
+    ) throws -> [UUID: UUID] {
+        guard range.lowerBound.isFinite, range.upperBound.isFinite,
+              destination.isFinite, range.lowerBound >= 0,
+              range.lowerBound < range.upperBound,
+              range.upperBound <= duration,
+              destination >= 0, destination <= duration,
+              destination <= range.lowerBound || destination >= range.upperBound else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        if destination == range.lowerBound || destination == range.upperBound { return [:] }
+
+        var next = self
+        var splitParents: [UUID: UUID] = [:]
+        for boundary in [range.lowerBound, range.upperBound, destination].sorted() {
+            guard boundary > 0, boundary < duration,
+                  let location = next.segmentLocation(at: boundary) else { continue }
+            let localTime = boundary - location.timelineStart
+            guard localTime > 0.000_001,
+                  localTime < location.segment.duration - 0.000_001 else { continue }
+            let newID = UUID()
+            splitParents[newID] = splitParents[location.segment.id] ?? location.segment.id
+            try next.split(at: boundary, newSegmentID: newID)
+        }
+
+        func boundaryIndex(_ time: TimeInterval) -> Int? {
+            var outputTime: TimeInterval = 0
+            for index in next.segments.indices {
+                if abs(outputTime - time) < 0.000_001 { return index }
+                outputTime += next.segments[index].duration
+            }
+            return abs(outputTime - time) < 0.000_001 ? next.segments.count : nil
+        }
+        guard let first = boundaryIndex(range.lowerBound),
+              let last = boundaryIndex(range.upperBound),
+              let target = boundaryIndex(destination), first < last else {
+            throw ProjectEditTimelineError.invalidSegmentDestination
+        }
+        let moving = Array(next.segments[first..<last])
+        next.segments.removeSubrange(first..<last)
+        next.segments.insert(contentsOf: moving, at: target > last ? target - moving.count : target)
+        self = next
+        return splitParents
+    }
+
+    mutating func delete(range: Range<TimeInterval>) throws {
+        guard range.lowerBound.isFinite,
+              range.upperBound.isFinite,
+              range.lowerBound >= 0,
+              range.upperBound <= duration,
+              range.lowerBound < range.upperBound else {
+            throw ProjectEditTimelineError.invalidTimelineTime
+        }
+        guard range.lowerBound > 0 || range.upperBound < duration else {
+            throw ProjectEditTimelineError.cannotDeleteOnlySegment
+        }
+
+        var kept: [ProjectEditSegment] = []
+        var outputStart: TimeInterval = 0
+        for segment in segments {
+            let outputEnd = outputStart + segment.duration
+            let leftDuration = max(min(outputEnd, range.lowerBound) - outputStart, 0)
+            if leftDuration > 0 {
+                kept.append(.init(id: segment.id, sourceStart: segment.sourceStart, duration: leftDuration))
+            }
+            let rightStart = max(outputStart, range.upperBound)
+            let rightDuration = max(outputEnd - rightStart, 0)
+            if rightDuration > 0 {
+                kept.append(.init(
+                    id: leftDuration > 0 ? UUID() : segment.id,
+                    sourceStart: segment.sourceStart + rightStart - outputStart,
+                    duration: rightDuration
+                ))
+            }
+            outputStart = outputEnd
+        }
+        guard !kept.isEmpty else { throw ProjectEditTimelineError.cannotDeleteOnlySegment }
+        segments = kept
+    }
+
+    mutating func delete(ranges: [Range<TimeInterval>]) throws {
+        guard !ranges.isEmpty else { return }
+        let ordered = ranges.sorted { $0.lowerBound < $1.lowerBound }
+        guard ordered.allSatisfy({
+            $0.lowerBound.isFinite && $0.upperBound.isFinite
+                && $0.lowerBound >= 0 && $0.lowerBound < $0.upperBound
+                && $0.upperBound <= duration
+        }), zip(ordered, ordered.dropFirst()).allSatisfy({
+            $0.0.upperBound <= $0.1.lowerBound
+        }) else { throw ProjectEditTimelineError.invalidTimelineTime }
+        var next = self
+        for range in ordered.reversed() {
+            try next.delete(range: range)
+        }
+        self = next
     }
 
     mutating func trimStart(to timelineTime: TimeInterval) throws {

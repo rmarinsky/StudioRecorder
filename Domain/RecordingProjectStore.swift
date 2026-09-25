@@ -10,6 +10,327 @@ enum RecordingProjectLifecycle: String, Codable, Equatable, Sendable {
     case unreadable
 }
 
+enum RecordingJobKind: String, Codable, Sendable {
+    case finalization
+    case export
+    case transcription
+}
+
+enum RecordingJobState: String, Codable, Sendable {
+    case queued
+    case running
+    case failed
+    case completed
+}
+
+struct RecordingJob: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    let projectID: UUID
+    let kind: RecordingJobKind
+    var state: RecordingJobState
+    var stage: String
+    var progress: Double
+    var failure: String?
+    var attempt: Int
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), projectID: UUID, kind: RecordingJobKind) {
+        self.id = id
+        self.projectID = projectID
+        self.kind = kind
+        state = .queued
+        stage = "Queued"
+        progress = 0
+        failure = nil
+        attempt = 1
+        updatedAt = Date()
+    }
+}
+
+enum RecordingJobQueuePolicy {
+    static func unblockedJobs(
+        in jobs: [RecordingJob], blockedIDs: Set<UUID>
+    ) -> [RecordingJob] {
+        jobs.filter { !blockedIDs.contains($0.id) }
+    }
+
+    static func nextHeavyJob(
+        in jobs: [RecordingJob],
+        blockedIDs: Set<UUID> = []
+    ) -> RecordingJob? {
+        unblockedJobs(in: jobs, blockedIDs: blockedIDs).filter {
+            $0.state == .queued
+                && ($0.kind == .finalization || $0.kind == .export || $0.kind == .transcription)
+        }.min {
+            $0.updatedAt == $1.updatedAt
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.updatedAt < $1.updatedAt
+        }
+    }
+}
+
+struct ProjectExportRecipe: Codable, Sendable {
+    let schemaVersion: Int
+    let projectID: UUID
+    let editRevision: Date
+    let sourceURL: URL
+    let destinationURL: URL
+    let timeline: ProjectEditTimeline
+    let presentation: CapturePresentationSnapshot
+    let programSources: ProjectProgramSources?
+    let privacyOverlays: [ProjectPrivacyOverlay]
+    let audioAdjustment: ProjectAudioAdjustment
+    let sourceAudioAdjustments: [ProjectAudioSourceAdjustment]
+    let segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
+
+    init(
+        projectID: UUID,
+        sourceURL: URL,
+        destinationURL: URL,
+        timeline: ProjectEditTimeline,
+        presentation: CapturePresentationSnapshot,
+        programSources: ProjectProgramSources?,
+        editRevision: Date = Date(),
+        privacyOverlays: [ProjectPrivacyOverlay] = [],
+        audioAdjustment: ProjectAudioAdjustment = .unchanged,
+        sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
+    ) {
+        schemaVersion = 1
+        self.projectID = projectID
+        self.editRevision = editRevision
+        self.sourceURL = sourceURL
+        self.destinationURL = destinationURL
+        self.timeline = timeline
+        self.presentation = presentation
+        self.programSources = programSources
+        self.privacyOverlays = privacyOverlays
+        self.audioAdjustment = audioAdjustment
+        self.sourceAudioAdjustments = sourceAudioAdjustments
+        self.segmentAudioAdjustments = segmentAudioAdjustments
+    }
+}
+
+struct ProjectTranscriptionRecipe: Codable, Sendable {
+    let schemaVersion: Int
+    let projectID: UUID
+    let sourceTrackID: String
+    let sourceDuration: TimeInterval
+    let audioURL: URL
+
+    init(projectID: UUID, sourceTrackID: String, sourceDuration: TimeInterval, audioURL: URL) {
+        schemaVersion = 1
+        self.projectID = projectID
+        self.sourceTrackID = sourceTrackID
+        self.sourceDuration = sourceDuration
+        self.audioURL = audioURL
+    }
+}
+
+enum RecordingJobStoreError: LocalizedError {
+    case unsupportedSchema
+    case projectMismatch
+    case invalidJob
+    case jobNotFound
+    case notRetryable
+    case invalidExport
+    case invalidTranscription
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema: "This project's jobs were written by an unsupported app version."
+        case .projectMismatch: "A job belongs to another recording project."
+        case .invalidJob: "The saved job is invalid."
+        case .jobNotFound: "The job no longer exists."
+        case .notRetryable: "Only failed jobs can be retried."
+        case .invalidExport: "The saved export request is invalid or references media outside this project."
+        case .invalidTranscription: "The saved transcription request is invalid or references media outside this project."
+        }
+    }
+}
+
+final class RecordingJobStore {
+    private struct Document: Codable {
+        let schemaVersion: Int
+        var jobs: [RecordingJob]
+    }
+
+    private let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func load(in project: RecordingProject) throws -> [RecordingJob] {
+        let url = project.rootURL.appending(path: "jobs.json")
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: url))
+        guard document.schemaVersion == 1 else { throw RecordingJobStoreError.unsupportedSchema }
+        guard document.jobs.allSatisfy({ $0.projectID == project.id }) else {
+            throw RecordingJobStoreError.projectMismatch
+        }
+        guard document.jobs.allSatisfy({ $0.progress.isFinite && (0...1).contains($0.progress) && $0.attempt > 0 }),
+              Set(document.jobs.map(\.id)).count == document.jobs.count else {
+            throw RecordingJobStoreError.invalidJob
+        }
+        return document.jobs
+    }
+
+    func save(_ job: RecordingJob, in project: RecordingProject) throws {
+        guard job.projectID == project.id else { throw RecordingJobStoreError.projectMismatch }
+        guard job.progress.isFinite, (0...1).contains(job.progress), job.attempt > 0 else {
+            throw RecordingJobStoreError.invalidJob
+        }
+        var jobs = try load(in: project)
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            jobs[index] = job
+        } else {
+            jobs.append(job)
+        }
+        try JSONEncoder().encode(Document(schemaVersion: 1, jobs: jobs))
+            .write(to: project.rootURL.appending(path: "jobs.json"), options: .atomic)
+    }
+
+    func saveExport(_ recipe: ProjectExportRecipe, for job: RecordingJob, in project: RecordingProject) throws {
+        guard job.kind == .export else { throw RecordingJobStoreError.invalidExport }
+        try validateExport(recipe, project: project)
+        let url = exportURL(for: job, in: project)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(recipe).write(to: url, options: .atomic)
+    }
+
+    func loadExport(for job: RecordingJob, in project: RecordingProject) throws -> ProjectExportRecipe {
+        guard job.kind == .export else { throw RecordingJobStoreError.invalidExport }
+        let recipe = try JSONDecoder().decode(
+            ProjectExportRecipe.self, from: Data(contentsOf: exportURL(for: job, in: project))
+        )
+        try validateExport(recipe, project: project)
+        return recipe
+    }
+
+    func saveTranscription(
+        _ recipe: ProjectTranscriptionRecipe, for job: RecordingJob, in project: RecordingProject
+    ) throws {
+        guard job.kind == .transcription else { throw RecordingJobStoreError.invalidTranscription }
+        try validateTranscription(recipe, project: project)
+        let url = transcriptionURL(for: job, in: project)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(recipe).write(to: url, options: .atomic)
+    }
+
+    func loadTranscription(for job: RecordingJob, in project: RecordingProject) throws -> ProjectTranscriptionRecipe {
+        guard job.kind == .transcription else { throw RecordingJobStoreError.invalidTranscription }
+        let recipe = try JSONDecoder().decode(
+            ProjectTranscriptionRecipe.self, from: Data(contentsOf: transcriptionURL(for: job, in: project))
+        )
+        try validateTranscription(recipe, project: project)
+        return recipe
+    }
+
+    private func transcriptionURL(for job: RecordingJob, in project: RecordingProject) -> URL {
+        project.rootURL.appending(path: "jobs/transcription-\(job.id.uuidString).json")
+    }
+
+    private func validateTranscription(
+        _ recipe: ProjectTranscriptionRecipe, project: RecordingProject
+    ) throws {
+        let root = project.rootURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let source = recipe.audioURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let manifestTracks = project.manifest.tracks ?? []
+        let knownSource = manifestTracks.isEmpty || manifestTracks.contains {
+            $0.id == recipe.sourceTrackID && ($0.kind == .screen || $0.kind == .program)
+        }
+        let knownAudio = manifestTracks.isEmpty || manifestTracks.contains {
+            ($0.kind == .screen || $0.kind == .audio || $0.kind == .program)
+                && project.rootURL.appending(path: $0.relativePath)
+                    .standardizedFileURL.resolvingSymlinksInPath().path == source
+        }
+        guard recipe.schemaVersion == 1, recipe.projectID == project.id,
+              !recipe.sourceTrackID.isEmpty,
+              recipe.sourceDuration.isFinite, recipe.sourceDuration > 0,
+              recipe.audioURL.isFileURL, source.hasPrefix(root + "/"),
+              knownSource, knownAudio else {
+            throw RecordingJobStoreError.invalidTranscription
+        }
+    }
+
+    private func exportURL(for job: RecordingJob, in project: RecordingProject) -> URL {
+        project.rootURL.appending(path: "jobs/export-\(job.id.uuidString).json")
+    }
+
+    private func validateExport(_ recipe: ProjectExportRecipe, project: RecordingProject) throws {
+        let root = project.rootURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let sources = [recipe.sourceURL]
+            + [recipe.programSources?.screenURL].compactMap { $0 }
+            + (recipe.programSources?.screenSources.map(\.url) ?? [])
+            + [recipe.programSources?.cameraURL, recipe.programSources?.audioURL].compactMap { $0 }
+        let insideProject = sources.allSatisfy {
+            $0.isFileURL && $0.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root + "/")
+        }
+        let destination = recipe.destinationURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let validTimeline = recipe.timeline.sourceDuration.isFinite
+            && recipe.timeline.sourceDuration > 0
+            && recipe.timeline.duration.isFinite
+            && recipe.timeline.duration > 0
+            && !recipe.timeline.segments.isEmpty
+            && recipe.timeline.segments.allSatisfy {
+                $0.sourceStart.isFinite && $0.duration.isFinite
+                    && $0.sourceStart >= 0 && $0.duration > 0
+                    && $0.sourceStart + $0.duration <= recipe.timeline.sourceDuration + 0.001
+            }
+        guard recipe.schemaVersion == 1,
+              recipe.projectID == project.id,
+              validTimeline,
+              insideProject,
+              recipe.destinationURL.isFileURL,
+              !recipe.destinationURL.pathComponents.contains(where: { $0.hasSuffix(".recordingproject") }),
+              !destination.hasPrefix(root + "/"),
+              destination != root else { throw RecordingJobStoreError.invalidExport }
+    }
+
+    func retry(jobID: UUID, in project: RecordingProject) throws -> RecordingJob {
+        guard var job = try load(in: project).first(where: { $0.id == jobID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        guard job.state == .failed else { throw RecordingJobStoreError.notRetryable }
+        job.state = .queued
+        job.stage = "Queued"
+        job.progress = 0
+        job.failure = nil
+        job.attempt += 1
+        job.updatedAt = Date()
+        try save(job, in: project)
+        return job
+    }
+
+    func reconcileFinalization(
+        in project: RecordingProject,
+        projectLifecycle: RecordingProjectLifecycle
+    ) throws -> [RecordingJob] {
+        var jobs = try load(in: project)
+        for index in jobs.indices {
+            if jobs[index].kind == .finalization,
+               projectLifecycle == .finalized,
+               jobs[index].state != .completed {
+                jobs[index].state = .completed
+                jobs[index].stage = "Completed"
+                jobs[index].progress = 1
+                jobs[index].failure = nil
+            } else if jobs[index].state == .running {
+                jobs[index].state = .queued
+                jobs[index].stage = "Resuming after interruption"
+                jobs[index].progress = 0
+                jobs[index].attempt += 1
+            } else {
+                continue
+            }
+            jobs[index].updatedAt = Date()
+            try save(jobs[index], in: project)
+        }
+        return jobs
+    }
+}
+
 enum RecordingSourceMetadataState: String, Codable, Equatable, Sendable {
     case known
     case unknown
@@ -104,7 +425,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     let identity: RecordingProjectIdentity
     let createdAt: Date
     let stoppedAt: Date?
-    let lifecycle: RecordingProjectLifecycle
+    var lifecycle: RecordingProjectLifecycle
     let captureProfile: String
     let sources: [RecordingSourceSnapshot]
     let tracks: [RecordingTrackDescriptor]
@@ -119,6 +440,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     var cameraSyncOffset: TimeInterval = 0
     var programDisplayID: UInt32? = nil
     var frameRate = 30
+    var jobHistoryError: String? = nil
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -643,6 +965,25 @@ final class RecordingProjectStore {
         let url = project.rootURL.appending(path: "scene/layout.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? Self.makeDecoder().decode(StudioSceneTimeline.self, from: data)
+    }
+
+    func cursorTimeline(in project: RecordingProject) -> CursorSceneTimeline? {
+        let url = project.rootURL.appending(path: "scene/cursor.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(CursorSceneTimeline.self, from: data)
+    }
+
+    func shortcutTimeline(in project: RecordingProject) -> SafeShortcutTimeline? {
+        let url = project.rootURL.appending(path: "scene/shortcuts.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(SafeShortcutTimeline.self, from: data)
+    }
+
+    func openProject(at rootURL: URL, expectedID: UUID) throws -> RecordingProject {
+        let data = try Data(contentsOf: rootURL.appending(path: "manifest.json"))
+        let manifest = try Self.makeDecoder().decode(RecordingProjectManifest.self, from: data)
+        guard manifest.id == expectedID else { throw RecordingJobStoreError.projectMismatch }
+        return RecordingProject(rootURL: rootURL, manifest: manifest)
     }
 
     func restorePauseEdits(from snapshot: RecordingProjectSnapshot) async throws {

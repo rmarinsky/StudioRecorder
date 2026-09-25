@@ -551,6 +551,33 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot.route, .projects)
     }
 
+    func testProjectsNavigationReturnsFromOpenEditorToProjectLibrary() {
+        let project = interruptedProject()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.projects = [project]
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.openProject(project.id)), .projectOpened(project.id))
+        XCTAssertEqual(model.send(.selectRoute(.projects)), .routeChanged(.projects))
+        XCTAssertNil(model.snapshot.selectedProjectID)
+    }
+
+    func testReadyProjectStaysEditableWhileTranscriptionRuns() {
+        var project = interruptedProject()
+        project.lifecycle = .finalized
+        var job = RecordingJob(projectID: project.identity.manifestID!, kind: .transcription)
+        job.state = .running
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.projects = [project]
+        snapshot.jobs = [job]
+
+        XCTAssertEqual(ProjectRowDestination.forProject(snapshot.projects[0]), .editor)
+        project.lifecycle = .finalizing
+        XCTAssertEqual(ProjectRowDestination.forProject(project), .jobs)
+        project.lifecycle = .needsRecovery
+        XCTAssertEqual(ProjectRowDestination.forProject(project), .recovery)
+    }
+
     func testRecoveryRouteRequiresAnInterruptedProject() {
         let emptyModel = StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot())
         XCTAssertEqual(emptyModel.send(.selectRoute(.recovery)), .ignored)
@@ -645,6 +672,43 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(model.send(.setDraftFrameRate(60)), .draftChanged)
         XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 60)
         XCTAssertEqual(store.preferences.capture.frameRate, 30)
+    }
+
+    func test4KPresentationCapsTheCurrentDraftAtThirtyFPS() throws {
+        let store = makePreferencesStore()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = store.makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(
+            coordinator: nil,
+            preferencesStore: store,
+            initialSnapshot: snapshot
+        )
+
+        XCTAssertEqual(model.send(.setDraftFrameRate(60)), .draftChanged)
+        var presentation = try XCTUnwrap(model.snapshot.studioDraft?.presentation)
+        presentation.canvas = CaptureCanvasSnapshot(preset: .ultraHD)
+
+        XCTAssertEqual(model.send(.setDraftPresentation(presentation)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 30)
+    }
+
+    func test4KProfileSceneCapsTheCurrentDraftAtThirtyFPS() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(displays: [], microphones: [])
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(preset: .ultraHD)
+        var configuration = StudioProfileConfiguration.desktop
+        configuration.frameRate = 60
+        let scene = StudioScenePreset(presentation: presentation, configuration: configuration)
+
+        XCTAssertEqual(model.send(.applyProfile(configuration, scene)), .draftChanged)
+        XCTAssertEqual(model.snapshot.studioDraft?.frameRate, 30)
     }
 
     func testCodecChangeUpdatesTheCurrentDraftWithoutChangingDefaults() {

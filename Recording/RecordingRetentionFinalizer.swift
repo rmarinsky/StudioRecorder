@@ -97,42 +97,50 @@ final class RecordingRetentionFinalizer {
         }
         let programURL = project.rootURL.appending(path: Self.programTrack.relativePath)
 
-        try projectStore.markPrepared(trackID: Self.programTrack.id, in: project)
-        progress(0.12, "Rendering final video…")
-        try await renderer.exportMovie(
-            sources: ProjectProgramSources(
-                screenURL: screenURL,
-                screenSources: tracks.filter { $0.kind == .screen }.compactMap { track in
-                    projectStore.rawTrackURL(for: track.id, in: project).map {
-                        ProjectScreenSource(url: $0, displayID: track.displayID)
-                    }
-                },
-                cameraURL: cameraURL,
-                audioURL: audioURL,
-                screenDisplayID: request.profile.programDisplayID ?? screen.displayID,
-                cursorTimeline: cursorTimeline,
-                shortcutTimeline: shortcutTimeline,
-                sceneTimeline: sceneTimeline,
-                screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
-                cameraTimeOffset: camera.map {
-                    ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
-                        + request.profile.resolvedCameraSyncOffset
-                } ?? 0,
-                rendersCursor: request.profile.includeCursor
-                    && request.profile.resolvedCursorRendering == .composited,
-                frameRate: request.profile.frameRate
-            ),
-            timeline: timeline,
-            presentation: request.presentation,
-            codecPolicy: request.profile.codecPolicy,
-            to: programURL,
-            progress: { exportProgress in
-                progress(0.12 + exportProgress * 0.72, "Rendering final video…")
-            }
+        let existingProgramIsReadable = await isReadableProgramMovie(
+            at: programURL,
+            expectedDuration: timeline.duration,
+            minimumAudioTrackCount: expectedAudioTrackCount
         )
+        if !existingProgramIsReadable {
+            try projectStore.markPrepared(trackID: Self.programTrack.id, in: project)
+            progress(0.12, "Rendering final video…")
+            try await renderer.exportMovie(
+                sources: ProjectProgramSources(
+                    screenURL: screenURL,
+                    screenSources: tracks.filter { $0.kind == .screen }.compactMap { track in
+                        projectStore.rawTrackURL(for: track.id, in: project).map {
+                            ProjectScreenSource(url: $0, displayID: track.displayID)
+                        }
+                    },
+                    cameraURL: cameraURL,
+                    audioURL: audioURL,
+                    screenDisplayID: request.profile.programDisplayID ?? screen.displayID,
+                    cursorTimeline: cursorTimeline,
+                    shortcutTimeline: shortcutTimeline,
+                    sceneTimeline: sceneTimeline,
+                    screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
+                    cameraTimeOffset: camera.map {
+                        ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
+                            + request.profile.resolvedCameraSyncOffset
+                    } ?? 0,
+                    rendersCursor: request.profile.includeCursor
+                        && request.profile.resolvedCursorRendering == .composited,
+                    frameRate: request.profile.frameRate
+                ),
+                timeline: timeline,
+                presentation: request.presentation,
+                codecPolicy: request.profile.codecPolicy,
+                to: programURL,
+                progress: { exportProgress in
+                    progress(0.12 + exportProgress * 0.72, "Rendering final video…")
+                }
+            )
+        }
         progress(0.88, "Verifying saved video…")
         guard await isReadableProgramMovie(
             at: programURL,
+            expectedDuration: timeline.duration,
             minimumAudioTrackCount: expectedAudioTrackCount
         ) else {
             throw RecordingRetentionFinalizerError.unreadableProgramMovie
@@ -169,19 +177,24 @@ final class RecordingRetentionFinalizer {
         } ?? tracks.first { $0.kind == .screen }
     }
 
-    private func isReadableProgramMovie(at url: URL, minimumAudioTrackCount: Int) async -> Bool {
+    private func isReadableProgramMovie(
+        at url: URL,
+        expectedDuration: TimeInterval,
+        minimumAudioTrackCount: Int
+    ) async -> Bool {
         guard fileManager.fileExists(atPath: url.path) else { return false }
         let asset = AVURLAsset(url: url)
-        guard (try? await asset.load(.isReadable)) == true,
-              let duration = try? await asset.load(.duration),
-              duration.isNumeric,
-              duration > .zero,
-              let videoTracks = try? await asset.loadTracks(withMediaType: .video),
-              !videoTracks.isEmpty,
-              let audioTracks = try? await asset.loadTracks(withMediaType: .audio),
-              audioTracks.count >= minimumAudioTrackCount else {
-            return false
-        }
-        return true
+        let isReadable = (try? await asset.load(.isReadable)) == true
+        let duration = (try? await asset.load(.duration).seconds) ?? 0
+        let videoTrackCount = (try? await asset.loadTracks(withMediaType: .video).count) ?? 0
+        let audioTrackCount = (try? await asset.loadTracks(withMediaType: .audio).count) ?? 0
+        return RecordingOutputFinalizationPolicy.isCompleteProgram(
+            isReadable: isReadable,
+            actualDuration: duration,
+            expectedDuration: expectedDuration,
+            videoTrackCount: videoTrackCount,
+            audioTrackCount: audioTrackCount,
+            expectedAudioTrackCount: minimumAudioTrackCount
+        )
     }
 }

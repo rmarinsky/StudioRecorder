@@ -632,7 +632,7 @@ final class YouTubeStreamingTests: XCTestCase {
         let updatedCenter = try pixel(in: CIImage(cvPixelBuffer: updated), x: 320, y: 180)
         XCTAssertGreaterThan(updatedCenter.red, initialCenter.red)
 
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .seconds(2))
         await pipeline.endSourceFallback()
         let samples = await sink.videoSamples()
         let presentationTimes = samples.map { $0.value.presentationTimeStamp.seconds }

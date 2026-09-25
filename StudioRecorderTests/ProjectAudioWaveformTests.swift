@@ -3,6 +3,114 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectAudioWaveformTests: XCTestCase {
+    func testWhisperAudioExtractorWrites16kMonoWAVFromRecordingAudio() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "source.caf")
+        let wavURL = directory.appending(path: "recognition.wav")
+        try writeAudioFile(to: sourceURL)
+        let original = try Data(contentsOf: sourceURL)
+
+        try await WhisperAudioExtractor().writeWAV(from: sourceURL, to: wavURL)
+
+        let wav = try Data(contentsOf: wavURL)
+        XCTAssertEqual(String(decoding: wav[0..<4], as: UTF8.self), "RIFF")
+        XCTAssertEqual(String(decoding: wav[8..<12], as: UTF8.self), "WAVE")
+        XCTAssertEqual(wav[22], 1) // mono
+        XCTAssertEqual(wav[24], 0x80) // 16_000 Hz, little endian
+        XCTAssertEqual(wav[25], 0x3e)
+        XCTAssertEqual(wav[34], 16) // signed 16-bit PCM
+        XCTAssertGreaterThan(wav.count, 31_000)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), original)
+    }
+
+    func testSilenceDetectorFindsRealAudioGapWithoutChangingSource() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "gap.caf")
+        try writeAudioWithGap(to: sourceURL)
+        let rawBytes = try Data(contentsOf: sourceURL)
+        let waveform = try await ProjectAudioWaveformAnalyzer().waveform(
+            for: sourceURL,
+            cacheURL: directory.appending(path: "analysis/silence-waveform.json"),
+            bucketCount: 100
+        )
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: waveform.duration)
+
+        let candidates = ProjectSilenceDetector.candidates(in: waveform, timeline: timeline)
+
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].lowerBound, 0.58, accuracy: 0.05)
+        XCTAssertEqual(candidates[0].upperBound, 1.17, accuracy: 0.05)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+    }
+
+    func testSilenceCandidatesFollowReorderedOutputAndSkipShortQuietGaps() throws {
+        let buckets = (0..<20).map { index in
+            ProjectAudioWaveformBucket(
+                sourceStart: Double(index) * 0.1, duration: 0.1,
+                peak: (10...14).contains(index) || (3...4).contains(index) ? 0.005 : 0.4,
+                rms: (10...14).contains(index) || (3...4).contains(index) ? 0.003 : 0.2,
+                isClipped: false
+            )
+        }
+        let waveform = ProjectAudioWaveform(duration: 2, buckets: buckets)
+        var timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        try timeline.split(at: 1)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        let candidates = ProjectSilenceDetector.candidates(
+            in: waveform, timeline: timeline,
+            minimumDuration: 0.35, padding: 0
+        )
+
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].lowerBound, 0, accuracy: 0.001)
+        XCTAssertEqual(candidates[0].upperBound, 0.5, accuracy: 0.001)
+    }
+
+    func testDefaultSilenceDetectionOnlySuggestsQuietRunsLongerThanHalfASecond() throws {
+        let quiet = Set([0, 1, 2, 3, 8, 9, 10, 11, 12, 13])
+        let waveform = ProjectAudioWaveform(
+            duration: 1.5,
+            buckets: (0..<15).map { index in
+                ProjectAudioWaveformBucket(
+                    sourceStart: Double(index) * 0.1, duration: 0.1,
+                    peak: quiet.contains(index) ? 0.005 : 0.4,
+                    rms: quiet.contains(index) ? 0.003 : 0.2,
+                    isClipped: false
+                )
+            }
+        )
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 1.5)
+
+        let candidates = ProjectSilenceDetector.candidates(in: waveform, timeline: timeline)
+
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].lowerBound, 0.88, accuracy: 0.001)
+        XCTAssertEqual(candidates[0].upperBound, 1.32, accuracy: 0.001)
+    }
+
+    func testDefaultSilenceDetectionDoesNotSuggestExactlyHalfASecond() throws {
+        let waveform = ProjectAudioWaveform(
+            duration: 1,
+            buckets: (0..<10).map { index in
+                let quiet = index < 5
+                return ProjectAudioWaveformBucket(
+                    sourceStart: Double(index) * 0.1, duration: 0.1,
+                    peak: quiet ? 0.005 : 0.4,
+                    rms: quiet ? 0.003 : 0.2,
+                    isClipped: false
+                )
+            }
+        )
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 1)
+
+        XCTAssertTrue(ProjectSilenceDetector.candidates(in: waveform, timeline: timeline).isEmpty)
+    }
+
     @MainActor
     func testEditSessionLoadsWaveformWithoutBlockingProjectLoad() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -141,6 +249,20 @@ final class ProjectAudioWaveformTests: XCTestCase {
                 : sin(Float(frame) * 0.04) * 0.08
         }
         samples[36_000] = 1
+        try file.write(from: buffer)
+    }
+
+    private func writeAudioWithGap(to url: URL) throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96_000))
+        buffer.frameLength = 96_000
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for frame in 0..<96_000 {
+            samples[frame] = frame < 24_000 || frame >= 60_000
+                ? sin(Float(frame) * 0.04) * 0.3
+                : 0
+        }
         try file.write(from: buffer)
     }
 

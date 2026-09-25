@@ -4,9 +4,26 @@ import AVKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum TranscriptAutoQueuePolicy {
+    static func shouldQueue(hasSavedTranscript: Bool, hasJob: Bool, fileUnreadable: Bool) -> Bool {
+        !hasSavedTranscript && !hasJob && !fileUnreadable
+    }
+}
+
 struct ProjectDetailView: View {
+    private struct AssistantMessage: Identifiable {
+        let id = UUID()
+        let role: String
+        let text: String
+        let draft: OpenRouterAssistantDraft?
+    }
+
     let project: RecordingProjectSnapshot
     let onClose: () -> Void
+    let exportRequest: Int
+    let queueExport: (ProjectExportRecipe) async throws -> Void
+    let jobs: [RecordingJob]
+    let queueTranscription: (ProjectTranscriptionRecipe) async throws -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -21,12 +38,61 @@ struct ProjectDetailView: View {
     @State private var gifPreparationTask: Task<Void, Never>?
     @State private var gifPreparationID = UUID()
     @State private var isPreparingGIF = false
+    @State private var isAssistantVisible = true
+    @State private var isTranscriptVisible = true
+    @State private var isShowingDetails = false
+    @State private var selectedRange: Range<TimeInterval>?
+    @State private var timelineFocusRequest: ProjectTimelineFocusRequest?
+    @State private var transcript: TimedTranscript?
+    @State private var transcriptSearch = ""
+    @State private var transcriptWordSelection = TranscriptWordSelection()
+    @State private var selectedPhraseID: String?
+    @State private var expandedPhraseIDs: Set<String> = []
+    @State private var transcriptError: String?
+    @State private var transcriptFileUnreadable = false
+    @State private var isQueuingTranscription = false
+    @State private var hasAttemptedAutomaticTranscription = false
+    @AppStorage("openRouter.model") private var assistantModel = OpenRouterAssistantClient.defaultModel
+    @AppStorage("assistant.provider") private var assistantProviderRaw = AssistantProvider.openRouter.rawValue
+    @AppStorage("assistant.ollamaModel") private var localAssistantModel = "gemma3:4b"
+    @State private var assistantPrompt = ""
+    @State private var assistantScope = OpenRouterAssistantScope.wholeProject
+    @State private var assistantMessages: [AssistantMessage] = []
+    @State private var assistantError: String?
+    @State private var isAssistantWorking = false
+    @State private var assistantRequestID = UUID()
+    @State private var assistantTask: Task<Void, Never>?
+    @FocusState private var focusedTranscriptWordID: String?
+    @State private var pendingAssistantCuts: OpenRouterReviewedCuts?
+    @State private var isConfirmingTranscriptWordDelete = false
+    @State private var isConfirmingAssistantEstimatedCuts = false
+    @State private var pendingAssistantScene: OpenRouterReviewedScene?
+    @State private var pendingAssistantMove: OpenRouterReviewedMove?
 
     private let exporter = ProjectMediaExporter()
 
-    init(project: RecordingProjectSnapshot, onClose: @escaping () -> Void) {
+    private var assistantProvider: AssistantProvider {
+        AssistantProvider(rawValue: assistantProviderRaw) ?? .openRouter
+    }
+
+    private var selectedAssistantModel: String {
+        assistantProvider == .ollama ? localAssistantModel : assistantModel
+    }
+
+    init(
+        project: RecordingProjectSnapshot,
+        onClose: @escaping () -> Void,
+        exportRequest: Int = 0,
+        queueExport: @escaping (ProjectExportRecipe) async throws -> Void,
+        jobs: [RecordingJob],
+        queueTranscription: @escaping (ProjectTranscriptionRecipe) async throws -> Void
+    ) {
         self.project = project
         self.onClose = onClose
+        self.exportRequest = exportRequest
+        self.queueExport = queueExport
+        self.jobs = jobs
+        self.queueTranscription = queueTranscription
         let playableTrackIDs = Set(project.recoveryReport.tracks.compactMap { track in
             switch track.state {
             case .finalized, .partialReadable: track.id
@@ -44,55 +110,18 @@ struct ProjectDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-
             if let programScreenTrackURL, FileManager.default.fileExists(atPath: programScreenTrackURL.path) {
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        ZStack {
-                            detailContent
-                            NativeVideoPlayer(player: editSession.player)
-                                .background(Color.black)
-                                .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
-                                .frame(maxWidth: .infinity)
-                                .frame(maxHeight: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(.primary.opacity(0.10), lineWidth: 0.5)
-                                }
-                                .accessibilityLabel("Composed program preview")
-                                .padding(18)
-                        }
-                        .frame(minHeight: 250, maxHeight: .infinity)
-
-                        Divider()
-
-                        ScrollView {
-                            ProjectQuickEditorView(session: editSession, onExportMovie: exportEditedMovie)
-                                .padding(16)
-                        }
-                        .frame(height: 318)
-                        .background(detailPanel)
-
-                        if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
-                            Divider()
-                            HStack {
-                                shareActions(for: selectedTrackURL)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(detailPanel)
-                        }
+                HSplitView {
+                    if isAssistantVisible {
+                        assistantPanel
+                            .frame(minWidth: 220, idealWidth: 300, maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .background(detailContent)
-
-                    inspector
-                        .frame(width: 316)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .background(detailPanel)
+                    editorCenter
+                        .frame(minWidth: 470, idealWidth: 640, maxWidth: .infinity)
+                    if isTranscriptVisible {
+                        transcriptPanel
+                            .frame(minWidth: 220, idealWidth: 300, maxWidth: .infinity)
+                    }
                 }
             } else {
                 ContentUnavailableView {
@@ -105,8 +134,45 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
+        .onChange(of: exportRequest) { _, _ in
+            if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
+        }
         .task(id: programScreenTrackID) { await loadProgram() }
+        .task(id: project.id) {
+            loadTranscript()
+            await queueInitialTranscriptIfNeeded()
+        }
+        .onChange(of: editSession.timeline) { _, _ in
+            Task { await queueInitialTranscriptIfNeeded() }
+        }
+        .onChange(of: jobs) { _, _ in
+            if transcriptionJob?.state == .completed { loadTranscript() }
+        }
+        .onChange(of: project.id) { _, _ in
+            hasAttemptedAutomaticTranscription = false
+            assistantTask?.cancel()
+            assistantTask = nil
+            isAssistantWorking = false
+            assistantMessages = []
+            assistantPrompt = ""
+            assistantError = nil
+            assistantRequestID = UUID()
+            pendingAssistantCuts = nil
+            pendingAssistantScene = nil
+            pendingAssistantMove = nil
+            transcriptWordSelection.clear()
+        }
+        .onChange(of: editSession.editRevision) { _, _ in
+            pendingAssistantCuts = nil
+            pendingAssistantScene = nil
+            pendingAssistantMove = nil
+            isConfirmingAssistantEstimatedCuts = false
+        }
         .onDisappear {
+            assistantTask?.cancel()
+            assistantTask = nil
+            isAssistantWorking = false
+            assistantRequestID = UUID()
             editSession.stop()
             cancelGIFPreparation()
             cleanupGIFSource()
@@ -132,36 +198,1065 @@ struct ProjectDetailView: View {
         } message: {
             Text(exportError ?? "Unknown export error")
         }
+        .confirmationDialog("Remove selected words?", isPresented: $isConfirmingTranscriptWordDelete,
+                            titleVisibility: .visible) {
+            Button("Delete Selected Words", role: .destructive) {
+                Task { await applyTranscriptWordDeletion() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Some selected word times are estimates. The edit will remove their video and audio intervals, which may trim nearby sound.")
+        }
+        .confirmationDialog("Apply cuts with estimated word times?",
+                            isPresented: $isConfirmingAssistantEstimatedCuts,
+                            titleVisibility: .visible) {
+            Button("Apply Estimated Cuts", role: .destructive) {
+                applyAssistantCuts(confirmedEstimatedTiming: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Some suggested word boundaries are uncertain and may trim nearby audio. Review the highlighted spans before continuing.")
+        }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Button(action: onClose) {
-                Label("All Projects", systemImage: "chevron.left")
+    private var assistantPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Assistant").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Hide Assistant", systemImage: "sidebar.left") {
+                    isAssistantVisible = false
+                }
+                .labelStyle(.iconOnly)
             }
-            .keyboardShortcut(.escape, modifiers: [])
-
-            Divider().frame(height: 22)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(editSession.presentation.resolvedName)
-                    .font(.headline)
-                Text("Recorded \(project.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(project.displayCount) display\(project.displayCount == 1 ? "" : "s")")
-                    .font(.caption)
+            .padding(14)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if assistantMessages.isEmpty {
+                        Text("Ask for cuts, phrase order, scene changes, titles, descriptions, or wording for a new take.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    Text(assistantProvider == .ollama
+                         ? "Transcript and scene details go to the local Ollama service. Review every media change before applying it."
+                         : "Transcript text and scene metadata are sent for the chosen scope. Review every media change before applying it.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(assistantMessages) { message in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(message.role)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(message.text)
+                                .font(.caption)
+                                .textSelection(.enabled)
+                            if let draft = message.draft {
+                                ForEach(draft.titles, id: \.self) { title in
+                                    Label(title, systemImage: "textformat")
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                                ForEach(draft.descriptions, id: \.self) { description in
+                                    Text(description)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                                ForEach(draft.newTakeWording, id: \.self) { wording in
+                                    Label(wording, systemImage: "mic")
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                                ForEach(draft.cuts, id: \.id) { cut in
+                                    Label(cut.reason, systemImage: "scissors")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+                                ForEach(draft.sceneChanges, id: \.reason) { change in
+                                    Label(change.reason, systemImage: "rectangle.on.rectangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.tint)
+                                }
+                                ForEach(draft.phraseMoves, id: \.reason) { move in
+                                    Label(move.reason, systemImage: "arrow.left.arrow.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                }
+                .padding(12)
+            }
+            Divider()
+            if let pendingAssistantCuts, !pendingAssistantCuts.ranges.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(pendingAssistantCuts.ranges.count) proposed cuts")
+                        .font(.caption.weight(.semibold))
+                    Text(pendingAssistantCuts.requiresTimingReview
+                         ? "Some word times are estimates. Red spans mark video and audio; review before applying."
+                         : "Red spans mark both video and audio. Audition a span before applying.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Review") { reviewAssistantCuts() }
+                        Button("Apply") { applyAssistantCuts() }
+                            .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                        Button("Dismiss") {
+                            self.pendingAssistantCuts = nil
+                            editSession.dismissProposalPreview()
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed cuts: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
+            }
+            if let pendingAssistantScene {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Proposed scene change")
+                        .font(.caption.weight(.semibold))
+                    Text("\(pendingAssistantScene.change.layout.label) · \(pendingAssistantScene.change.transition.label)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(sceneChangeDetails(pendingAssistantScene.change), id: \.self) { detail in
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Button("Review") { reviewAssistantScene() }
+                        Button("Apply") { applyAssistantScene() }
+                            .disabled(editSession.isWorking || !editSession.canEditRecordedScenes)
+                        Button("Dismiss") {
+                            self.pendingAssistantScene = nil
+                            editSession.dismissProposalPreview()
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed scene: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
+            }
+            if let pendingAssistantMove {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Proposed phrase move")
+                        .font(.caption.weight(.semibold))
+                    Text(pendingAssistantMove.reason)
+                        .font(.caption2)
+                    Text(String(
+                        format: "Move %.2f–%.2f s before %.2f s",
+                        pendingAssistantMove.range.lowerBound,
+                        pendingAssistantMove.range.upperBound,
+                        pendingAssistantMove.destination
+                    ))
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Review") { reviewAssistantMove() }
+                        Button("Apply") { applyAssistantMove() }
+                            .disabled(editSession.isWorking || !editSession.canPersistEdits)
+                        Button("Dismiss") {
+                            self.pendingAssistantMove = nil
+                            editSession.dismissProposalPreview()
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("Refine") { assistantPrompt = "Refine the proposed phrase order: " }
+                        Button("Undo") { Task { await editSession.undo() } }
+                            .disabled(!editSession.canUndo)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(12)
+                Divider()
             }
-
-            Spacer()
-
-            Label(lifecycleLabel, systemImage: lifecycleIcon)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(lifecycleColor)
-
-            Button("Reveal Project", systemImage: "folder") { revealProject() }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Context")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Picker("Context", selection: $assistantScope) {
+                    Text("Whole project").tag(OpenRouterAssistantScope.wholeProject)
+                    Text("Selection").tag(OpenRouterAssistantScope.selection)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                HStack {
+                    Button("Find pauses") { editSession.detectSilence() }
+                        .disabled(editSession.isDetectingSilence || editSession.timeline == nil)
+                    if editSession.isDetectingSilence {
+                        ProgressView().controlSize(.small)
+                    } else if !editSession.silenceCandidates.isEmpty {
+                        Text("\(editSession.silenceCandidates.count) detected")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                if assistantScope == .selection, selectedRange == nil {
+                    Text("Select a range on the timeline first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                TextField("Ask Assistant", text: $assistantPrompt, axis: .vertical)
+                    .lineLimit(2...4)
+                    .onSubmit { sendAssistantPrompt() }
+                HStack {
+                    Text(assistantProvider == .ollama
+                         ? "Local · \(localAssistantModel)"
+                         : assistantModel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(isAssistantWorking ? "Thinking…" : "Send") { sendAssistantPrompt() }
+                        .disabled(isAssistantWorking
+                                  || assistantPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || (assistantScope == .selection && selectedRange == nil))
+                }
+                if let assistantError {
+                    Text(assistantError)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(12)
+            Divider()
+            DisclosureGroup("Local edit tools") {
+                ProjectQuickEditorView(session: editSession, onExportMovie: {}, commandsOnly: true)
+            }
+            .font(.caption)
+            .padding(12)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
         .background(detailPanel)
+    }
+
+    private func sendAssistantPrompt() {
+        let prompt = assistantPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !isAssistantWorking,
+              let projectID = project.identity.manifestID else { return }
+        let scope = assistantScope
+        guard scope == .wholeProject || selectedRange != nil else { return }
+        let words: [OpenRouterAssistantWord] = {
+            guard let transcript, let timeline = editSession.timeline else { return [] }
+            return transcript.words(in: timeline)
+                .filter { word in
+                    guard scope == .selection, let selectedRange else { return true }
+                    return word.outputStart < selectedRange.upperBound
+                        && word.outputEnd > selectedRange.lowerBound
+                }
+                .map { OpenRouterAssistantWord(
+                    id: $0.id, text: $0.text,
+                    start: $0.outputStart, end: $0.outputEnd,
+                    timingStatus: $0.timingStatus
+                ) }
+        }()
+        let silences: [OpenRouterAssistantSilence] = editSession.silenceCandidates.enumerated().compactMap { index, range in
+            if scope == .selection, let selectedRange,
+               (range.lowerBound < selectedRange.lowerBound
+                || range.upperBound > selectedRange.upperBound) { return nil }
+            return OpenRouterAssistantSilence(
+                id: "silence-\(index)", start: range.lowerBound, end: range.upperBound
+            )
+        }
+        let sceneSelection: OpenRouterAssistantSceneSelection? = {
+            guard scope == .selection, editSession.canEditRecordedScenes,
+                  let selectedRange, let timeline = editSession.timeline,
+                  (try? timeline.sourceRanges(for: selectedRange)) != nil,
+                  let current = editSession.scenePresentation(for: selectedRange) else { return nil }
+            return OpenRouterAssistantSceneSelection(
+                start: selectedRange.lowerBound, end: selectedRange.upperBound,
+                capturedDisplayIDs: editSession.capturedDisplayIDs,
+                hasCapturedCamera: editSession.hasCapturedCamera,
+                overlays: current.resolvedImageOverlays.map {
+                    OpenRouterAssistantSceneOverlay(id: $0.id, name: $0.name)
+                },
+                currentState: OpenRouterAssistantSceneState(
+                    screenVisible: current.screen.isVisible,
+                    cameraVisible: current.camera.isVisible,
+                    displayID: editSession.sceneDisplayID(for: selectedRange),
+                    cameraX: current.camera.centerX,
+                    cameraY: current.camera.centerY,
+                    cameraWidth: current.camera.width,
+                    cameraShape: current.camera.shape,
+                    cameraBackground: current.resolvedCameraBackground.mode
+                )
+            )
+        }()
+        let history = assistantMessages.suffix(12).map { message in
+            OpenRouterAssistantTurn(
+                role: message.role == "You" ? .user : .assistant,
+                content: message.text
+            )
+        }
+        let requestID = UUID()
+        assistantRequestID = requestID
+        let requestTimeline = editSession.timeline
+        let requestRevision = editSession.editRevision
+        let requestProvider = assistantProvider
+        let requestModel = selectedAssistantModel
+        assistantPrompt = ""
+        assistantError = nil
+        assistantMessages.append(AssistantMessage(role: "You", text: prompt, draft: nil))
+        isAssistantWorking = true
+        assistantTask = Task {
+            defer {
+                if assistantRequestID == requestID {
+                    isAssistantWorking = false
+                    assistantTask = nil
+                }
+            }
+            do {
+                let context = OpenRouterAssistantContext(
+                    projectID: projectID, scope: scope, words: words, silences: silences,
+                    sceneSelection: sceneSelection
+                )
+                let draft: OpenRouterAssistantDraft
+                switch requestProvider {
+                case .openRouter:
+                    guard let key = try OpenRouterAssistantKeyStore().load() else {
+                        throw OpenRouterAssistantError.missingKey
+                    }
+                    draft = try await OpenRouterAssistantClient().draft(
+                        apiKey: key, model: requestModel, prompt: prompt,
+                        context: context, history: history
+                    )
+                case .ollama:
+                    draft = try await OllamaAssistantClient().draft(
+                        model: requestModel, prompt: prompt, context: context, history: history
+                    )
+                }
+                guard assistantRequestID == requestID else { return }
+                guard let requestTimeline,
+                      editSession.timeline == requestTimeline,
+                      editSession.editRevision == requestRevision else {
+                    throw OpenRouterAssistantError.invalidProposal
+                }
+                let cutProposal: OpenRouterReviewedCuts? = if draft.cuts.isEmpty { nil } else {
+                    try draft.reviewedCuts(
+                        context: context, timeline: requestTimeline, revision: requestRevision
+                    )
+                }
+                let sceneProposal = try draft.reviewedScene(
+                    context: context, timeline: requestTimeline, revision: requestRevision
+                )
+                let moveProposal = try draft.reviewedMove(
+                    context: context, timeline: requestTimeline, revision: requestRevision
+                )
+                if let sceneProposal {
+                    guard let current = editSession.scenePresentation(for: sceneProposal.range),
+                          await editSession.canApplyScene(
+                            to: sceneProposal.range,
+                            presentation: sceneProposal.change.presentation(from: current),
+                            displayID: sceneProposal.change.displayID
+                                ?? editSession.sceneDisplayID(for: sceneProposal.range)
+                          ) else { throw OpenRouterAssistantError.invalidProposal }
+                }
+                guard assistantRequestID == requestID,
+                      editSession.editRevision == requestRevision else { return }
+                assistantMessages.append(AssistantMessage(role: "Assistant", text: draft.reply, draft: draft))
+                pendingAssistantCuts = cutProposal
+                pendingAssistantScene = sceneProposal
+                pendingAssistantMove = moveProposal
+                selectedRange = cutProposal?.ranges.first ?? sceneProposal?.range
+                    ?? moveProposal?.range ?? selectedRange
+            } catch {
+                if assistantRequestID == requestID { assistantError = error.localizedDescription }
+            }
+        }
+    }
+
+    private func applyAssistantCuts(confirmedEstimatedTiming: Bool = false) {
+        guard let proposal = pendingAssistantCuts,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                  projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), !proposal.ranges.isEmpty else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantCuts = nil
+            return
+        }
+        if proposal.requiresTimingReview && !confirmedEstimatedTiming {
+            isConfirmingAssistantEstimatedCuts = true
+            return
+        }
+        Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantCuts = nil
+                return
+            }
+            await editSession.deleteOutputRanges(proposal.ranges)
+            if let error = editSession.errorMessage {
+                assistantError = error
+            } else {
+                pendingAssistantCuts = nil
+                selectedRange = nil
+                transcriptWordSelection.clear()
+            }
+        }
+    }
+
+    private func reviewAssistantCuts() {
+        guard let proposal = pendingAssistantCuts,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        do {
+            var candidate = timeline
+            try candidate.delete(ranges: proposal.ranges)
+            selectedRange = proposal.ranges.first
+            Task {
+                guard let current = editSession.timeline,
+                      proposal.isCurrent(
+                        projectID: projectID, timeline: current,
+                        revision: editSession.editRevision
+                      ) else { return }
+                await editSession.previewProposal(
+                    timeline: candidate,
+                    at: min(proposal.ranges.first?.lowerBound ?? 0, candidate.duration)
+                )
+                assistantError = editSession.errorMessage
+            }
+        } catch {
+            assistantError = error.localizedDescription
+        }
+    }
+
+    private func reviewAssistantScene() {
+        guard let proposal = pendingAssistantScene,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), let current = editSession.scenePresentation(for: proposal.range),
+              (proposal.change.overlayID.map { overlayID in
+                  current.resolvedImageOverlays.contains { $0.id == overlayID }
+              } ?? true) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        selectedRange = proposal.range
+        Task {
+            guard let latest = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: latest,
+                    revision: editSession.editRevision
+                  ) else { return }
+            await editSession.previewScene(
+                to: proposal.range,
+                presentation: proposal.change.presentation(from: current),
+                displayID: proposal.change.displayID
+                    ?? editSession.sceneDisplayID(for: proposal.range),
+                transition: StudioSceneTransitionConfiguration(
+                    effect: proposal.change.transition, duration: proposal.change.duration
+                )
+            )
+            assistantError = editSession.errorMessage
+        }
+    }
+
+    private func reviewAssistantMove() {
+        guard let proposal = pendingAssistantMove,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            return
+        }
+        selectedRange = proposal.range
+        Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current,
+                    revision: editSession.editRevision
+                  ) else { return }
+            await editSession.previewMove(proposal.range, before: proposal.destination)
+            assistantError = editSession.errorMessage
+        }
+    }
+
+    private func applyAssistantScene() {
+        guard let proposal = pendingAssistantScene,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ), let current = editSession.scenePresentation(for: proposal.range),
+              (proposal.change.overlayID.map { overlayID in
+                  current.resolvedImageOverlays.contains { $0.id == overlayID }
+              } ?? true) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantScene = nil
+            return
+        }
+        Task {
+            guard let timeline = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: timeline, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantScene = nil
+                return
+            }
+            await editSession.applyScene(
+                to: proposal.range,
+                presentation: proposal.change.presentation(from: current),
+                displayID: proposal.change.displayID
+                    ?? editSession.sceneDisplayID(for: proposal.range),
+                transition: StudioSceneTransitionConfiguration(
+                    effect: proposal.change.transition, duration: proposal.change.duration
+                )
+            )
+            if let error = editSession.errorMessage { assistantError = error }
+            else { pendingAssistantScene = nil }
+        }
+    }
+
+    private func sceneChangeDetails(_ change: OpenRouterAssistantSceneChange) -> [String] {
+        var details: [String] = []
+        if let displayID = change.displayID { details.append("Display \(displayID)") }
+        if let shape = change.cameraShape { details.append("Camera shape: \(shape.label)") }
+        if let background = change.cameraBackground { details.append("Camera background: \(background.label)") }
+        if change.cameraX != nil || change.cameraY != nil || change.cameraWidth != nil {
+            let position = [change.cameraX, change.cameraY, change.cameraWidth]
+                .map { $0.map { String(format: "%.2f", $0) } ?? "unchanged" }
+                .joined(separator: ", ")
+            details.append("Camera x, y, width: \(position)")
+        }
+        if let overlayID = change.overlayID, let visible = change.overlayVisible {
+            let overlayName = pendingAssistantScene.flatMap {
+                editSession.scenePresentation(for: $0.range)?.resolvedImageOverlays
+                    .first(where: { $0.id == overlayID })?.name
+            } ?? "Image"
+            details.append("PNG \(overlayName): \(visible ? "show" : "hide")")
+        }
+        return details
+    }
+
+    private func applyAssistantMove() {
+        guard let proposal = pendingAssistantMove,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              proposal.isCurrent(
+                projectID: projectID, timeline: timeline, revision: editSession.editRevision
+              ) else {
+            assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+            pendingAssistantMove = nil
+            return
+        }
+        Task {
+            guard let current = editSession.timeline,
+                  proposal.isCurrent(
+                    projectID: projectID, timeline: current, revision: editSession.editRevision
+                  ) else {
+                assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
+                pendingAssistantMove = nil
+                return
+            }
+            await editSession.moveOutputRange(proposal.range, before: proposal.destination)
+            if let error = editSession.errorMessage { assistantError = error }
+            else {
+                pendingAssistantMove = nil
+                selectedRange = nil
+            }
+        }
+    }
+
+    private var transcriptPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Transcript").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Hide Transcript", systemImage: "sidebar.right") {
+                    isTranscriptVisible = false
+                }
+                .labelStyle(.iconOnly)
+            }
+            .padding(14)
+            Divider()
+            if let transcript, let timeline = editSession.timeline,
+               transcript.isCompatible(with: timeline) {
+                let visiblePhrases = visibleTranscriptPhrases
+                let visibleWords = visiblePhrases.flatMap { phrase in
+                    expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
+                }
+                let selectedWords = selectedTranscriptWords(in: visibleWords)
+                TextField("Search transcript", text: $transcriptSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Pauses")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(editSession.isDetectingSilence ? "Finding…" : "Find") {
+                                editSession.detectSilence()
+                            }
+                            .disabled(editSession.isDetectingSilence || editSession.isWorking)
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(.horizontal, 10)
+                        if let silenceError = editSession.silenceError {
+                            Text(silenceError).font(.caption).foregroundStyle(.orange).padding(.horizontal, 10)
+                        }
+                        ForEach(Array(editSession.silenceCandidates.enumerated()), id: \.offset) { _, range in
+                            Button("Pause \(transcriptTime(range.lowerBound))–\(transcriptTime(range.upperBound))") {
+                                transcriptWordSelection.clear()
+                                selectedPhraseID = nil
+                                focusTranscriptRange(range)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption.monospacedDigit())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(selectedRange == range ? Color.accentColor.opacity(0.18) : .clear)
+                        }
+                        Divider().padding(.vertical, 5)
+                        ForEach(visiblePhrases) { phrase in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(alignment: .top, spacing: 3) {
+                                    Button {
+                                        transcriptWordSelection.clear()
+                                        selectedPhraseID = phrase.id
+                                        focusTranscriptRange(phrase.outputRange)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(transcriptTime(phrase.outputRange.lowerBound))
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                            Text(phrase.text)
+                                                .font(.caption)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .multilineTextAlignment(.leading)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Select phrase: \(phrase.text)")
+                                    Button(expandedPhraseIDs.contains(phrase.id) ? "Hide Words" : "Show Words",
+                                           systemImage: expandedPhraseIDs.contains(phrase.id) ? "chevron.up" : "chevron.down") {
+                                        if !expandedPhraseIDs.insert(phrase.id).inserted {
+                                            expandedPhraseIDs.remove(phrase.id)
+                                            if phrase.words.contains(where: {
+                                                transcriptWordSelection.selectedIDs.contains($0.id)
+                                            }) {
+                                                transcriptWordSelection.clear()
+                                            }
+                                        }
+                                    }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.borderless)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(selectedPhraseID == phrase.id ? Color.accentColor.opacity(0.18) : .clear)
+                                if expandedPhraseIDs.contains(phrase.id) {
+                                    ForEach(phrase.words) { word in
+                                        transcriptWordButton(word, visibleWords: visibleWords).padding(.leading, 9)
+                                    }
+                                }
+                            }
+                            Divider().padding(.leading, 10)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                Divider()
+                if selectedWords.count > 1,
+                   let first = selectedWords.first,
+                   let last = selectedWords.last {
+                    Text("\(selectedWords.count) words · \(transcriptTime(first.outputStart))–\(transcriptTime(last.outputEnd))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                } else if let selectedTranscriptWord = selectedWords.first {
+                    Text(String(
+                        format: "Output %.2f–%.2f s · Source %.2f–%.2f s",
+                        selectedTranscriptWord.outputStart, selectedTranscriptWord.outputEnd,
+                        selectedTranscriptWord.sourceStart, selectedTranscriptWord.sourceEnd
+                    ))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+                } else if let selectedRange {
+                    Text("Selected \(transcriptTime(selectedRange.lowerBound))–\(transcriptTime(selectedRange.upperBound))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                }
+                Button("Save Transcript…") { saveTranscriptText() }
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                Text("Shift-click words to select several. Press Delete to remove their video and audio together.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                if let transcriptError {
+                    Text(transcriptError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 10)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Image(systemName: "text.alignleft")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("No timed transcript")
+                        .font(.subheadline.weight(.medium))
+                    Text(transcriptError ?? transcriptionStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let transcriptionJob,
+                       transcriptionJob.state == .queued || transcriptionJob.state == .running {
+                        ProgressView(value: transcriptionJob.progress)
+                            .accessibilityLabel(transcriptionJob.stage)
+                    } else if transcriptFileUnreadable {
+                        Button("Reveal Project") { revealProject() }
+                    } else if transcriptionJob?.state != .failed {
+                        Button(isQueuingTranscription ? "Queuing…" : "Transcribe") {
+                            transcriptError = nil
+                            Task { await queueMissingTranscript() }
+                        }
+                        .disabled(isQueuingTranscription || editSession.timeline == nil)
+                    }
+                }
+                .padding(14)
+                Spacer()
+            }
+        }
+        .background(detailPanel)
+        .onDeleteCommand(perform: deleteSelectedTranscriptWords)
+        .onChange(of: transcriptSearch) { _, _ in transcriptWordSelection.clear() }
+    }
+
+    private var visibleTranscriptPhrases: [EditedTranscriptPhrase] {
+        guard let transcript, let timeline = editSession.timeline else { return [] }
+        let phrases = transcript.phrases(in: timeline)
+        let query = transcriptSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? phrases : phrases.filter { $0.text.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var selectedTranscriptWords: [EditedTranscriptWord] {
+        guard editSession.timeline != nil else { return [] }
+        let visibleWords = visibleTranscriptPhrases.flatMap { phrase in
+            expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
+        }
+        return selectedTranscriptWords(in: visibleWords)
+    }
+
+    private func selectedTranscriptWords(in visibleWords: [EditedTranscriptWord]) -> [EditedTranscriptWord] {
+        let orderedIDs = transcriptWordSelection.orderedIDs(in: visibleWords.map(\.id))
+        let wordsByID = Dictionary(uniqueKeysWithValues: visibleWords.map { ($0.id, $0) })
+        return orderedIDs.compactMap { wordsByID[$0] }
+    }
+
+    private var selectedTranscriptPhrase: EditedTranscriptPhrase? {
+        guard let transcript, let timeline = editSession.timeline else { return nil }
+        return transcript.phrases(in: timeline).first { $0.id == selectedPhraseID }
+    }
+
+    private func transcriptTime(_ seconds: TimeInterval) -> String {
+        String(format: "%02d:%05.2f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60))
+    }
+
+    private func focusTranscriptRange(_ range: Range<TimeInterval>) {
+        selectedRange = range
+        timelineFocusRequest = ProjectTimelineFocusRequest(range: range)
+        Task { await editSession.player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600)) }
+    }
+
+    private func deleteSelectedTranscriptWords() {
+        guard focusedTranscriptWordID != nil, !selectedTranscriptWords.isEmpty else { return }
+        if selectedTranscriptWords.contains(where: { $0.timingStatus == .uncertain }) {
+            isConfirmingTranscriptWordDelete = true
+        } else {
+            Task { await applyTranscriptWordDeletion() }
+        }
+    }
+
+    private func applyTranscriptWordDeletion() async {
+        let selectedWords = selectedTranscriptWords
+        guard !selectedWords.isEmpty else { return }
+        let sortedRanges = selectedWords.map { $0.outputStart..<$0.outputEnd }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        var ranges: [Range<TimeInterval>] = []
+        for range in sortedRanges {
+            if let last = ranges.last, range.lowerBound < last.upperBound {
+                ranges[ranges.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                ranges.append(range)
+            }
+        }
+        await editSession.deleteOutputRanges(ranges)
+        if let error = editSession.errorMessage {
+            transcriptError = error
+        } else {
+            transcriptWordSelection.clear()
+            focusedTranscriptWordID = nil
+            selectedPhraseID = nil
+            selectedRange = nil
+            transcriptError = nil
+        }
+    }
+
+    private func transcriptWordButton(_ word: EditedTranscriptWord, visibleWords: [EditedTranscriptWord]) -> some View {
+        let isSelected = transcriptWordSelection.selectedIDs.contains(word.id)
+        return Button {
+            transcriptWordSelection.select(
+                word.id,
+                extendingWithShift: NSEvent.modifierFlags.contains(.shift),
+                orderedIDs: visibleWords.map(\.id)
+            )
+            selectedPhraseID = nil
+            let selected = transcriptWordSelection.orderedIDs(in: visibleWords.map(\.id))
+                .compactMap { id in visibleWords.first(where: { $0.id == id }) }
+            if let first = selected.first, let last = selected.last {
+                focusTranscriptRange(first.outputStart..<last.outputEnd)
+            }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(transcriptTime(word.outputStart))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .leading)
+                Text(word.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if word.timingStatus == .uncertain {
+                    Image(systemName: "waveform.badge.exclamationmark")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : .clear)
+            .background(pendingAssistantCuts?.ranges.contains(where: {
+                $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
+            }) == true ? Color.red.opacity(0.15) : .clear)
+            .background(pendingAssistantMove.map {
+                $0.range.lowerBound < word.outputEnd && $0.range.upperBound > word.outputStart
+            } == true ? Color.blue.opacity(0.18) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focused($focusedTranscriptWordID, equals: word.id)
+        .accessibilityLabel("\(word.text), \(word.outputStart.formatted()) seconds, \(word.timingStatus.rawValue) timing")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func loadTranscript() {
+        guard let projectID = project.identity.manifestID else { return }
+        do {
+            transcript = try TimedTranscriptStore().load(in: project.rootURL, expectedProjectID: projectID)
+            transcriptError = nil
+            transcriptFileUnreadable = false
+        } catch {
+            transcript = nil
+            transcriptError = error.localizedDescription
+            transcriptFileUnreadable = true
+        }
+    }
+
+    private var transcriptionJob: RecordingJob? {
+        guard let projectID = project.identity.manifestID else { return nil }
+        return jobs.filter { $0.projectID == projectID && $0.kind == .transcription }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private var transcriptionStatusText: String {
+        if let transcriptionJob {
+            switch transcriptionJob.state {
+            case .queued, .running: return transcriptionJob.stage
+            case .failed: return "\(transcriptionJob.failure ?? "Transcription failed.") Retry from Jobs."
+            case .completed: return "The saved transcript is missing or belongs to another track."
+            }
+        }
+        return "Ukrainian words are recognized locally. Experimental word boundaries need waveform review before cutting."
+    }
+
+    private func queueInitialTranscriptIfNeeded() async {
+        guard !hasAttemptedAutomaticTranscription,
+              TranscriptAutoQueuePolicy.shouldQueue(
+                hasSavedTranscript: transcript != nil,
+                hasJob: transcriptionJob != nil,
+                fileUnreadable: transcriptFileUnreadable
+              ),
+              editSession.timeline != nil else { return }
+        hasAttemptedAutomaticTranscription = true
+        await queueMissingTranscript()
+    }
+
+    private func queueMissingTranscript() async {
+        guard !isQueuingTranscription, transcriptError == nil,
+              let projectID = project.identity.manifestID,
+              let timeline = editSession.timeline,
+              transcript?.isCompatible(with: timeline) != true,
+              transcriptionJob?.state != .queued,
+              transcriptionJob?.state != .running,
+              transcriptionJob?.state != .failed,
+              let audioURL = programSources?.audioURL ?? programScreenTrackURL else { return }
+        isQueuingTranscription = true
+        defer { isQueuingTranscription = false }
+        do {
+            try await queueTranscription(ProjectTranscriptionRecipe(
+                projectID: projectID, sourceTrackID: timeline.trackID,
+                sourceDuration: timeline.sourceDuration, audioURL: audioURL
+            ))
+        } catch {
+            transcriptError = error.localizedDescription
+        }
+    }
+
+    private func saveTranscriptText() {
+        guard let transcript, let timeline = editSession.timeline, !transcript.words.isEmpty,
+              let destination = saveURL(type: .plainText, suggestedName: "Recording transcript.txt") else { return }
+        do {
+            try transcript.words(in: timeline).map(\.text).joined(separator: " ")
+                .write(to: destination, atomically: true, encoding: .utf8)
+        } catch {
+            transcriptError = error.localizedDescription
+        }
+    }
+
+    private var editorCenter: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button("All Projects", systemImage: "chevron.left", action: onClose)
+                    .labelStyle(.iconOnly)
+                if !isAssistantVisible {
+                    Button("Show Assistant", systemImage: "sidebar.left") { isAssistantVisible = true }
+                        .labelStyle(.iconOnly)
+                }
+                Text("Editor").font(.subheadline.weight(.semibold))
+                TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+                    HStack(spacing: 6) {
+                        Button(
+                            editSession.player.rate > 0 ? "Pause" : "Play",
+                            systemImage: editSession.player.rate > 0 ? "pause.fill" : "play.fill"
+                        ) {
+                            if editSession.player.rate > 0 { editSession.player.pause() }
+                            else { editSession.player.play() }
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(editSession.timeline == nil)
+                        Text(String(format: "%d:%02d", Int(editSession.playhead) / 60, Int(editSession.playhead) % 60))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Label(lifecycleLabel, systemImage: lifecycleIcon)
+                    .font(.caption)
+                    .foregroundStyle(lifecycleColor)
+                Button("Details", systemImage: "slider.horizontal.3") { isShowingDetails = true }
+                    .labelStyle(.iconOnly)
+                    .help("Scene, media and sharing details")
+                    .popover(isPresented: $isShowingDetails) {
+                        inspector.frame(width: 320, height: 560)
+                    }
+                if !isTranscriptVisible {
+                    Button("Show Transcript", systemImage: "sidebar.right") { isTranscriptVisible = true }
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(detailPanel)
+            Divider()
+            if editSession.proposalPlayer != nil {
+                HStack {
+                    Label("Proposed output preview", systemImage: "play.rectangle")
+                        .font(.caption)
+                    Text("Timeline marks show the current edit until Apply.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Close Preview") { editSession.dismissProposalPreview() }
+                        .font(.caption)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(detailPanel)
+                Divider()
+            }
+            NativeVideoPlayer(player: editSession.proposalPlayer ?? editSession.player)
+                .background(Color.black)
+                .aspectRatio(editSession.presentation.canvas.aspectRatio, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("Composed program preview")
+                .padding(12)
+                .frame(minHeight: 220, maxHeight: .infinity)
+                .background(detailContent)
+            Divider()
+            ScrollView {
+                ProjectQuickEditorView(
+                    session: editSession,
+                    onExportMovie: exportEditedMovie,
+                    selectedRange: $selectedRange,
+                    proposedRanges: pendingAssistantCuts?.ranges ?? [],
+                    proposedMove: pendingAssistantMove,
+                    focusRequest: timelineFocusRequest,
+                    requiresSelectionTimingReview:
+                        selectedTranscriptWords.contains {
+                            $0.requiresTimingReview(for: selectedRange)
+                        }
+                        || (pendingAssistantCuts?.requiresTimingReview == true
+                            && pendingAssistantCuts?.ranges.contains(where: {
+                                guard let selectedRange else { return false }
+                                return selectedRange.lowerBound < $0.upperBound
+                                    && selectedRange.upperBound > $0.lowerBound
+                            }) == true)
+                        || selectedTranscriptPhrase?.requiresTimingReview(for: selectedRange) == true
+                )
+                    .padding(12)
+            }
+            .frame(height: 290)
+            .background(detailPanel)
+            if let selectedTrackURL, FileManager.default.fileExists(atPath: selectedTrackURL.path) {
+                Divider()
+                HStack { shareActions(for: selectedTrackURL) }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(detailPanel)
+            }
+        }
     }
 
     private var detailContent: Color {
@@ -574,8 +1669,9 @@ struct ProjectDetailView: View {
 
     private func exportEditedMovie() {
         guard let destinationURL = saveURL(type: .quickTimeMovie, suggestedName: "Recording edited.mov") else { return }
-        performExport(success: "Edited movie saved") {
-            try await editSession.exportEditedMovie(to: destinationURL)
+        performExport(success: "Export queued in Jobs") {
+            let recipe = try editSession.makeExportRecipe(to: destinationURL)
+            try await queueExport(recipe)
         }
     }
 

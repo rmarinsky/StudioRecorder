@@ -49,7 +49,7 @@ final class PreferencesStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(store.preferences.appearance, .light)
-        XCTAssertEqual(store.preferences.capture.frameRate, 60)
+        XCTAssertEqual(store.preferences.capture.frameRate, 30)
         XCTAssertEqual(store.preferences.capture.programPreset, .ultraHD)
         XCTAssertFalse(store.preferences.audio.capturesMicrophone)
 

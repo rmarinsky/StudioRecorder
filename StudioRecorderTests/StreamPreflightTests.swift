@@ -3,6 +3,24 @@ import XCTest
 @testable import StudioRecorder
 
 final class StreamPreflightTests: XCTestCase {
+    func testLocal4K60RecordingRequiresEnoughSpaceForCaptureAndFinalization() {
+        let required = RecordingStoragePolicy.requiredCapacity(
+            displaySizes: [CGSize(width: 3_440, height: 1_440)],
+            canvasSize: CGSize(width: 3_840, height: 2_160),
+            frameRate: 60,
+            capturesCamera: true
+        )
+
+        XCTAssertGreaterThan(required, 17_000_000_000)
+        XCTAssertFalse(RecordingStoragePolicy.canStart(availableCapacity: 11_887_952_000, requiredCapacity: required))
+        XCTAssertTrue(RecordingStoragePolicy.canStart(availableCapacity: required, requiredCapacity: required))
+    }
+
+    func testLocalRecordingStopsBeforeScreenCaptureKitPurgesTheOutput() {
+        XCTAssertTrue(RecordingStoragePolicy.shouldStop(availableCapacity: 2_000_000_000))
+        XCTAssertFalse(RecordingStoragePolicy.shouldStop(availableCapacity: 3_000_000_000))
+    }
+
     func testPreparedSceneRuntimeCheckCanBlockAndThenReplaceItselfWithPass() {
         let base = StreamPreflightReport(
             checks: [],

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio Recorder · Editor workspace</title>
+  <link rel="stylesheet" href="editor-workspace-minimal.css">
+</head>
+<body>
+<!-- Disposable UI prototype. All media, transcript, jobs, and assistant responses are illustrative. -->
+<div class="shell">
+  <header class="topbar">
+    <div class="window-space" aria-hidden="true"><i></i><i></i><i></i></div>
+    <span class="brand">Studio Recorder</span>
+    <nav class="topnav" aria-label="Main navigation">
+      <button id="projectsNav" class="nav" type="button">Projects</button>
+      <button id="studioNav" class="nav" type="button">Studio</button>
+    </nav>
+    <span class="topbar-divider" aria-hidden="true"></span>
+    <div class="project-title" id="projectTitle">
+      <strong>Product walkthrough</strong>
+      <span>Program movie · saved</span>
+    </div>
+    <button id="projectInfoButton" class="icon-button" type="button" aria-label="Project details" title="Project details">ⓘ</button>
+    <span class="grow"></span>
+    <div class="topbar-actions">
+      <button id="jobsButton" class="control" type="button" aria-expanded="false">Jobs <span class="job-count">2</span></button>
+      <button id="settingsNav" class="control" type="button">Settings</button>
+      <button id="newRecordingButton" class="control" type="button">New recording</button>
+      <button id="export" class="control primary" type="button">Export video</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <div id="editorScreen" class="screen-editor">
+      <div id="workarea" class="workarea">
+        <aside class="chat-panel" aria-label="AI chat">
+          <div class="panel-heading">
+            <div><strong>Assistant</strong><span>Editing conversation</span></div>
+            <button id="collapseChat" class="icon-button panel-toggle" type="button" aria-label="Collapse chat" aria-expanded="true" title="Collapse chat">‹</button>
+          </div>
+          <div class="chat-content">
+            <div class="chat-scope">
+              <span>Working on</span>
+              <strong id="assistantScope">Whole video</strong>
+              <button id="clearScope" class="text-button" type="button" hidden>Clear</button>
+            </div>
+            <div id="chatHistory" class="chat-history" role="log" aria-live="polite" aria-label="Assistant conversation">
+              <div class="chat-message assistant-message">
+                <span class="message-byline">Assistant · sample</span>
+                <p>Select a range on either track or choose words in the transcript. I can suggest cuts, a new order for recorded phrases, or text for a retake.</p>
+              </div>
+              <div class="prompt-examples" aria-label="Example requests">
+                <button type="button" data-prompt="Remove the long pause">Remove a pause</button>
+                <button type="button" data-prompt="Reorder the recorded phrases">Reorder phrases</button>
+                <button type="button" data-prompt="Rewrite this sentence">Rewrite for a retake</button>
+                <button type="button" data-prompt="Analyze the sentences">Analyze sentences</button>
+                <button type="button" data-prompt="Suggest titles and a description">Titles and description</button>
+              </div>
+            </div>
+            <form id="assistantForm" class="assistant-composer">
+              <label for="assistantPrompt">Ask about this recording</label>
+              <textarea id="assistantPrompt" rows="3" placeholder="E.g. remove the long pause…"></textarea>
+              <div class="composer-footer">
+                <span>Preview only · no request sent</span>
+                <button id="askAssistant" class="mini primary" type="submit">Ask</button>
+              </div>
+            </form>
+          </div>
+          <span class="collapsed-label" aria-hidden="true">Assistant</span>
+        </aside>
+
+        <div id="chatResizer" class="panel-resizer chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize chat" aria-valuemin="240" aria-valuemax="350" aria-valuenow="290" tabindex="0"></div>
+
+        <section class="editor-main" aria-label="Video editor">
+          <section class="preview" aria-label="Program preview">
+            <div class="preview-topline"><span>Edited program</span><span>16:9 · sample media</span></div>
+            <div class="video">
+              <div class="sample-scene">
+                <div class="sample-screen">
+                  <header>Product overview</header>
+                  <div class="sample-content"><i></i><i></i><i></i><i></i></div>
+                </div>
+                <div class="scene-camera">Camera</div>
+              </div>
+              <div id="emptyPreview" class="empty-preview" hidden>No clips remain in this edit. Undo to restore them.</div>
+              <button id="play" class="play-button" type="button" aria-label="Play sample preview">▶</button>
+            </div>
+            <div class="transport">
+              <button id="playTransport" class="transport-play" type="button" aria-label="Play sample preview">▶</button>
+              <strong id="playheadTime">01:12.160</strong><span id="outputDuration">/ 05:42.000</span>
+              <span class="grow"></span>
+              <span>Preview uses sample artwork</span>
+            </div>
+          </section>
+
+          <section class="timeline" aria-label="Linked video and audio timeline">
+            <div class="timeline-toolbar">
+              <div><strong>Timeline</strong><span id="timelineWindow">01:08–01:24 of 05:42</span></div>
+              <span class="grow"></span>
+              <button id="zoomOut" class="icon-button" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+              <button id="zoomIn" class="icon-button" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+              <button id="zoomFit" class="mini" type="button">Fit</button>
+              <details id="timelineTools" class="timeline-tools"><summary>Tools</summary><div>
+                <button type="button" data-sample-tool="Split at playhead">Split</button>
+                <button type="button" data-sample-tool="Trim before playhead">Trim before</button>
+                <button type="button" data-sample-tool="Trim after playhead">Trim after</button>
+                <button type="button" data-sample-tool="Zoom effect">Zoom effect</button>
+                <button type="button" data-sample-tool="Privacy overlay">Privacy overlay</button>
+                <button type="button" data-sample-tool="Audio gain">Audio gain</button>
+              </div></details>
+            </div>
+            <div class="time-ruler"><span class="track-label-spacer"></span><div id="rulerMarks" class="ruler-content" aria-label="Output time ruler"></div></div>
+            <div class="track-stack">
+              <div id="videoLane" class="track-row video-row">
+                <div class="track-label"><strong>Video</strong><span>Program</span></div>
+                <div id="videoTrack" class="track-content" role="slider" tabindex="0" aria-label="Program video range selection" aria-valuemin="0" aria-valuemax="342" aria-valuenow="72" aria-valuetext="01:12 playhead; drag to select"></div>
+              </div>
+              <div id="audioLane" class="track-row audio-row">
+                <div class="track-label"><strong>Audio</strong><span>Mixed</span></div>
+                <div id="audioTrack" class="track-content" role="slider" tabindex="0" aria-label="Program audio range selection" aria-valuemin="0" aria-valuemax="342" aria-valuenow="72" aria-valuetext="01:12 playhead; drag to select"></div>
+              </div>
+            </div>
+            <div class="timeline-actions">
+              <span id="selectionSummary" aria-live="polite">Drag on video or audio to select both.</span>
+              <span class="grow"></span>
+              <button id="cutRange" class="mini destructive" type="button" disabled>Remove range <kbd>⌫</kbd></button>
+              <button id="undo" class="icon-button" type="button" aria-label="Undo" title="Undo · ⌘Z" disabled>↶</button>
+              <button id="redo" class="icon-button" type="button" aria-label="Redo" title="Redo · ⇧⌘Z" disabled>↷</button>
+            </div>
+            <div class="timeline-footnote"><span id="cutSummary">Original duration 05:42 · no cuts</span><span>Original recording preserved</span></div>
+          </section>
+        </section>
+
+        <div id="transcriptResizer" class="panel-resizer transcript-resizer" role="separator" aria-orientation="vertical" aria-label="Resize transcript" aria-valuemin="260" aria-valuemax="350" aria-valuenow="280" tabindex="0"></div>
+
+        <aside class="transcript-panel" aria-label="Transcript">
+          <div class="panel-heading">
+            <div><strong>Transcript</strong><span>Follows edited video</span></div>
+            <button id="collapseTranscript" class="icon-button panel-toggle" type="button" aria-label="Collapse transcript" aria-expanded="true" title="Collapse transcript">›</button>
+          </div>
+          <div class="transcript-content">
+            <label class="transcript-search"><span class="sr-only">Search transcript</span><input id="transcriptSearch" type="search" placeholder="Search words"></label>
+            <div class="transcript-meta"><span id="transcriptCount">Word-level timing · sample</span><button id="transcribe" class="text-button" type="button">Transcribe</button></div>
+            <div id="transcriptRows" class="transcript-rows" lang="uk" aria-label="Timed transcript"></div>
+            <section id="removedSection" class="removed-section" hidden><h3>Removed from edit</h3><div id="removedWords"></div></section>
+            <div id="timingEditor" class="timing-editor" hidden>
+              <strong>Review word boundaries</strong>
+              <p>This sample uses numeric source times. The native editor will audition the waveform.</p>
+              <label>Start <input id="timingStart" type="number" min="0" max="342" step="0.01"></label>
+              <label>End <input id="timingEnd" type="number" min="0" max="342" step="0.01"></label>
+              <button id="confirmTiming" class="mini" type="button">Confirm</button>
+            </div>
+            <div class="transcript-footer">
+              <span id="wordTimingDetails">Select a word for its exact time.</span>
+              <button id="reviewTiming" class="mini" type="button" hidden>Review timing</button>
+              <button id="cutWords" class="mini primary" type="button" disabled>Remove</button>
+            </div>
+          </div>
+          <span class="collapsed-label" aria-hidden="true">Transcript</span>
+        </aside>
+      </div>
+    </div>
+
+    <section id="projectsScreen" class="route-screen" hidden aria-label="Projects">
+      <header class="route-heading"><div><h1>Projects</h1><p>Recordings and their current processing state.</p></div><button class="control primary" id="newFromProjects" type="button">New recording</button></header>
+      <label class="project-search"><span>Search</span><input id="projectSearch" type="search" placeholder="Find a recording"></label>
+      <div class="project-list">
+        <button class="project-item" id="openProject" type="button"><span class="project-thumb">Preview</span><span class="project-copy"><strong>Product walkthrough</strong><small>22 Sep 2026 · 05:42 · Program movie</small></span><span class="project-status">Ready</span></button>
+        <button class="project-item" id="processingProject" type="button"><span class="project-thumb project-thumb-quiet">Processing</span><span class="project-copy"><strong>Feature overview</strong><small>23 Sep 2026 · 12:08 · Editable tracks</small></span><span class="project-status">Finalizing · 62%</span></button>
+      </div>
+    </section>
+
+    <section id="studioScreen" class="studio-screen" hidden aria-label="Studio">
+      <header class="studio-heading"><div><h1>Studio</h1><p>Product demo · 1920 × 1080 · 30 fps</p></div><button class="control" id="profilesButton" type="button">Profiles</button></header>
+      <div class="studio-layout">
+        <div class="studio-center">
+          <div class="scene-strip"><span>Scenes</span><button class="scene-button active" type="button">Screen + camera</button><button class="scene-button" type="button">Screen</button><button class="scene-button" type="button">Camera</button><button class="control" id="newSceneButton" type="button">New scene</button></div>
+          <div class="studio-stage"><div class="sample-screen"><header>Product overview</header><div class="sample-content"><i></i><i></i><i></i></div></div><div class="scene-camera">Camera</div></div>
+          <div class="studio-transport"><span>Ready · microphone and screen available</span><span class="grow"></span><button id="sampleRecord" class="control primary" type="button">Record</button></div>
+        </div>
+        <aside class="studio-inspector"><h2>Sources</h2><div class="source-row"><strong>Screen</strong><span>Display 1</span></div><div class="source-row"><strong>Camera</strong><span>Connected</span></div><div class="source-row"><strong>Microphone</strong><span>Built-in</span></div><div class="source-row"><strong>System audio</strong><span>On</span></div><div class="source-row"><strong>Canvas</strong><span>1920 × 1080</span></div><div class="source-row"><strong>Capture</strong><span>30 fps · HEVC</span></div><div class="source-row"><strong>Retention</strong><span id="studioRetention">Program movie</span></div></aside>
+      </div>
+    </section>
+
+    <aside id="jobsDrawer" class="drawer" aria-label="Background jobs" hidden>
+      <div class="drawer-head"><strong>Jobs</strong><span class="grow"></span><button id="closeJobs" class="mini" type="button">Close</button></div>
+      <div class="job"><strong>Finalizing another recording</strong><span>Preparing the program movie · continues in the background</span><div class="progress"><i></i></div><span>62%</span></div>
+      <div class="job"><strong>Export video</strong><span>Queued · Product walkthrough</span></div>
+    </aside>
+  </main>
+</div>
+
+<dialog id="projectDetailsDialog" aria-label="Project details">
+  <div class="dialog-heading"><h2>Product walkthrough</h2><button id="closeProjectDetails" class="mini" type="button">Close</button></div>
+  <div class="details-section"><h3>Scene</h3><p>The camera and screen are already composed in this program movie. Independent source tracks are unavailable.</p></div>
+  <div class="details-section"><h3>Media</h3><p>Original program movie · ready<br>Edited output · derived from the preserved source</p><div class="source-actions"><button id="rawReveal" class="mini" type="button">Reveal original</button><button id="rawShare" class="mini" type="button">Share</button><button id="saveFrame" class="mini" type="button">Save frame</button><button id="gifButton" class="mini" type="button">Video to GIF</button></div></div>
+  <div class="details-section"><h3>Project</h3><p>22 Sep 2026 · Recoverable package</p></div>
+</dialog>
+
+<dialog id="settingsDialog" aria-label="Settings">
+  <div class="settings-window">
+    <nav class="settings-nav"><strong>Settings</strong><button class="active" type="button" data-settings="General">General</button><button type="button" data-settings="Audio">Audio</button><button type="button" data-settings="Streaming">Streaming</button><button type="button" data-settings="Storage">Storage</button><button type="button" data-settings="Shortcuts">Shortcuts</button><button type="button" data-settings="AI">AI</button></nav>
+    <section class="settings-content"><div class="dialog-heading"><h2 id="settingsTitle">General</h2><button id="closeSettings" class="mini" type="button">Close</button></div><div id="settingsBody" class="settings-body"><p>Appearance</p><div class="settings-row"><span>Theme</span><strong>System</strong></div></div></section>
+  </div>
+</dialog>
+
+<dialog id="newRecordingDialog" class="new-recording-dialog" aria-label="New recording">
+  <div class="new-recording-content">
+    <div class="dialog-heading"><h2>New recording</h2><button id="closeNewRecording" class="mini" type="button">Close</button></div>
+    <label class="new-recording-name">Name<input id="recordingName" type="text" placeholder="Untitled recording"></label>
+    <button class="profile-choice active" type="button"><strong>Product demo</strong><span>1920 × 1080 · 30 fps · 3 scenes · Program movie</span></button>
+    <button class="profile-choice" type="button"><strong>Editable tracks</strong><span>1920 × 1080 · 30 fps · 3 scenes · Screen and camera sources</span></button>
+    <div class="new-recording-footer"><button id="cancelNewRecording" class="mini" type="button">Cancel</button><button id="createNewRecording" class="mini primary" type="button" disabled>Create session</button></div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="editor-workspace-model.js"></script>
+<script src="editor-workspace-app.js"></script>
+</body>
+</html>

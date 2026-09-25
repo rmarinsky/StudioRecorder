@@ -1,0 +1,10 @@
+pre-commit:
+  commands:
+    secrets:
+      run: ./scripts/check-secrets.sh staged
+
+pre-push:
+  commands:
+    secrets:
+      run: ./scripts/check-secrets.sh outbound
+      use_stdin: true

@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import ScreenCaptureKit
 
 enum LiveSourceCategory: String, Hashable, Sendable {
     case screen
@@ -71,6 +72,50 @@ struct LiveSourceHealthSnapshot: Equatable, Sendable {
 
     subscript(source: LiveSourceID) -> LiveSourceHealthEntry? {
         entries.first { $0.source == source }
+    }
+}
+
+final class RecordingScreenStartGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expected: Set<LiveSourceID> = []
+    private var ready: Set<LiveSourceID> = []
+    private var startedAfter: UInt64 = 0
+
+    var isReady: Bool {
+        lock.withLock { ready.isSuperset(of: expected) }
+    }
+
+    var missingSources: [LiveSourceID] {
+        lock.withLock { expected.subtracting(ready).sorted { $0.id < $1.id } }
+    }
+
+    func configure(expected: Set<LiveSourceID>, startedAfter: UInt64) {
+        lock.withLock {
+            self.expected = expected
+            self.startedAfter = startedAfter
+            ready.removeAll()
+        }
+    }
+
+    func record(
+        _ source: LiveSourceID,
+        status: SCFrameStatus,
+        displayTime: UInt64,
+        isValid: Bool,
+        hasImageBuffer: Bool
+    ) {
+        lock.withLock {
+            guard expected.contains(source),
+                  status == .complete,
+                  displayTime >= startedAfter,
+                  isValid,
+                  hasImageBuffer else { return }
+            ready.insert(source)
+        }
+    }
+
+    func reset() {
+        configure(expected: [], startedAfter: 0)
     }
 }
 

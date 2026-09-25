@@ -139,7 +139,8 @@ final class CursorViewportPlannerTests: XCTestCase {
             CursorSceneSample(time: 1.2, displayID: 8, normalizedX: 0.3, normalizedY: 0.2, isPrimaryButtonDown: false),
         ])
 
-        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedX, 0.15)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedX, 0.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.5, for: 7)).normalizedY, 0.5, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).normalizedX, 0.85)
         XCTAssertTrue(try XCTUnwrap(timeline.sample(at: 1.1, for: 7)).isPrimaryButtonDown)
         XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1.3, for: 8)).normalizedY, 0.2)
@@ -262,6 +263,22 @@ final class CursorViewportPlannerTests: XCTestCase {
         XCTAssertEqual(reset.x, 0.25, accuracy: 0.0001)
         XCTAssertEqual(reset.y, 0.75, accuracy: 0.0001)
         XCTAssertTrue(motion.isSettled)
+    }
+
+    func testDefaultFollowMotionIsSmootherThanTheLegacyResponse() {
+        var smoother = CursorFollowMotion()
+        var legacy = CursorFollowMotion(responseDuration: 0.4)
+        _ = smoother.update(target: .zero, at: 0)
+        _ = legacy.update(target: .zero, at: 0)
+
+        for frame in 1...12 {
+            let timestamp = Double(frame) / 60
+            _ = smoother.update(target: CGPoint(x: 1, y: 1), at: timestamp)
+            _ = legacy.update(target: CGPoint(x: 1, y: 1), at: timestamp)
+        }
+
+        XCTAssertLessThan(smoother.center?.x ?? 0, legacy.center?.x ?? 0)
+        XCTAssertGreaterThan(smoother.center?.x ?? 0, 0)
     }
 
     func testFollowMotionResetClearsVelocityAndTiming() {

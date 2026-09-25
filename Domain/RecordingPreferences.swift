@@ -38,6 +38,19 @@ enum MediaRetentionPolicy: String, Codable, CaseIterable, Identifiable, Equatabl
 struct CaptureDefaults: Codable, Equatable, Sendable {
     static let supportedFrameRates = [24, 25, 30, 48, 50, 60]
 
+    static func supportedFrameRates(for canvas: CaptureCanvasSnapshot) -> [Int] {
+        supportedFrameRates.filter { frameRate($0, for: canvas) == $0 }
+    }
+
+    static func frameRate(_ requested: Int, for canvas: CaptureCanvasSnapshot) -> Int {
+        frameRate(requested, for: canvas.pixelSize)
+    }
+
+    static func frameRate(_ requested: Int, for canvasSize: CGSize) -> Int {
+        let supported = supportedFrameRates.contains(requested) ? requested : 30
+        return canvasSize.width * canvasSize.height >= 3_840 * 2_160 ? min(supported, 30) : supported
+    }
+
     var frameRate: Int
     var codecPolicy: RecordingCodecPolicy
     var programPreset: CaptureCanvasPreset
@@ -114,9 +127,10 @@ struct RecordingPreferences: Codable, Equatable, Sendable {
 
     func validated() -> RecordingPreferences {
         var value = self
-        if !CaptureDefaults.supportedFrameRates.contains(value.capture.frameRate) {
-            value.capture.frameRate = 30
-        }
+        value.capture.frameRate = CaptureDefaults.frameRate(
+            value.capture.frameRate,
+            for: CaptureCanvasSnapshot(preset: value.capture.programPreset)
+        )
         if value.audio.microphoneDeviceID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
             value.audio.microphoneDeviceID = nil
         }
@@ -726,7 +740,7 @@ final class PreferencesStore: ObservableObject {
             includeCursor: preferences.capture.includeCursor,
             excludeStudioRecorder: preferences.capture.excludeStudioRecorder,
             excludeStudioRecorderAudio: preferences.audio.excludeStudioRecorderAudio,
-            frameRate: preferences.capture.frameRate,
+            frameRate: CaptureDefaults.frameRate(preferences.capture.frameRate, for: presentation.canvas),
             codecPolicy: preferences.capture.codecPolicy,
             presentation: presentation,
             retentionPolicy: .editableTracks,

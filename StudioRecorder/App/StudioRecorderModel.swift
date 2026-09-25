@@ -263,6 +263,7 @@ struct StudioRecorderSnapshot: Equatable {
     var launchPhase: LaunchPhase = .checking
     var selectedProjectID: String?
     var captureState: RecordingState = .preparing
+    var jobs: [RecordingJob] = []
     var availableDisplays: [AvailableDisplay] = []
     var availableMicrophones: [AvailableMicrophone] = []
     var availableCameras: [AvailableCamera] = []
@@ -568,6 +569,24 @@ final class StudioRecorderModel: ObservableObject {
         synchronizeFromCoordinator()
     }
 
+    func retryJob(_ jobID: UUID) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.retryJob(jobID)
+        synchronizeFromCoordinator()
+    }
+
+    func enqueueExport(_ recipe: ProjectExportRecipe) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.enqueueExport(recipe)
+        synchronizeFromCoordinator()
+    }
+
+    func enqueueTranscription(_ recipe: ProjectTranscriptionRecipe) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.enqueueTranscription(recipe)
+        synchronizeFromCoordinator()
+    }
+
     func moveRecoveryProjectToTrash(_ projectID: String) async throws {
         guard let coordinator else { throw RecordingRecoveryError.notRecoverable }
         try await coordinator.moveRecoveryProjectToTrash(projectID)
@@ -590,6 +609,9 @@ final class StudioRecorderModel: ObservableObject {
                 return .ignored
             }
             snapshot.route = route
+            if route == .projects {
+                snapshot.selectedProjectID = nil
+            }
             if route == .studio, snapshot.studioDraft == nil, snapshot.activeCaptureRequest == nil {
                 createFreshStudioDraft()
             }
@@ -712,7 +734,10 @@ final class StudioRecorderModel: ObservableObject {
 
         case .setDraftFrameRate(let frameRate):
             guard canEditDraft, CaptureDefaults.supportedFrameRates.contains(frameRate) else { return .ignored }
-            snapshot.studioDraft?.frameRate = frameRate
+            snapshot.studioDraft?.frameRate = CaptureDefaults.frameRate(
+                frameRate,
+                for: snapshot.studioDraft?.presentation.canvas ?? CaptureCanvasSnapshot()
+            )
             result = .draftChanged
 
         case .setDraftCodecPolicy(let policy):
@@ -772,6 +797,7 @@ final class StudioRecorderModel: ObservableObject {
             )
             if let scene {
                 draft.presentation = scene.presentation.applyingSourceAvailability(scene.sources)
+                draft.frameRate = CaptureDefaults.frameRate(draft.frameRate, for: draft.presentation.canvas)
                 if let sources = scene.sources {
                     draft.apply(
                         sceneSources: sources,
@@ -921,6 +947,9 @@ final class StudioRecorderModel: ObservableObject {
             snapshot.studioDraft != nil
         if canEditDraft || canRestoreIdlePresentation {
             snapshot.studioDraft?.presentation = validated
+            if let draft = snapshot.studioDraft {
+                snapshot.studioDraft?.frameRate = CaptureDefaults.frameRate(draft.frameRate, for: validated.canvas)
+            }
             return true
         }
         guard (snapshot.captureState == .recording || snapshot.captureState == .paused),
@@ -1038,6 +1067,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.availableMicrophones = coordinator.availableMicrophones
         snapshot.availableCameras = coordinator.availableCameras
         snapshot.projects = coordinator.projects
+        snapshot.jobs = coordinator.jobs
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
         snapshot.finalizationProgress = coordinator.finalizationProgress
