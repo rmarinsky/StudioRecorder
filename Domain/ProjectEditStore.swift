@@ -41,6 +41,25 @@ struct EditedTranscriptWord: Identifiable, Equatable, Sendable {
     let sourceStart: TimeInterval
     let sourceEnd: TimeInterval
     let timingStatus: TranscriptTimingStatus
+
+    func requiresTimingReview(for selection: Range<TimeInterval>?) -> Bool {
+        guard timingStatus == .uncertain, let selection else { return false }
+        return selection.lowerBound < outputEnd && selection.upperBound > outputStart
+    }
+}
+
+struct EditedTranscriptPhrase: Identifiable, Equatable, Sendable {
+    let id: String
+    let text: String
+    let outputRange: Range<TimeInterval>
+    let words: [EditedTranscriptWord]
+
+    func requiresTimingReview(for selection: Range<TimeInterval>?) -> Bool {
+        guard let selection,
+              selection.lowerBound < outputRange.upperBound,
+              selection.upperBound > outputRange.lowerBound else { return false }
+        return words.first?.timingStatus == .uncertain || words.last?.timingStatus == .uncertain
+    }
 }
 
 struct TimedTranscript: Codable, Equatable, Sendable {
@@ -98,6 +117,35 @@ struct TimedTranscript: Codable, Equatable, Sendable {
             }
             outputStart += segment.duration
         }
+        return result
+    }
+
+    func phrases(in timeline: ProjectEditTimeline) -> [EditedTranscriptPhrase] {
+        var result: [EditedTranscriptPhrase] = []
+        var current: [EditedTranscriptWord] = []
+
+        func finishPhrase() {
+            guard let first = current.first else { return }
+            result.append(EditedTranscriptPhrase(
+                id: first.id,
+                text: current.map(\.text).joined(separator: " "),
+                outputRange: first.outputStart..<(current.map(\.outputEnd).max() ?? first.outputEnd),
+                words: current
+            ))
+            current.removeAll(keepingCapacity: true)
+        }
+
+        for word in words(in: timeline) {
+            if let previous = current.last {
+                let endsSentence = previous.text.last.map { ".!?…".contains($0) } ?? false
+                let hasLongPause = word.outputStart - previous.outputEnd > 1.2
+                if endsSentence || hasLongPause || current.count >= 16 {
+                    finishPhrase()
+                }
+            }
+            current.append(word)
+        }
+        finishPhrase()
         return result
     }
 

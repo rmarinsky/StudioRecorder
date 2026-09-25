@@ -166,6 +166,32 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(transcript.words(in: timeline).map(\.text), ["first", "second", "third"])
     }
 
+    func testTranscriptGroupsEditedWordsIntoSelectablePhrases() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 7,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                TimedTranscriptWord(text: "Друга", sourceStart: 4.0, sourceEnd: 4.3, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "фраза.", sourceStart: 4.4, sourceEnd: 4.8, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "Привіт,", sourceStart: 0.2, sourceEnd: 0.5, timingStatus: .uncertain),
+                TimedTranscriptWord(text: "світе!", sourceStart: 0.6, sourceEnd: 1.0, timingStatus: .uncertain),
+            ]
+        )
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 7)
+        try timeline.split(at: 3)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+
+        let phrases = transcript.phrases(in: timeline)
+
+        XCTAssertEqual(phrases.map(\.text), ["Друга фраза.", "Привіт, світе!"])
+        XCTAssertEqual(phrases[0].outputRange.lowerBound, 1.0, accuracy: 0.001)
+        XCTAssertEqual(phrases[0].outputRange.upperBound, 1.8, accuracy: 0.001)
+        XCTAssertEqual(phrases[1].outputRange.lowerBound, 4.2, accuracy: 0.001)
+        XCTAssertEqual(phrases[1].outputRange.upperBound, 5.0, accuracy: 0.001)
+        XCTAssertEqual(phrases[0].words.map(\.text), ["Друга", "фраза."])
+        XCTAssertTrue(phrases[0].requiresTimingReview(for: phrases[0].outputRange))
+    }
+
     func testUncertainWordNeedsAChangedBoundaryBeforeManualReview() throws {
         let word = TimedTranscriptWord(
             text: "Привіт", sourceStart: 0.2, sourceEnd: 0.7, timingStatus: .uncertain
@@ -181,6 +207,25 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(reviewed.words[0].timingStatus, .reviewed)
         XCTAssertEqual(reviewed.words[0].sourceStart, 0.18)
         XCTAssertEqual(reviewed.words[0].sourceEnd, 0.74)
+    }
+
+    func testUncertainTranscriptSelectionBlocksRangeDeletionUntilReviewed() {
+        let uncertain = EditedTranscriptWord(
+            id: "occurrence", sourceWordID: UUID(), text: "Привіт",
+            outputStart: 1, outputEnd: 1.5, sourceStart: 1, sourceEnd: 1.5,
+            timingStatus: .uncertain
+        )
+        let reviewed = EditedTranscriptWord(
+            id: uncertain.id, sourceWordID: uncertain.sourceWordID, text: uncertain.text,
+            outputStart: uncertain.outputStart, outputEnd: uncertain.outputEnd,
+            sourceStart: uncertain.sourceStart, sourceEnd: uncertain.sourceEnd,
+            timingStatus: .reviewed
+        )
+
+        XCTAssertTrue(uncertain.requiresTimingReview(for: 1..<1.5))
+        XCTAssertTrue(uncertain.requiresTimingReview(for: 1.1..<1.4))
+        XCTAssertFalse(uncertain.requiresTimingReview(for: 2..<2.5))
+        XCTAssertFalse(reviewed.requiresTimingReview(for: 1..<1.5))
     }
 
     func testTranscriptRejectsSameTrackWithDifferentSourceDuration() throws {

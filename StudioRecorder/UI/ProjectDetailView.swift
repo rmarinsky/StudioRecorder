@@ -40,6 +40,8 @@ struct ProjectDetailView: View {
     @State private var transcript: TimedTranscript?
     @State private var transcriptSearch = ""
     @State private var selectedWordOccurrenceID: String?
+    @State private var selectedPhraseID: String?
+    @State private var expandedPhraseIDs: Set<String> = []
     @State private var transcriptError: String?
     @State private var transcriptFileUnreadable = false
     @State private var isQueuingTranscription = false
@@ -743,45 +745,75 @@ struct ProjectDetailView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(visibleTranscriptWords) { word in
-                            Button {
-                                selectedWordOccurrenceID = word.id
-                                selectedRange = word.outputStart..<word.outputEnd
-                                timelineFocusRequest = ProjectTimelineFocusRequest(
-                                    range: word.outputStart..<word.outputEnd
-                                )
-                                Task { await editSession.player.seek(
-                                    to: CMTime(seconds: word.outputStart, preferredTimescale: 600)
-                                ) }
-                            } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(String(format: "%02d:%05.2f", Int(word.outputStart) / 60,
-                                                word.outputStart.truncatingRemainder(dividingBy: 60)))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 64, alignment: .leading)
-                                    Text(word.text)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    if word.timingStatus == .uncertain {
-                                        Image(systemName: "waveform.badge.exclamationmark")
-                                            .foregroundStyle(.orange)
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(selectedWordOccurrenceID == word.id ? Color.accentColor.opacity(0.18) : .clear)
-                                .background(pendingAssistantCuts?.ranges.contains(where: {
-                                    $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
-                                }) == true ? Color.red.opacity(0.15) : .clear)
-                                .background(pendingAssistantMove.map {
-                                    $0.range.lowerBound < word.outputEnd
-                                        && $0.range.upperBound > word.outputStart
-                                } == true ? Color.blue.opacity(0.18) : .clear)
-                                .contentShape(Rectangle())
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Pauses")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(editSession.isDetectingSilence ? "Finding…" : "Find") {
+                                editSession.detectSilence()
+                            }
+                            .disabled(editSession.isDetectingSilence || editSession.isWorking)
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(.horizontal, 10)
+                        if let silenceError = editSession.silenceError {
+                            Text(silenceError).font(.caption).foregroundStyle(.orange).padding(.horizontal, 10)
+                        }
+                        ForEach(Array(editSession.silenceCandidates.enumerated()), id: \.offset) { _, range in
+                            Button("Pause \(transcriptTime(range.lowerBound))–\(transcriptTime(range.upperBound))") {
+                                selectedWordOccurrenceID = nil
+                                selectedPhraseID = nil
+                                focusTranscriptRange(range)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("\(word.text), \(word.outputStart.formatted()) seconds, \(word.timingStatus.rawValue) timing")
+                            .font(.caption.monospacedDigit())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(selectedRange == range ? Color.accentColor.opacity(0.18) : .clear)
+                        }
+                        Divider().padding(.vertical, 5)
+                        ForEach(visibleTranscriptPhrases) { phrase in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(alignment: .top, spacing: 3) {
+                                    Button {
+                                        selectedWordOccurrenceID = nil
+                                        selectedPhraseID = phrase.id
+                                        focusTranscriptRange(phrase.outputRange)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(transcriptTime(phrase.outputRange.lowerBound))
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                            Text(phrase.text)
+                                                .font(.caption)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .multilineTextAlignment(.leading)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Select phrase: \(phrase.text)")
+                                    Button(expandedPhraseIDs.contains(phrase.id) ? "Hide Words" : "Show Words",
+                                           systemImage: expandedPhraseIDs.contains(phrase.id) ? "chevron.up" : "chevron.down") {
+                                        if !expandedPhraseIDs.insert(phrase.id).inserted {
+                                            expandedPhraseIDs.remove(phrase.id)
+                                        }
+                                    }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.borderless)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(selectedPhraseID == phrase.id ? Color.accentColor.opacity(0.18) : .clear)
+                                if expandedPhraseIDs.contains(phrase.id) {
+                                    ForEach(phrase.words) { word in
+                                        transcriptWordButton(word).padding(.leading, 9)
+                                    }
+                                }
+                            }
+                            Divider().padding(.leading, 10)
                         }
                     }
                     .padding(.vertical, 6)
@@ -797,6 +829,12 @@ struct ProjectDetailView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.top, 8)
+                } else if let selectedRange {
+                    Text("Selected \(transcriptTime(selectedRange.lowerBound))–\(transcriptTime(selectedRange.upperBound))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
                 }
                 HStack {
                     Button("Review Timing") { reviewSelectedWordTiming() }
@@ -862,15 +900,64 @@ struct ProjectDetailView: View {
         .background(detailPanel)
     }
 
-    private var visibleTranscriptWords: [EditedTranscriptWord] {
+    private var visibleTranscriptPhrases: [EditedTranscriptPhrase] {
         guard let transcript, let timeline = editSession.timeline else { return [] }
-        let words = transcript.words(in: timeline)
+        let phrases = transcript.phrases(in: timeline)
         let query = transcriptSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? words : words.filter { $0.text.localizedCaseInsensitiveContains(query) }
+        return query.isEmpty ? phrases : phrases.filter { $0.text.localizedCaseInsensitiveContains(query) }
     }
 
     private var selectedTranscriptWord: EditedTranscriptWord? {
-        visibleTranscriptWords.first { $0.id == selectedWordOccurrenceID }
+        guard let transcript, let timeline = editSession.timeline else { return nil }
+        return transcript.words(in: timeline).first { $0.id == selectedWordOccurrenceID }
+    }
+
+    private var selectedTranscriptPhrase: EditedTranscriptPhrase? {
+        guard let transcript, let timeline = editSession.timeline else { return nil }
+        return transcript.phrases(in: timeline).first { $0.id == selectedPhraseID }
+    }
+
+    private func transcriptTime(_ seconds: TimeInterval) -> String {
+        String(format: "%02d:%05.2f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60))
+    }
+
+    private func focusTranscriptRange(_ range: Range<TimeInterval>) {
+        selectedRange = range
+        timelineFocusRequest = ProjectTimelineFocusRequest(range: range)
+        Task { await editSession.player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600)) }
+    }
+
+    private func transcriptWordButton(_ word: EditedTranscriptWord) -> some View {
+        Button {
+            selectedWordOccurrenceID = word.id
+            selectedPhraseID = nil
+            focusTranscriptRange(word.outputStart..<word.outputEnd)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(transcriptTime(word.outputStart))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .leading)
+                Text(word.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if word.timingStatus == .uncertain {
+                    Image(systemName: "waveform.badge.exclamationmark")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(selectedWordOccurrenceID == word.id ? Color.accentColor.opacity(0.18) : .clear)
+            .background(pendingAssistantCuts?.ranges.contains(where: {
+                $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
+            }) == true ? Color.red.opacity(0.15) : .clear)
+            .background(pendingAssistantMove.map {
+                $0.range.lowerBound < word.outputEnd && $0.range.upperBound > word.outputStart
+            } == true ? Color.blue.opacity(0.18) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(word.text), \(word.outputStart.formatted()) seconds, \(word.timingStatus.rawValue) timing")
     }
 
     private var canReviewSelectedWordTiming: Bool {
@@ -1040,7 +1127,10 @@ struct ProjectDetailView: View {
                     selectedRange: $selectedRange,
                     proposedRanges: pendingAssistantCuts?.ranges ?? [],
                     proposedMove: pendingAssistantMove,
-                    focusRequest: timelineFocusRequest
+                    focusRequest: timelineFocusRequest,
+                    requiresSelectionTimingReview:
+                        selectedTranscriptWord?.requiresTimingReview(for: selectedRange) == true
+                        || selectedTranscriptPhrase?.requiresTimingReview(for: selectedRange) == true
                 )
                     .padding(12)
             }

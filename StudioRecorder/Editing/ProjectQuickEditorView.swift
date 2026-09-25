@@ -20,6 +20,7 @@ struct ProjectQuickEditorView: View {
     let proposedRanges: [Range<TimeInterval>]
     let proposedMove: OpenRouterReviewedMove?
     let focusRequest: ProjectTimelineFocusRequest?
+    let requiresSelectionTimingReview: Bool
     @State private var privacyExpanded = false
     @State private var zoomExpanded = false
     @State private var audioExpanded = false
@@ -36,6 +37,7 @@ struct ProjectQuickEditorView: View {
         proposedRanges: [Range<TimeInterval>] = [],
         proposedMove: OpenRouterReviewedMove? = nil,
         focusRequest: ProjectTimelineFocusRequest? = nil,
+        requiresSelectionTimingReview: Bool = false,
         commandsOnly: Bool = false
     ) {
         self.session = session
@@ -44,6 +46,7 @@ struct ProjectQuickEditorView: View {
         self.proposedRanges = proposedRanges
         self.proposedMove = proposedMove
         self.focusRequest = focusRequest
+        self.requiresSelectionTimingReview = requiresSelectionTimingReview
         self.commandsOnly = commandsOnly
     }
 
@@ -109,7 +112,8 @@ struct ProjectQuickEditorView: View {
                     Task { await session.player.seek(to: CMTime(seconds: time, preferredTimescale: 600)) }
                 },
                 onDelete: {
-                    guard let selectedRange, !session.isWorking, session.canPersistEdits else { return }
+                    guard let selectedRange, !requiresSelectionTimingReview,
+                          !session.isWorking, session.canPersistEdits else { return }
                     Task { await session.deleteOutputRange(selectedRange) }
                 }
             )
@@ -143,11 +147,14 @@ struct ProjectQuickEditorView: View {
                 }
                 .disabled(selectedRange == nil || session.isWorking)
                 Button("Delete Selection", systemImage: "trash") {
-                    guard let selectedRange else { return }
+                    guard let selectedRange, !requiresSelectionTimingReview else { return }
                     Task { await session.deleteOutputRange(selectedRange) }
                 }
-                .disabled(selectedRange == nil || session.isWorking || !session.canPersistEdits)
-                .help("Remove the selected video and audio together; raw media stays intact")
+                .disabled(selectedRange == nil || requiresSelectionTimingReview
+                          || session.isWorking || !session.canPersistEdits)
+                .help(requiresSelectionTimingReview
+                      ? "Review uncertain transcript boundaries before cutting this selection"
+                      : "Remove the selected video and audio together; raw media stays intact")
                 Button("Change Scene", systemImage: "rectangle.2.swap") {
                     guard let selectedRange,
                           let presentation = session.scenePresentation(for: selectedRange) else { return }
