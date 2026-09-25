@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01349D110A45F85C52A85D0C /* whisper-cli in CopyFiles */ = {isa = PBXBuildFile; fileRef = CC7BDF0A39099125B903D375 /* whisper-cli */; };
 		0275258A166E8C1F8747049F /* RecordingProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A418726188BA1186770D369 /* RecordingProjectStore.swift */; };
 		02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */; };
 		09CCDEF8955D04E11407AB2F /* RecordingProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */; };
@@ -54,7 +55,6 @@
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
 		B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
 		B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */; };
-		B63279D15040B42632B4DE50 /* whisper-cli in Resources */ = {isa = PBXBuildFile; fileRef = CC7BDF0A39099125B903D375 /* whisper-cli */; };
 		B6506577198A699DDE3C47B3 /* StreamPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1115B8BE6C8C9D764FE83D18 /* StreamPreflight.swift */; };
 		BD135B56D8540BDA0B299432 /* StreamPreflightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43189D89C72F98BB2574771F /* StreamPreflightTests.swift */; };
 		BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */; };
@@ -88,6 +88,19 @@
 			remoteInfo = StudioRecorder;
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		2C509242C384A316F370FA11 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				01349D110A45F85C52A85D0C /* whisper-cli in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		01430E80134C73209EFA0564 /* ProjectEditTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditTimelineTests.swift; sourceTree = "<group>"; };
@@ -360,6 +373,7 @@
 			buildPhases = (
 				A77BB2CF2232BF266804EA4A /* Sources */,
 				ED90F5554EBAAF39E10A93D3 /* Resources */,
+				2C509242C384A316F370FA11 /* CopyFiles */,
 				5CFB72CDB48AC85184349881 /* Frameworks */,
 			);
 			buildRules = (
@@ -433,7 +447,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				0D9AE8DF222D2D02D51C1449 /* Whisper-LICENSE.txt in Resources */,
-				B63279D15040B42632B4DE50 /* whisper-cli in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

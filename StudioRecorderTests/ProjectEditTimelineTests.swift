@@ -30,7 +30,9 @@ final class ProjectEditTimelineTests: XCTestCase {
     }
 
     func testWhisperCLIIsBundledAndRunsWithoutExternalLibraries() throws {
-        let resource = try XCTUnwrap(Bundle.main.url(forResource: "whisper-cli", withExtension: nil))
+        let executableDirectory = try XCTUnwrap(Bundle.main.executableURL?.deletingLastPathComponent())
+        let resource = executableDirectory.appending(path: "whisper-cli")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: resource.path))
         let process = Process()
         process.executableURL = resource
         process.arguments = ["-h"]

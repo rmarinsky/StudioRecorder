@@ -21,7 +21,10 @@ targets:
         excludes:
           - Resources/Whisper/README.md
       - path: StudioRecorder/Resources/Whisper/whisper-cli
-        buildPhase: resources
+        buildPhase:
+          copyFiles:
+            destination: executables
+            subpath: ""
       - path: Domain
       - path: Recording
     info:

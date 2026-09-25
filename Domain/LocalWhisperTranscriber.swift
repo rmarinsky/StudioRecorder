@@ -179,7 +179,8 @@ struct WhisperProjectTranscriber: ProjectTranscribing {
             await progress(0.28, "Downloading temporary Ukrainian model")
             let modelURL = try await WhisperModelDownloader().download(into: workspace)
             await progress(0.55, "Recognizing Ukrainian words locally")
-            guard let helper = Bundle.main.url(forResource: "whisper-cli", withExtension: nil) else {
+            guard let helper = Bundle.main.executableURL?.deletingLastPathComponent()
+                .appending(path: "whisper-cli") else {
                 throw WhisperProcessError.unavailable
             }
             let outputURL = try await WhisperProcessRunner().run(
