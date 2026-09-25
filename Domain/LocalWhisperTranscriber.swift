@@ -46,9 +46,10 @@ struct WhisperTaskWorkspace {
 
 struct WhisperModelDownloader {
     static let modelRevision = "5359861c739e955e79d9a303bcbc70fb988958b1"
-    static let expectedSHA256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+    static let modelFilename = "ggml-small-q5_1.bin"
+    static let expectedSHA256 = "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
     static let modelURL = URL(string:
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(modelRevision)/ggml-base.bin"
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(modelRevision)/\(modelFilename)"
     )!
 
     func download(into workspace: URL) async throws -> URL {
@@ -58,7 +59,7 @@ struct WhisperModelDownloader {
         let (temporaryURL, response) = try await session.download(from: Self.modelURL)
         guard let response = response as? HTTPURLResponse,
               response.statusCode == 200 else { throw WhisperModelError.downloadFailed }
-        let destination = workspace.appending(path: "ggml-base.bin")
+        let destination = workspace.appending(path: Self.modelFilename)
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         guard try Self.matchesExpectedSHA256(at: destination) else {
             try? FileManager.default.removeItem(at: destination)
@@ -127,7 +128,7 @@ struct WhisperProcessRunner {
         process.executableURL = executableURL
         process.arguments = [
             "-ng", "-t", "2", "-m", modelURL.path, "-f", wavURL.path,
-            "-l", "uk", "-dtw", "base", "-ml", "1", "-sow", "-ojf", "-of", outputBaseURL.path,
+            "-l", "uk", "-dtw", "small", "-ml", "1", "-sow", "-ojf", "-of", outputBaseURL.path,
         ]
         let logURL = outputBaseURL.deletingLastPathComponent().appending(path: "recognition.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)

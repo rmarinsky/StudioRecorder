@@ -275,7 +275,7 @@ struct WhisperWordTranscriptImporter {
         return TimedTranscript(
             projectID: projectID, sourceTrackID: sourceTrackID,
             sourceDuration: sourceDuration, language: "uk",
-            recognitionModel: "whisper.cpp/ggml-base",
+            recognitionModel: "whisper.cpp/\(WhisperModelDownloader.modelFilename)",
             alignmentModel: "unverified-dtw", words: words
         )
     }

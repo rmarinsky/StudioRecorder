@@ -10,10 +10,17 @@ The build uses CMake options `GGML_NATIVE=OFF`, `BUILD_SHARED_LIBS=OFF`,
 then check that `otool -L whisper-cli` lists only system libraries and run the
 bundled-helper test. This local build has not been verified for notarized release.
 
-Each transcription job downloads `ggml-base.bin` from revision
+Each transcription job downloads `ggml-small-q5_1.bin` from revision
 `5359861c739e955e79d9a303bcbc70fb988958b1` of the official
 `ggerganov/whisper.cpp` model repository, verifies SHA-256
-`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`,
+`ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb`,
 and removes the temporary model after the job. The recognition mode uses
 experimental DTW word bounds. The app stores those words as **uncertain** and
 requires manual waveform timing adjustment before cutting one word.
+
+On two 45-second clips from existing Ukrainian recordings, the quantized small
+model produced visibly more coherent text than the previous base model. It took
+12.18 and 10.16 seconds of recognition versus 4.37 and 3.55 seconds for base
+on this Mac. The temporary download is 181 MiB versus 142 MiB for base. These
+clips have no human-labelled word boundaries, so this comparison does not
+establish timing accuracy or permit automatic word cuts.

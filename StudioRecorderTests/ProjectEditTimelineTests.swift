@@ -55,12 +55,20 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertFalse(try WhisperModelDownloader.matchesExpectedSHA256(at: root))
     }
 
+    func testUkrainianModelUsesVerifiedSmallQuantization() {
+        XCTAssertEqual(WhisperModelDownloader.modelURL.lastPathComponent, "ggml-small-q5_1.bin")
+        XCTAssertEqual(
+            WhisperModelDownloader.expectedSHA256,
+            "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+        )
+    }
+
     func testWhisperProcessRunnerProducesJSONAndDoesNotUseShellInput() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appending(path: "recognizer")
-        try Data("#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = '-of' ]; then shift; printf '{\"transcription\":[]}' > \"$1.json\"; exit 0; fi; shift; done\nexit 2\n".utf8)
+        try Data("#!/bin/sh\npreset=\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -dtw) shift; preset=\"$1\" ;;\n    -of) shift; output=\"$1\" ;;\n  esac\n  shift\ndone\n[ \"$preset\" = small ] || exit 3\n[ -n \"$output\" ] || exit 2\nprintf '{\"transcription\":[]}' > \"$output.json\"\n".utf8)
             .write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let output = try await WhisperProcessRunner().run(
@@ -110,6 +118,7 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(transcript.words.map(\.sourceEnd), [0.46, 1.05, 1.1])
         XCTAssertEqual(transcript.words.map(\.timingStatus), [.uncertain, .uncertain, .uncertain])
         XCTAssertEqual(transcript.language, "uk")
+        XCTAssertEqual(transcript.recognitionModel, "whisper.cpp/ggml-small-q5_1.bin")
     }
 
     func testWhisperWordImportRejectsPhraseInOneSegment() {
