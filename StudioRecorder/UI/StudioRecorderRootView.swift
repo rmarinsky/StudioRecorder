@@ -408,10 +408,19 @@ struct StudioRecorderRootView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Jobs").font(.headline)
-                if snapshot.jobs.isEmpty {
+                if snapshot.jobs.isEmpty && !snapshot.projects.contains(where: { $0.jobHistoryError != nil }) {
                     Text("No background jobs yet.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                ForEach(snapshot.projects.filter { $0.jobHistoryError != nil }) { project in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(projectTitle(project)).font(.subheadline.weight(.semibold))
+                        Text(project.jobHistoryError ?? "")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Divider()
                 }
                 ForEach(snapshot.jobs) { job in
                     VStack(alignment: .leading, spacing: 6) {
@@ -986,19 +995,31 @@ struct StudioRecorderRootView: View {
                                     let activeJob = snapshot.jobs.first {
                                         $0.projectID == project.identity.manifestID && $0.state != .completed
                                     }
-                                    Button {
-                                        if activeJob != nil {
-                                            isShowingJobs = true
-                                        } else if project.isInterrupted {
-                                            model.send(.selectRoute(.recovery))
-                                        } else {
-                                            model.send(.openProject(project.id))
+                                    let destination = ProjectRowDestination.forProject(project)
+                                    HStack(spacing: 4) {
+                                        Button {
+                                            switch destination {
+                                            case .editor: model.send(.openProject(project.id))
+                                            case .jobs: isShowingJobs = true
+                                            case .recovery: model.send(.selectRoute(.recovery))
+                                            }
+                                        } label: {
+                                            ProjectRow(project: project, job: activeJob)
+                                                .frame(maxWidth: .infinity)
+                                                .contentShape(Rectangle())
                                         }
-                                    } label: {
-                                        ProjectRow(project: project, job: activeJob)
-                                            .contentShape(Rectangle())
+                                        .buttonStyle(.plain)
+                                        if destination == .editor, let activeJob {
+                                            Button {
+                                                isShowingJobs = true
+                                            } label: {
+                                                Image(systemName: "clock.arrow.circlepath")
+                                            }
+                                            .buttonStyle(.borderless)
+                                            .help("View \(activeJob.kind.rawValue) job")
+                                            .accessibilityLabel("View \(activeJob.kind.rawValue) job")
+                                        }
                                     }
-                                    .buttonStyle(.plain)
                                     if index < filteredProjects.count - 1 {
                                         Divider().padding(.leading, 108)
                                     }
@@ -2895,6 +2916,18 @@ private struct CaptureTransitionOverlay: View {
     }
 }
 
+enum ProjectRowDestination: Equatable {
+    case editor
+    case jobs
+    case recovery
+
+    static func forProject(_ project: RecordingProjectSnapshot) -> ProjectRowDestination {
+        if project.isInterrupted { return .recovery }
+        if project.lifecycle == .finalized || project.lifecycle == .recovered { return .editor }
+        return .jobs
+    }
+}
+
 private struct ProjectRow: View {
     let project: RecordingProjectSnapshot
     let job: RecordingJob?
@@ -2994,6 +3027,7 @@ private struct ProjectRow: View {
             }
             return job.state == .failed ? "\(action) failed" : "\(action) \(job.state.rawValue)"
         }
+        if project.jobHistoryError != nil { return "Job history needs repair" }
         return switch project.lifecycle {
         case .recording: "Recording"
         case .finalizing: "Finalizing"
@@ -3005,6 +3039,7 @@ private struct ProjectRow: View {
     }
 
     private var statusColor: Color {
+        if project.jobHistoryError != nil { return .orange }
         if let job { return job.state == .failed ? .orange : .secondary }
         return switch project.lifecycle {
         case .finalized: .green

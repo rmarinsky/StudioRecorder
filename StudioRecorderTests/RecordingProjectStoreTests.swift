@@ -104,6 +104,27 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
     }
 
+    func testUnreadableJobHistoryRemainsVisibleOnReadyProject() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        try Data("broken jobs".utf8).write(to: project.rootURL.appending(path: "jobs.json"))
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+
+        let snapshot = try XCTUnwrap(coordinator.projects.first(where: { $0.identity.manifestID == project.id }))
+        XCTAssertEqual(snapshot.lifecycle, .finalized)
+        XCTAssertNotNil(snapshot.jobHistoryError)
+        XCTAssertTrue(coordinator.jobs.isEmpty)
+    }
+
     func testHeavyJobsRunOldestQueuedRequestFirst() {
         let projectID = UUID()
         var olderExport = RecordingJob(projectID: projectID, kind: .export)
@@ -114,6 +135,17 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(
             RecordingJobQueuePolicy.nextHeavyJob(in: [newerFinalization, olderExport])?.id,
             olderExport.id
+        )
+    }
+
+    func testBlockedJobDoesNotHideOtherProjectJobs() {
+        let projectID = UUID()
+        let blocked = RecordingJob(projectID: projectID, kind: .finalization)
+        let available = RecordingJob(projectID: projectID, kind: .transcription)
+
+        XCTAssertEqual(
+            RecordingJobQueuePolicy.unblockedJobs(in: [blocked, available], blockedIDs: [blocked.id]),
+            [available]
         )
     }
 

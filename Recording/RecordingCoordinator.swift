@@ -327,19 +327,33 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                   let project = try? projectStore.openProject(
                     at: snapshots[index].rootURL, expectedID: projectID
                   ) else { continue }
-            let loaded = (try? jobStore.load(in: project)) ?? []
+            let loaded: [RecordingJob]
+            do {
+                loaded = try jobStore.load(in: project)
+            } catch {
+                snapshots[index].jobHistoryError = "Saved job history is unreadable. Background jobs cannot resume until this project is repaired."
+                continue
+            }
             let projectJobs: [RecordingJob]
             if loaded.contains(where: { blockedFinalizationJobIDs.contains($0.id) }) {
-                projectJobs = []
+                snapshots[index].jobHistoryError = "A job stopped, but its failure status could not be saved. Other jobs remain available; the stopped job will not resume automatically."
+                projectJobs = RecordingJobQueuePolicy.unblockedJobs(
+                    in: loaded, blockedIDs: blockedFinalizationJobIDs
+                )
             } else if loaded.contains(where: {
                 $0.id == activeFinalizationJobID || $0.id == activeExportJobID
                     || $0.id == activeTranscriptionJobID
             }) {
                 projectJobs = loaded
             } else {
-                projectJobs = (try? jobStore.reconcileFinalization(
-                    in: project, projectLifecycle: snapshots[index].lifecycle
-                )) ?? []
+                do {
+                    projectJobs = try jobStore.reconcileFinalization(
+                        in: project, projectLifecycle: snapshots[index].lifecycle
+                    )
+                } catch {
+                    snapshots[index].jobHistoryError = "Saved job history could not be updated. Background jobs cannot resume until this project is repaired."
+                    continue
+                }
             }
             if projectJobs.contains(where: {
                 $0.kind == .finalization && ($0.state == .queued || $0.state == .running)

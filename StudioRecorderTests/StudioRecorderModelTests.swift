@@ -562,6 +562,22 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertNil(model.snapshot.selectedProjectID)
     }
 
+    func testReadyProjectStaysEditableWhileTranscriptionRuns() {
+        var project = interruptedProject()
+        project.lifecycle = .finalized
+        var job = RecordingJob(projectID: project.identity.manifestID!, kind: .transcription)
+        job.state = .running
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.projects = [project]
+        snapshot.jobs = [job]
+
+        XCTAssertEqual(ProjectRowDestination.forProject(snapshot.projects[0]), .editor)
+        project.lifecycle = .finalizing
+        XCTAssertEqual(ProjectRowDestination.forProject(project), .jobs)
+        project.lifecycle = .needsRecovery
+        XCTAssertEqual(ProjectRowDestination.forProject(project), .recovery)
+    }
+
     func testRecoveryRouteRequiresAnInterruptedProject() {
         let emptyModel = StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot())
         XCTAssertEqual(emptyModel.send(.selectRoute(.recovery)), .ignored)

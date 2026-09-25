@@ -48,14 +48,19 @@ struct RecordingJob: Codable, Equatable, Identifiable, Sendable {
 }
 
 enum RecordingJobQueuePolicy {
+    static func unblockedJobs(
+        in jobs: [RecordingJob], blockedIDs: Set<UUID>
+    ) -> [RecordingJob] {
+        jobs.filter { !blockedIDs.contains($0.id) }
+    }
+
     static func nextHeavyJob(
         in jobs: [RecordingJob],
         blockedIDs: Set<UUID> = []
     ) -> RecordingJob? {
-        jobs.filter {
+        unblockedJobs(in: jobs, blockedIDs: blockedIDs).filter {
             $0.state == .queued
                 && ($0.kind == .finalization || $0.kind == .export || $0.kind == .transcription)
-                && !blockedIDs.contains($0.id)
         }.min {
             $0.updatedAt == $1.updatedAt
                 ? $0.id.uuidString < $1.id.uuidString
@@ -435,6 +440,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     var cameraSyncOffset: TimeInterval = 0
     var programDisplayID: UInt32? = nil
     var frameRate = 30
+    var jobHistoryError: String? = nil
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
