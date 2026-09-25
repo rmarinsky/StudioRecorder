@@ -18,6 +18,10 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: StudioRecorder
+        excludes:
+          - Resources/Whisper/README.md
+      - path: StudioRecorder/Resources/Whisper/whisper-cli
+        buildPhase: resources
       - path: Domain
       - path: Recording
     info:
@@ -26,6 +30,9 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: Studio Recorder will use your camera for an optional camera track.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Studio Recorder connects to Ollama on this Mac when you choose a local assistant model.
         GoogleOAuthClientID: $(GOOGLE_OAUTH_CLIENT_ID)
         GoogleOAuthClientSecret: $(GOOGLE_OAUTH_CLIENT_SECRET)
         NSMicrophoneUsageDescription: Studio Recorder records your selected microphone as part of the primary raw capture.

@@ -10,6 +10,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Install secret scan tools
+        run: brew bundle
+      - name: Check repository for secrets
+        run: ./scripts/check-secrets.sh ci
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
       - name: Install XcodeGen

@@ -9,5 +9,13 @@ design/prototype/
 design/presentation/
 .env
 .env.*
+*.pem
+*.p8
+*.p12
+*.key
+*.keystore
+*.sqlite
+*.db
+*.dump
 *.xcconfig.local
 LocalOAuth.xcconfig
