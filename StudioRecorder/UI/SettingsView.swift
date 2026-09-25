@@ -534,16 +534,16 @@ struct SettingsView: View {
     }
 
     private var systemAudioBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.capturesSystemAudio },
-            change: PreferenceChange.capturesSystemAudio
+            set: { model.send(.changePreference(.capturesSystemAudio($0))) }
         )
     }
 
     private var microphoneCaptureBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.capturesMicrophone },
-            change: PreferenceChange.capturesMicrophone
+            set: { model.send(.changePreference(.capturesMicrophone($0))) }
         )
     }
 
@@ -555,17 +555,10 @@ struct SettingsView: View {
     }
 
     private var excludeAppAudioBinding: Binding<Bool> {
-        preferenceBinding(
+        Binding(
             get: { preferencesStore.preferences.audio.excludeStudioRecorderAudio },
-            change: PreferenceChange.excludeStudioRecorderAudio
+            set: { model.send(.changePreference(.excludeStudioRecorderAudio($0))) }
         )
-    }
-
-    private func preferenceBinding(
-        get: @escaping @Sendable () -> Bool,
-        change: @escaping @Sendable (Bool) -> PreferenceChange
-    ) -> Binding<Bool> {
-        Binding(get: get, set: { model.send(.changePreference(change($0))) })
     }
 
     private func shortcut(_ title: String, keys: String) -> some View {
