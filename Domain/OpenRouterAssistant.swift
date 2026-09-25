@@ -1,5 +1,19 @@
 import Foundation
 
+enum AssistantProvider: String, CaseIterable, Identifiable, Sendable {
+    case openRouter
+    case ollama
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openRouter: "OpenRouter"
+        case .ollama: "On this Mac (Ollama)"
+        }
+    }
+}
+
 enum OpenRouterAssistantScope: String, Codable, Sendable {
     case wholeProject = "whole_project"
     case selection
@@ -177,7 +191,7 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
         let ranges = try cuts.map { cut -> Range<TimeInterval> in
             let start: TimeInterval
             let end: TimeInterval
-            if let word = words[cut.id], word.timingStatus != .uncertain {
+            if let word = words[cut.id] {
                 start = word.start
                 end = word.end
             } else if let silence = silences[cut.id] {
@@ -196,7 +210,9 @@ struct OpenRouterAssistantDraft: Codable, Equatable, Sendable {
             throw OpenRouterAssistantError.invalidProposal
         }
         return OpenRouterReviewedCuts(
-            projectID: context.projectID, timeline: timeline, revision: revision, ranges: ranges
+            projectID: context.projectID, timeline: timeline, revision: revision,
+            ranges: ranges,
+            requiresTimingReview: cuts.contains { words[$0.id]?.timingStatus == .uncertain }
         )
     }
 
@@ -439,6 +455,7 @@ struct OpenRouterReviewedCuts: Equatable, Sendable {
     let timeline: ProjectEditTimeline
     let revision: Int
     let ranges: [Range<TimeInterval>]
+    let requiresTimingReview: Bool
 
     func isCurrent(projectID: UUID, timeline: ProjectEditTimeline, revision: Int) -> Bool {
         self.projectID == projectID && self.timeline == timeline && self.revision == revision
@@ -448,6 +465,9 @@ struct OpenRouterReviewedCuts: Equatable, Sendable {
 enum OpenRouterAssistantError: LocalizedError {
     case missingKey
     case unsupportedModel
+    case ollamaUnavailable
+    case unsupportedLocalModel
+    case ollamaRequestFailed(Int)
     case invalidContext
     case invalidReply
     case invalidProposal
@@ -457,9 +477,14 @@ enum OpenRouterAssistantError: LocalizedError {
         switch self {
         case .missingKey: "Add an OpenRouter key in Settings before using Assistant."
         case .unsupportedModel: "The selected model no longer supports structured replies. Choose another model."
+        case .ollamaUnavailable:
+            "Ollama is not responding on this Mac. Start Ollama, allow local network access if prompted, then refresh."
+        case .unsupportedLocalModel:
+            "This local model is not installed or cannot return structured replies. Refresh models or choose another."
+        case .ollamaRequestFailed(let status): "Ollama request failed (HTTP \(status)). No edits were applied."
         case .invalidContext: "The selected transcript contains invalid timing data."
         case .invalidReply: "The model returned an invalid reply. No edits were applied."
-        case .invalidProposal: "The proposed edit does not match the current selection, captured sources, or reviewed word times. No edits were applied."
+        case .invalidProposal: "The proposed edit does not match the current selection, captured sources, or valid word times. No edits were applied."
         case .requestFailed(let status): "OpenRouter request failed (HTTP \(status)). No edits were applied."
         }
     }
@@ -478,6 +503,64 @@ struct OpenRouterAssistantKeyStore {
 
 struct OpenRouterAssistantClient {
     static let defaultModel = "openai/gpt-4.1-mini"
+
+    static var assistantResponseSchema: [String: Any] {
+        let string: [String: Any] = ["type": "string"]
+        let strings: [String: Any] = ["type": "array", "items": string]
+        let optionalNumber: [String: Any] = ["type": ["number", "null"]]
+        let optionalInteger: [String: Any] = ["type": ["integer", "null"]]
+        let optionalString: [String: Any] = ["type": ["string", "null"]]
+        let optionalBoolean: [String: Any] = ["type": ["boolean", "null"]]
+        let cut: [String: Any] = [
+            "type": "object",
+            "properties": ["id": string, "reason": string],
+            "required": ["id", "reason"], "additionalProperties": false,
+        ]
+        let sceneChange: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "layout": ["type": "string", "enum": ["screen_only", "camera_only", "screen_and_camera"]],
+                "transition": ["type": "string", "enum": ["cut", "dissolve", "smoothMove"]],
+                "duration": ["type": "number"],
+                "reason": string,
+                "display_id": optionalInteger,
+                "camera_x": optionalNumber,
+                "camera_y": optionalNumber,
+                "camera_width": optionalNumber,
+                "camera_shape": ["type": ["string", "null"],
+                                 "enum": SourceShape.allCases.map { $0.rawValue as Any } + [NSNull()]],
+                "camera_background": ["type": ["string", "null"],
+                                      "enum": CameraBackgroundMode.allCases.map { $0.rawValue as Any } + [NSNull()]],
+                "overlay_id": optionalString,
+                "overlay_visible": optionalBoolean,
+            ],
+            "required": ["layout", "transition", "duration", "reason", "display_id",
+                         "camera_x", "camera_y", "camera_width", "camera_shape",
+                         "camera_background", "overlay_id", "overlay_visible"],
+            "additionalProperties": false,
+        ]
+        let phraseMove: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "first_word_id": string, "last_word_id": string,
+                "before_word_id": string, "reason": string,
+            ],
+            "required": ["first_word_id", "last_word_id", "before_word_id", "reason"],
+            "additionalProperties": false,
+        ]
+        return [
+            "type": "object",
+            "properties": [
+                "reply": string, "titles": strings, "descriptions": strings,
+                "new_take_wording": strings,
+                "cuts": ["type": "array", "items": cut],
+                "scene_changes": ["type": "array", "items": sceneChange],
+                "phrase_moves": ["type": "array", "items": phraseMove],
+            ],
+            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes", "phrase_moves"],
+            "additionalProperties": false,
+        ]
+    }
 
     private let session: URLSession
 
@@ -546,7 +629,51 @@ struct OpenRouterAssistantClient {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw OpenRouterAssistantError.missingKey
         }
-        guard !model.isEmpty, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard !model.isEmpty else { throw OpenRouterAssistantError.invalidContext }
+        let messages = try Self.messages(prompt: prompt, context: context, history: history)
+        let body: [String: Any] = [
+            "model": model,
+            "provider": ["require_parameters": true],
+            "response_format": [
+                "type": "json_schema",
+                "json_schema": ["name": "studio_recorder_draft", "strict": true,
+                                "schema": Self.assistantResponseSchema],
+            ],
+            "messages": messages,
+        ]
+        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    static func parseDraft(from data: Data) throws -> OpenRouterAssistantDraft {
+        struct Completion: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String? }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        guard let content = try? JSONDecoder().decode(Completion.self, from: data).choices.first?.message.content
+        else { throw OpenRouterAssistantError.invalidReply }
+        return try parseDraftJSON(Data(content.utf8))
+    }
+
+    static func parseDraftJSON(_ data: Data) throws -> OpenRouterAssistantDraft {
+        guard let draft = try? JSONDecoder().decode(OpenRouterAssistantDraft.self, from: data),
+              draft.isValid else { throw OpenRouterAssistantError.invalidReply }
+        return draft
+    }
+
+    static func messages(
+        prompt: String,
+        context: OpenRouterAssistantContext,
+        history: [OpenRouterAssistantTurn]
+    ) throws -> [[String: String]] {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               history.count <= 12,
               history.allSatisfy({
                   !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -569,95 +696,11 @@ struct OpenRouterAssistantClient {
                       }
                       && ($0.currentState?.isValid ?? true)
               }) ?? true else { throw OpenRouterAssistantError.invalidContext }
-
         let contextJSON = String(decoding: try JSONEncoder().encode(context), as: UTF8.self)
-        let string: [String: Any] = ["type": "string"]
-        let strings: [String: Any] = ["type": "array", "items": string]
-        let optionalNumber: [String: Any] = ["type": ["number", "null"]]
-        let optionalInteger: [String: Any] = ["type": ["integer", "null"]]
-        let optionalString: [String: Any] = ["type": ["string", "null"]]
-        let optionalBoolean: [String: Any] = ["type": ["boolean", "null"]]
-        let cut: [String: Any] = [
-            "type": "object",
-            "properties": ["id": string, "reason": string],
-            "required": ["id", "reason"], "additionalProperties": false,
-        ]
-        let sceneChange: [String: Any] = [
-            "type": "object",
-            "properties": [
-                "layout": ["type": "string", "enum": ["screen_only", "camera_only", "screen_and_camera"]],
-                "transition": ["type": "string", "enum": ["cut", "dissolve", "smoothMove"]],
-                "duration": ["type": "number"],
-                "reason": string,
-                "display_id": optionalInteger,
-                "camera_x": optionalNumber,
-                "camera_y": optionalNumber,
-                "camera_width": optionalNumber,
-                "camera_shape": ["type": ["string", "null"],
-                                 "enum": SourceShape.allCases.map { $0.rawValue as Any } + [NSNull()]],
-                "camera_background": ["type": ["string", "null"],
-                                      "enum": CameraBackgroundMode.allCases.map { $0.rawValue as Any } + [NSNull()]],
-                "overlay_id": optionalString,
-                "overlay_visible": optionalBoolean,
-            ],
-            "required": ["layout", "transition", "duration", "reason", "display_id",
-                         "camera_x", "camera_y", "camera_width", "camera_shape",
-                         "camera_background", "overlay_id", "overlay_visible"],
-            "additionalProperties": false,
-        ]
-        let phraseMove: [String: Any] = [
-            "type": "object",
-            "properties": [
-                "first_word_id": string, "last_word_id": string,
-                "before_word_id": string, "reason": string,
-            ],
-            "required": ["first_word_id", "last_word_id", "before_word_id", "reason"],
-            "additionalProperties": false,
-        ]
-        let schema: [String: Any] = [
-            "type": "object",
-            "properties": [
-                "reply": string, "titles": strings, "descriptions": strings,
-                "new_take_wording": strings,
-                "cuts": ["type": "array", "items": cut],
-                "scene_changes": ["type": "array", "items": sceneChange],
-                "phrase_moves": ["type": "array", "items": phraseMove],
-            ],
-            "required": ["reply", "titles", "descriptions", "new_take_wording", "cuts", "scene_changes", "phrase_moves"],
-            "additionalProperties": false,
-        ]
-        let messages = [["role": "system", "content": "You assist with a recorded video. Suggest cuts only by exact IDs of provided words with aligned or reviewed timing, or locally detected silences. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. Scene display_id must be a captured display; overlay_id must be an existing imported PNG ID. Camera coordinates are normalized 0 to 1 and width 0.08 to 1. Use null for unchanged optional scene fields. To move a recorded phrase, use exact first and last word IDs in playback order and a before_word_id for its destination; use an empty before_word_id to append at the end. Phrase moves require whole-project scope and aligned or reviewed timing for the first, last, and destination words. Use no more than one media operation type per reply. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."]]
+        let systemMessage = "You assist with a recorded video. Suggest cuts only by exact IDs of provided words or locally detected silences. Word boundaries marked uncertain are estimates; say so in the reply and require explicit user confirmation. Scene changes apply only to the explicit selection and captured screen/camera sources in sceneSelection; use no more than one scene change. Scene display_id must be a captured display; overlay_id must be an existing imported PNG ID. Camera coordinates are normalized 0 to 1 and width 0.08 to 1. Use null for unchanged optional scene fields. To move a recorded phrase, use exact first and last word IDs in playback order and a before_word_id for its destination; use an empty before_word_id to append at the end. Phrase moves require whole-project scope and aligned or reviewed timing for the first, last, and destination words. Use no more than one media operation type per reply. For cuts use no invented IDs or times. For scene transitions use duration 0.15 to 1 seconds. All media edits require human review and are not applied by this response. New wording is a script for another take, never recorded speech. Do not claim to have changed media."
+        return [["role": "system", "content": systemMessage]]
             + history.map { ["role": $0.role.rawValue, "content": $0.content] }
             + [["role": "user", "content": "Context: \(contextJSON)\nRequest: \(prompt)"]]
-        let body: [String: Any] = [
-            "model": model,
-            "provider": ["require_parameters": true],
-            "response_format": [
-                "type": "json_schema",
-                "json_schema": ["name": "studio_recorder_draft", "strict": true, "schema": schema],
-            ],
-            "messages": messages,
-        ]
-        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return request
-    }
-
-    static func parseDraft(from data: Data) throws -> OpenRouterAssistantDraft {
-        struct Completion: Decodable {
-            struct Choice: Decodable {
-                struct Message: Decodable { let content: String? }
-                let message: Message
-            }
-            let choices: [Choice]
-        }
-        guard let content = try? JSONDecoder().decode(Completion.self, from: data).choices.first?.message.content,
-              let draft = try? JSONDecoder().decode(OpenRouterAssistantDraft.self, from: Data(content.utf8)),
-              draft.isValid else { throw OpenRouterAssistantError.invalidReply }
-        return draft
     }
 
     private static func check(_ response: URLResponse) throws {
@@ -666,6 +709,116 @@ struct OpenRouterAssistantClient {
         }
         guard (200..<300).contains(response.statusCode) else {
             throw OpenRouterAssistantError.requestFailed(response.statusCode)
+        }
+    }
+}
+
+struct OllamaAssistantClient {
+    private static let baseURL = URL(string: "http://127.0.0.1:11434")!
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    static func availableModels(from data: Data) throws -> [OpenRouterAssistantModel] {
+        struct Catalog: Decodable {
+            struct Model: Decodable { let name: String }
+            let models: [Model]
+        }
+        let names = try JSONDecoder().decode(Catalog.self, from: data).models.map(\.name)
+        guard names.allSatisfy({
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 200
+        }), Set(names).count == names.count else {
+            throw OpenRouterAssistantError.invalidReply
+        }
+        return names.map { OpenRouterAssistantModel(id: $0, name: $0) }
+            .sorted { $0.id == "gemma3:4b" ? true : $1.id == "gemma3:4b" ? false : $0.id < $1.id }
+    }
+
+    func modelCatalogRequest() -> URLRequest {
+        URLRequest(url: Self.baseURL.appending(path: "api/tags"))
+    }
+
+    func availableModels() async throws -> [OpenRouterAssistantModel] {
+        do {
+            let (data, response) = try await session.data(for: modelCatalogRequest())
+            try Self.check(response)
+            return try Self.availableModels(from: data)
+        } catch let error as OpenRouterAssistantError {
+            throw error
+        } catch {
+            throw OpenRouterAssistantError.ollamaUnavailable
+        }
+    }
+
+    func draft(
+        model: String,
+        prompt: String,
+        context: OpenRouterAssistantContext,
+        history: [OpenRouterAssistantTurn] = []
+    ) async throws -> OpenRouterAssistantDraft {
+        guard try await availableModels().contains(where: { $0.id == model }) else {
+            throw OpenRouterAssistantError.unsupportedLocalModel
+        }
+        do {
+            let (data, response) = try await session.data(for: draftRequest(
+                model: model, prompt: prompt, context: context, history: history
+            ))
+            try Self.check(response)
+            return try Self.parseDraft(from: data)
+        } catch let error as OpenRouterAssistantError {
+            throw error
+        } catch {
+            throw OpenRouterAssistantError.ollamaUnavailable
+        }
+    }
+
+    func draftRequest(
+        model: String,
+        prompt: String,
+        context: OpenRouterAssistantContext,
+        history: [OpenRouterAssistantTurn] = []
+    ) throws -> URLRequest {
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw OpenRouterAssistantError.unsupportedLocalModel
+        }
+        let body: [String: Any] = [
+            "model": model,
+            "messages": try OpenRouterAssistantClient.messages(
+                prompt: prompt, context: context, history: history
+            ),
+            "format": OpenRouterAssistantClient.assistantResponseSchema,
+            "stream": false,
+            "keep_alive": "5m",
+        ]
+        var request = URLRequest(url: Self.baseURL.appending(path: "api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    static func parseDraft(from data: Data) throws -> OpenRouterAssistantDraft {
+        struct ChatResponse: Decodable {
+            struct Message: Decodable { let content: String }
+            let message: Message
+        }
+        guard let response = try? JSONDecoder().decode(ChatResponse.self, from: data) else {
+            throw OpenRouterAssistantError.invalidReply
+        }
+        return try OpenRouterAssistantClient.parseDraftJSON(Data(response.message.content.utf8))
+    }
+
+    private static func check(_ response: URLResponse) throws {
+        guard let response = response as? HTTPURLResponse else {
+            throw OpenRouterAssistantError.invalidReply
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 400 || response.statusCode == 404 {
+                throw OpenRouterAssistantError.unsupportedLocalModel
+            }
+            throw OpenRouterAssistantError.ollamaRequestFailed(response.statusCode)
         }
     }
 }

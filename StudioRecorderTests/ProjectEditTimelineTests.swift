@@ -4,6 +4,31 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testTranscriptWordSelectionExtendsFromAnchorAndWorksInReverse() {
+        let order = ["first", "second", "third", "fourth"]
+        var selection = TranscriptWordSelection()
+
+        selection.select("second", extendingWithShift: false, orderedIDs: order)
+        selection.select("fourth", extendingWithShift: true, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["second", "third", "fourth"])
+
+        selection.select("first", extendingWithShift: true, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["first", "second"])
+    }
+
+    func testTranscriptWordPlainClickResetsRangeAndStaleAnchorIsIgnored() {
+        let order = ["first", "second", "third"]
+        var selection = TranscriptWordSelection()
+
+        selection.select("first", extendingWithShift: false, orderedIDs: order)
+        selection.select("third", extendingWithShift: true, orderedIDs: order)
+        selection.select("second", extendingWithShift: false, orderedIDs: order)
+        XCTAssertEqual(selection.orderedIDs(in: order), ["second"])
+
+        selection.select("removed", extendingWithShift: true, orderedIDs: order)
+        XCTAssertTrue(selection.orderedIDs(in: order).isEmpty)
+    }
+
     func testWhisperCLIIsBundledAndRunsWithoutExternalLibraries() throws {
         let resource = try XCTUnwrap(Bundle.main.url(forResource: "whisper-cli", withExtension: nil))
         let process = Process()

@@ -137,7 +137,7 @@ enum ProjectSilenceDetector {
     static func candidates(
         in waveform: ProjectAudioWaveform,
         timeline: ProjectEditTimeline,
-        minimumDuration: TimeInterval = 0.35,
+        minimumDuration: TimeInterval = 0.5,
         padding: TimeInterval = 0.08,
         rmsThreshold: Float = 0.012,
         peakThreshold: Float = 0.06
@@ -151,7 +151,7 @@ enum ProjectSilenceDetector {
             var quietStart: TimeInterval?
             var quietEnd: TimeInterval = 0
             func finishQuietRun() {
-                guard let quietStart, quietEnd - quietStart >= minimumDuration else { return }
+                guard let quietStart, quietEnd - quietStart > minimumDuration else { return }
                 let start = quietStart + padding
                 let end = quietEnd - padding
                 if end > start {

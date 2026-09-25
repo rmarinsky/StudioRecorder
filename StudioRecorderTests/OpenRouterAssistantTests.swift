@@ -2,6 +2,49 @@ import XCTest
 @testable import StudioRecorder
 
 final class OpenRouterAssistantTests: XCTestCase {
+    func testOllamaCatalogListsOnlyLocallyInstalledModelNames() throws {
+        let payload = Data("""
+        {"models":[{"name":"gemma3:4b","model":"gemma3:4b"},{"name":"qwen2.5:7b","model":"qwen2.5:7b"}]}
+        """.utf8)
+
+        XCTAssertEqual(try OllamaAssistantClient.availableModels(from: payload).map(\.id),
+                       ["gemma3:4b", "qwen2.5:7b"])
+    }
+
+    func testOllamaDraftRequestUsesLoopbackAndStructuredTextOnlyContext() throws {
+        let context = OpenRouterAssistantContext(
+            projectID: UUID(), scope: .selection,
+            words: [OpenRouterAssistantWord(
+                id: "word-1", text: "Привіт", start: 0.4, end: 0.8, timingStatus: .uncertain
+            )],
+            silences: [OpenRouterAssistantSilence(id: "silence-0", start: 1, end: 1.7)]
+        )
+
+        let request = try OllamaAssistantClient().draftRequest(
+            model: "gemma3:4b", prompt: "Find unclear words and long pauses", context: context
+        )
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        XCTAssertEqual(request.url?.host, "127.0.0.1")
+        XCTAssertEqual(request.url?.path, "/api/chat")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(json["stream"] as? Bool, false)
+        XCTAssertNotNil(json["format"] as? [String: Any])
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("word-1"))
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("silence-0"))
+        XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("file://"))
+    }
+
+    func testOllamaReplyMustDecodeAsAValidStructuredDraft() throws {
+        let payload = Data("""
+        {"message":{"content":"{\\"reply\\":\\"Found a pause\\",\\"titles\\":[],\\"descriptions\\":[],\\"new_take_wording\\":[],\\"cuts\\":[],\\"scene_changes\\":[],\\"phrase_moves\\":[]}"}}
+        """.utf8)
+
+        XCTAssertEqual(try OllamaAssistantClient.parseDraft(from: payload).reply, "Found a pause")
+        XCTAssertThrowsError(try OllamaAssistantClient.parseDraft(from: Data("{}".utf8)))
+    }
+
     func testCatalogOffersOnlyTextModelsWithStructuredOutputSupport() throws {
         let payload = Data("""
         {"data":[
@@ -132,7 +175,12 @@ final class OpenRouterAssistantTests: XCTestCase {
                                                  newTakeWording: [], cuts: [
                                                     OpenRouterAssistantCutTarget(id: "uncertain", reason: "Filler")
                                                  ])
-        XCTAssertThrowsError(try uncertain.reviewedCuts(context: context, timeline: timeline, revision: 5))
+        let uncertainProposal = try uncertain.reviewedCuts(
+            context: context, timeline: timeline, revision: 5
+        )
+        XCTAssertEqual(uncertainProposal.ranges, [2..<2.4])
+        XCTAssertTrue(uncertainProposal.requiresTimingReview)
+        XCTAssertFalse(proposal.requiresTimingReview)
         let invented = OpenRouterAssistantDraft(reply: "Remove", titles: [], descriptions: [],
                                                 newTakeWording: [], cuts: [
                                                     OpenRouterAssistantCutTarget(id: "invented", reason: "Filler")

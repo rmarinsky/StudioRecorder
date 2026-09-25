@@ -36,11 +36,19 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingYouTubeAuthorization = false
     @AppStorage("openRouter.model") private var selectedAssistantModel = OpenRouterAssistantClient.defaultModel
+    @AppStorage("assistant.provider") private var assistantProviderRaw = AssistantProvider.openRouter.rawValue
+    @AppStorage("assistant.ollamaModel") private var selectedLocalAssistantModel = "gemma3:4b"
     @State private var assistantKeyInput = ""
     @State private var hasAssistantKey = false
     @State private var assistantModels: [OpenRouterAssistantModel] = []
+    @State private var localAssistantModels: [OpenRouterAssistantModel] = []
     @State private var assistantStatus: String?
     @State private var isLoadingAssistantModels = false
+    @State private var isLoadingLocalAssistantModels = false
+
+    private var selectedAssistantProvider: AssistantProvider {
+        AssistantProvider(rawValue: assistantProviderRaw) ?? .openRouter
+    }
 
     private var isLocked: Bool { model.snapshot.areRecordingSettingsLocked }
     private var windowTab: SettingsTab {
@@ -162,46 +170,101 @@ struct SettingsView: View {
 
     private var assistantSettings: some View {
         Form {
-            Section("OpenRouter") {
-                SecureField("API key", text: $assistantKeyInput)
-                    .textContentType(.password)
-                HStack {
-                    Button("Save key") { saveAssistantKey() }
-                        .disabled(assistantKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Remove key") { removeAssistantKey() }
-                        .disabled(!hasAssistantKey)
-                    Text(hasAssistantKey ? "Key saved in Keychain" : "No key saved")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Section("Assistant") {
+                Picker("Run requests on", selection: $assistantProviderRaw) {
+                    ForEach(AssistantProvider.allCases) { provider in
+                        Text(provider.title).tag(provider.rawValue)
+                    }
                 }
-                Text("Requests send transcript text, timing IDs, and selected scene metadata. Raw audio and video stay on this Mac.")
+                .pickerStyle(.segmented)
+                Text(selectedAssistantProvider == .ollama
+                     ? "Transcript text stays on this Mac and is sent to the local Ollama service."
+                     : "Requests send transcript text, timing IDs, and selected scene metadata. Raw audio and video stay on this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Model") {
-                Picker("Structured reply model", selection: $selectedAssistantModel) {
-                    if assistantModels.isEmpty {
-                        Text(selectedAssistantModel).tag(selectedAssistantModel)
-                    } else {
-                        ForEach(assistantModels) { model in
-                            Text(model.name).tag(model.id)
-                        }
+
+            if selectedAssistantProvider == .openRouter {
+                Section("OpenRouter") {
+                    SecureField("API key", text: $assistantKeyInput)
+                        .textContentType(.password)
+                    HStack {
+                        Button("Save key") { saveAssistantKey() }
+                            .disabled(assistantKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Remove key") { removeAssistantKey() }
+                            .disabled(!hasAssistantKey)
+                        Text(hasAssistantKey ? "Key saved in Keychain" : "No key saved")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .disabled(assistantModels.isEmpty)
-                Button(isLoadingAssistantModels ? "Checking…" : "Refresh compatible models") {
-                    Task { await refreshAssistantModels() }
+                Section("Model") {
+                    Picker("Structured reply model", selection: $selectedAssistantModel) {
+                        if assistantModels.isEmpty {
+                            Text(selectedAssistantModel).tag(selectedAssistantModel)
+                        } else {
+                            ForEach(assistantModels) { model in
+                                Text(model.name).tag(model.id)
+                            }
+                        }
+                    }
+                    .disabled(assistantModels.isEmpty)
+                    Button(isLoadingAssistantModels ? "Checking…" : "Refresh compatible models") {
+                        Task { await refreshAssistantModels() }
+                    }
+                    .disabled(!hasAssistantKey || isLoadingAssistantModels)
+                    if let assistantStatus {
+                        Text(assistantStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .disabled(!hasAssistantKey || isLoadingAssistantModels)
-                if let assistantStatus {
-                    Text(assistantStatus)
+            } else {
+                Section("Local models") {
+                    Picker("Model", selection: $selectedLocalAssistantModel) {
+                        if localAssistantModels.isEmpty {
+                            Text("No installed models").tag(selectedLocalAssistantModel)
+                        } else {
+                            ForEach(localAssistantModels) { model in
+                                Text(model.name).tag(model.id)
+                            }
+                        }
+                    }
+                    .disabled(localAssistantModels.isEmpty)
+                    HStack {
+                        Button(isLoadingLocalAssistantModels ? "Checking…" : "Refresh installed models") {
+                            Task { await refreshLocalAssistantModels() }
+                        }
+                        .disabled(isLoadingLocalAssistantModels)
+                        Link("Browse Gemma models", destination: URL(string: "https://ollama.com/library/gemma3")!)
+                    }
+                    Text("Install a model in Ollama first. Studio Recorder does not download model files or send transcript data to an online service in this mode.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let assistantStatus {
+                        Text(assistantStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .formStyle(.grouped)
-        .task { loadAssistantKeyStatus() }
+        .task {
+            if selectedAssistantProvider == .ollama {
+                await refreshLocalAssistantModels()
+            } else {
+                loadAssistantKeyStatus()
+            }
+        }
+        .onChange(of: assistantProviderRaw) { _, value in
+            assistantStatus = nil
+            if AssistantProvider(rawValue: value) == .ollama {
+                Task { await refreshLocalAssistantModels() }
+            } else {
+                loadAssistantKeyStatus()
+            }
+        }
     }
 
     private func loadAssistantKeyStatus() {
@@ -254,6 +317,26 @@ struct SettingsView: View {
             }
         } catch {
             assistantModels = []
+            assistantStatus = error.localizedDescription
+        }
+    }
+
+    private func refreshLocalAssistantModels() async {
+        isLoadingLocalAssistantModels = true
+        defer { isLoadingLocalAssistantModels = false }
+        do {
+            localAssistantModels = try await OllamaAssistantClient().availableModels()
+            if localAssistantModels.isEmpty {
+                assistantStatus = "No local models found. Start Ollama, install Gemma or another model, then refresh."
+            } else {
+                if !localAssistantModels.contains(where: { $0.id == selectedLocalAssistantModel }) {
+                    selectedLocalAssistantModel = localAssistantModels.first(where: { $0.id == "gemma3:4b" })?.id
+                        ?? localAssistantModels[0].id
+                }
+                assistantStatus = "\(localAssistantModels.count) local model(s) available."
+            }
+        } catch {
+            localAssistantModels = []
             assistantStatus = error.localizedDescription
         }
     }

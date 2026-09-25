@@ -1,6 +1,37 @@
 import CoreMedia
 import Foundation
 
+struct TranscriptWordSelection: Equatable, Sendable {
+    private(set) var anchorID: String?
+    private(set) var selectedIDs: Set<String> = []
+
+    mutating func select(_ id: String, extendingWithShift: Bool, orderedIDs: [String]) {
+        guard orderedIDs.contains(id) else {
+            clear()
+            return
+        }
+        guard extendingWithShift,
+              let anchorID,
+              let anchorIndex = orderedIDs.firstIndex(of: anchorID),
+              let targetIndex = orderedIDs.firstIndex(of: id) else {
+            anchorID = id
+            selectedIDs = [id]
+            return
+        }
+        let bounds = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+        selectedIDs = Set(bounds.map { orderedIDs[$0] })
+    }
+
+    mutating func clear() {
+        anchorID = nil
+        selectedIDs = []
+    }
+
+    func orderedIDs(in order: [String]) -> [String] {
+        order.filter(selectedIDs.contains)
+    }
+}
+
 enum TranscriptTimingStatus: String, Codable, Sendable {
     case aligned
     case uncertain

@@ -71,6 +71,46 @@ final class ProjectAudioWaveformTests: XCTestCase {
         XCTAssertEqual(candidates[0].upperBound, 0.5, accuracy: 0.001)
     }
 
+    func testDefaultSilenceDetectionOnlySuggestsQuietRunsLongerThanHalfASecond() throws {
+        let quiet = Set([0, 1, 2, 3, 8, 9, 10, 11, 12, 13])
+        let waveform = ProjectAudioWaveform(
+            duration: 1.5,
+            buckets: (0..<15).map { index in
+                ProjectAudioWaveformBucket(
+                    sourceStart: Double(index) * 0.1, duration: 0.1,
+                    peak: quiet.contains(index) ? 0.005 : 0.4,
+                    rms: quiet.contains(index) ? 0.003 : 0.2,
+                    isClipped: false
+                )
+            }
+        )
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 1.5)
+
+        let candidates = ProjectSilenceDetector.candidates(in: waveform, timeline: timeline)
+
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].lowerBound, 0.88, accuracy: 0.001)
+        XCTAssertEqual(candidates[0].upperBound, 1.32, accuracy: 0.001)
+    }
+
+    func testDefaultSilenceDetectionDoesNotSuggestExactlyHalfASecond() throws {
+        let waveform = ProjectAudioWaveform(
+            duration: 1,
+            buckets: (0..<10).map { index in
+                let quiet = index < 5
+                return ProjectAudioWaveformBucket(
+                    sourceStart: Double(index) * 0.1, duration: 0.1,
+                    peak: quiet ? 0.005 : 0.4,
+                    rms: quiet ? 0.003 : 0.2,
+                    isClipped: false
+                )
+            }
+        )
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 1)
+
+        XCTAssertTrue(ProjectSilenceDetector.candidates(in: waveform, timeline: timeline).isEmpty)
+    }
+
     @MainActor
     func testEditSessionLoadsWaveformWithoutBlockingProjectLoad() async throws {
         let directory = FileManager.default.temporaryDirectory

@@ -39,13 +39,15 @@ struct ProjectDetailView: View {
     @State private var timelineFocusRequest: ProjectTimelineFocusRequest?
     @State private var transcript: TimedTranscript?
     @State private var transcriptSearch = ""
-    @State private var selectedWordOccurrenceID: String?
+    @State private var transcriptWordSelection = TranscriptWordSelection()
     @State private var selectedPhraseID: String?
     @State private var expandedPhraseIDs: Set<String> = []
     @State private var transcriptError: String?
     @State private var transcriptFileUnreadable = false
     @State private var isQueuingTranscription = false
     @AppStorage("openRouter.model") private var assistantModel = OpenRouterAssistantClient.defaultModel
+    @AppStorage("assistant.provider") private var assistantProviderRaw = AssistantProvider.openRouter.rawValue
+    @AppStorage("assistant.ollamaModel") private var localAssistantModel = "gemma3:4b"
     @State private var assistantPrompt = ""
     @State private var assistantScope = OpenRouterAssistantScope.wholeProject
     @State private var assistantMessages: [AssistantMessage] = []
@@ -53,11 +55,22 @@ struct ProjectDetailView: View {
     @State private var isAssistantWorking = false
     @State private var assistantRequestID = UUID()
     @State private var assistantTask: Task<Void, Never>?
+    @FocusState private var focusedTranscriptWordID: String?
     @State private var pendingAssistantCuts: OpenRouterReviewedCuts?
+    @State private var isConfirmingTranscriptWordDelete = false
+    @State private var isConfirmingAssistantEstimatedCuts = false
     @State private var pendingAssistantScene: OpenRouterReviewedScene?
     @State private var pendingAssistantMove: OpenRouterReviewedMove?
 
     private let exporter = ProjectMediaExporter()
+
+    private var assistantProvider: AssistantProvider {
+        AssistantProvider(rawValue: assistantProviderRaw) ?? .openRouter
+    }
+
+    private var selectedAssistantModel: String {
+        assistantProvider == .ollama ? localAssistantModel : assistantModel
+    }
 
     init(
         project: RecordingProjectSnapshot,
@@ -94,13 +107,13 @@ struct ProjectDetailView: View {
                 HSplitView {
                     if isAssistantVisible {
                         assistantPanel
-                            .frame(minWidth: 230, idealWidth: 235, maxWidth: 260)
+                            .frame(minWidth: 220, idealWidth: 300, maxWidth: .infinity)
                     }
                     editorCenter
-                        .frame(minWidth: 470, maxWidth: .infinity)
+                        .frame(minWidth: 470, idealWidth: 640, maxWidth: .infinity)
                     if isTranscriptVisible {
                         transcriptPanel
-                            .frame(minWidth: 230, idealWidth: 235, maxWidth: 260)
+                            .frame(minWidth: 220, idealWidth: 300, maxWidth: .infinity)
                     }
                 }
             } else {
@@ -139,11 +152,13 @@ struct ProjectDetailView: View {
             pendingAssistantCuts = nil
             pendingAssistantScene = nil
             pendingAssistantMove = nil
+            transcriptWordSelection.clear()
         }
         .onChange(of: editSession.editRevision) { _, _ in
             pendingAssistantCuts = nil
             pendingAssistantScene = nil
             pendingAssistantMove = nil
+            isConfirmingAssistantEstimatedCuts = false
         }
         .onDisappear {
             assistantTask?.cancel()
@@ -175,6 +190,25 @@ struct ProjectDetailView: View {
         } message: {
             Text(exportError ?? "Unknown export error")
         }
+        .confirmationDialog("Remove selected words?", isPresented: $isConfirmingTranscriptWordDelete,
+                            titleVisibility: .visible) {
+            Button("Delete Selected Words", role: .destructive) {
+                Task { await applyTranscriptWordDeletion() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Some selected word times are estimates. The edit will remove their video and audio intervals, which may trim nearby sound.")
+        }
+        .confirmationDialog("Apply cuts with estimated word times?",
+                            isPresented: $isConfirmingAssistantEstimatedCuts,
+                            titleVisibility: .visible) {
+            Button("Apply Estimated Cuts", role: .destructive) {
+                applyAssistantCuts(confirmedEstimatedTiming: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Some suggested word boundaries are uncertain and may trim nearby audio. Review the highlighted spans before continuing.")
+        }
     }
 
     private var assistantPanel: some View {
@@ -195,7 +229,9 @@ struct ProjectDetailView: View {
                         Text("Ask for cuts, phrase order, scene changes, titles, descriptions, or wording for a new take.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("Transcript text and scene metadata are sent for the chosen scope. Review every media change before applying it.")
+                    Text(assistantProvider == .ollama
+                         ? "Transcript and scene details go to the local Ollama service. Review every media change before applying it."
+                         : "Transcript text and scene metadata are sent for the chosen scope. Review every media change before applying it.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -251,7 +287,9 @@ struct ProjectDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("\(pendingAssistantCuts.ranges.count) proposed cuts")
                         .font(.caption.weight(.semibold))
-                    Text("Red spans mark both video and audio. Audition a span before applying.")
+                    Text(pendingAssistantCuts.requiresTimingReview
+                         ? "Some word times are estimates. Red spans mark video and audio; review before applying."
+                         : "Red spans mark both video and audio. Audition a span before applying.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     HStack {
@@ -371,7 +409,9 @@ struct ProjectDetailView: View {
                     .lineLimit(2...4)
                     .onSubmit { sendAssistantPrompt() }
                 HStack {
-                    Text(assistantModel)
+                    Text(assistantProvider == .ollama
+                         ? "Local · \(localAssistantModel)"
+                         : assistantModel)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -460,6 +500,8 @@ struct ProjectDetailView: View {
         assistantRequestID = requestID
         let requestTimeline = editSession.timeline
         let requestRevision = editSession.editRevision
+        let requestProvider = assistantProvider
+        let requestModel = selectedAssistantModel
         assistantPrompt = ""
         assistantError = nil
         assistantMessages.append(AssistantMessage(role: "You", text: prompt, draft: nil))
@@ -472,17 +514,25 @@ struct ProjectDetailView: View {
                 }
             }
             do {
-                guard let key = try OpenRouterAssistantKeyStore().load() else {
-                    throw OpenRouterAssistantError.missingKey
-                }
                 let context = OpenRouterAssistantContext(
                     projectID: projectID, scope: scope, words: words, silences: silences,
                     sceneSelection: sceneSelection
                 )
-                let draft = try await OpenRouterAssistantClient().draft(
-                    apiKey: key, model: assistantModel, prompt: prompt, context: context,
-                    history: history
-                )
+                let draft: OpenRouterAssistantDraft
+                switch requestProvider {
+                case .openRouter:
+                    guard let key = try OpenRouterAssistantKeyStore().load() else {
+                        throw OpenRouterAssistantError.missingKey
+                    }
+                    draft = try await OpenRouterAssistantClient().draft(
+                        apiKey: key, model: requestModel, prompt: prompt,
+                        context: context, history: history
+                    )
+                case .ollama:
+                    draft = try await OllamaAssistantClient().draft(
+                        model: requestModel, prompt: prompt, context: context, history: history
+                    )
+                }
                 guard assistantRequestID == requestID else { return }
                 guard let requestTimeline,
                       editSession.timeline == requestTimeline,
@@ -523,7 +573,7 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func applyAssistantCuts() {
+    private func applyAssistantCuts(confirmedEstimatedTiming: Bool = false) {
         guard let proposal = pendingAssistantCuts,
               let projectID = project.identity.manifestID,
               let timeline = editSession.timeline,
@@ -532,6 +582,10 @@ struct ProjectDetailView: View {
               ), !proposal.ranges.isEmpty else {
             assistantError = OpenRouterAssistantError.invalidProposal.localizedDescription
             pendingAssistantCuts = nil
+            return
+        }
+        if proposal.requiresTimingReview && !confirmedEstimatedTiming {
+            isConfirmingAssistantEstimatedCuts = true
             return
         }
         Task {
@@ -549,6 +603,7 @@ struct ProjectDetailView: View {
             } else {
                 pendingAssistantCuts = nil
                 selectedRange = nil
+                transcriptWordSelection.clear()
             }
         }
     }
@@ -763,7 +818,7 @@ struct ProjectDetailView: View {
                         }
                         ForEach(Array(editSession.silenceCandidates.enumerated()), id: \.offset) { _, range in
                             Button("Pause \(transcriptTime(range.lowerBound))–\(transcriptTime(range.upperBound))") {
-                                selectedWordOccurrenceID = nil
+                                transcriptWordSelection.clear()
                                 selectedPhraseID = nil
                                 focusTranscriptRange(range)
                             }
@@ -778,7 +833,7 @@ struct ProjectDetailView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(alignment: .top, spacing: 3) {
                                     Button {
-                                        selectedWordOccurrenceID = nil
+                                        transcriptWordSelection.clear()
                                         selectedPhraseID = phrase.id
                                         focusTranscriptRange(phrase.outputRange)
                                     } label: {
@@ -799,6 +854,11 @@ struct ProjectDetailView: View {
                                            systemImage: expandedPhraseIDs.contains(phrase.id) ? "chevron.up" : "chevron.down") {
                                         if !expandedPhraseIDs.insert(phrase.id).inserted {
                                             expandedPhraseIDs.remove(phrase.id)
+                                            if phrase.words.contains(where: {
+                                                transcriptWordSelection.selectedIDs.contains($0.id)
+                                            }) {
+                                                transcriptWordSelection.clear()
+                                            }
                                         }
                                     }
                                     .labelStyle(.iconOnly)
@@ -819,7 +879,15 @@ struct ProjectDetailView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
-                if let selectedTranscriptWord {
+                if selectedTranscriptWords.count > 1,
+                   let first = selectedTranscriptWords.first,
+                   let last = selectedTranscriptWords.last {
+                    Text("\(selectedTranscriptWords.count) words · \(transcriptTime(first.outputStart))–\(transcriptTime(last.outputEnd))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                } else if let selectedTranscriptWord {
                     Text(String(
                         format: "Output %.2f–%.2f s · Source %.2f–%.2f s",
                         selectedTranscriptWord.outputStart, selectedTranscriptWord.outputEnd,
@@ -836,27 +904,11 @@ struct ProjectDetailView: View {
                         .padding(.horizontal, 10)
                         .padding(.top, 8)
                 }
-                HStack {
-                    Button("Review Timing") { reviewSelectedWordTiming() }
-                        .disabled(!canReviewSelectedWordTiming)
-                    Button("Delete Word") {
-                        guard let word = selectedTranscriptWord else { return }
-                        let wordRange = word.outputStart..<word.outputEnd
-                        Task {
-                            await editSession.deleteOutputRange(wordRange)
-                            selectedWordOccurrenceID = nil
-                        }
-                    }
-                    .disabled(selectedTranscriptWord?.timingStatus == .uncertain
-                              || selectedWordOccurrenceID == nil)
-                }
-                .buttonStyle(.borderless)
-                .padding(10)
                 Button("Save Transcript…") { saveTranscriptText() }
                     .buttonStyle(.borderless)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 10)
-                Text("Drag both timing handles on the waveform, audition the range, then review uncertain words. Word cuts remove picture and sound together.")
+                Text("Shift-click words to select several. Press Delete to remove their video and audio together.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
@@ -898,6 +950,8 @@ struct ProjectDetailView: View {
             }
         }
         .background(detailPanel)
+        .onDeleteCommand(perform: deleteSelectedTranscriptWords)
+        .onChange(of: transcriptSearch) { _, _ in transcriptWordSelection.clear() }
     }
 
     private var visibleTranscriptPhrases: [EditedTranscriptPhrase] {
@@ -908,8 +962,17 @@ struct ProjectDetailView: View {
     }
 
     private var selectedTranscriptWord: EditedTranscriptWord? {
-        guard let transcript, let timeline = editSession.timeline else { return nil }
-        return transcript.words(in: timeline).first { $0.id == selectedWordOccurrenceID }
+        selectedTranscriptWords.count == 1 ? selectedTranscriptWords.first : nil
+    }
+
+    private var selectedTranscriptWords: [EditedTranscriptWord] {
+        guard editSession.timeline != nil else { return [] }
+        let visibleWords = visibleTranscriptPhrases.flatMap { phrase in
+            expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
+        }
+        let orderedIDs = transcriptWordSelection.orderedIDs(in: visibleWords.map(\.id))
+        let wordsByID = Dictionary(uniqueKeysWithValues: visibleWords.map { ($0.id, $0) })
+        return orderedIDs.compactMap { wordsByID[$0] }
     }
 
     private var selectedTranscriptPhrase: EditedTranscriptPhrase? {
@@ -927,11 +990,57 @@ struct ProjectDetailView: View {
         Task { await editSession.player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600)) }
     }
 
-    private func transcriptWordButton(_ word: EditedTranscriptWord) -> some View {
-        Button {
-            selectedWordOccurrenceID = word.id
+    private func deleteSelectedTranscriptWords() {
+        guard focusedTranscriptWordID != nil, !selectedTranscriptWords.isEmpty else { return }
+        if selectedTranscriptWords.contains(where: { $0.timingStatus == .uncertain }) {
+            isConfirmingTranscriptWordDelete = true
+        } else {
+            Task { await applyTranscriptWordDeletion() }
+        }
+    }
+
+    private func applyTranscriptWordDeletion() async {
+        let selectedWords = selectedTranscriptWords
+        guard !selectedWords.isEmpty else { return }
+        let sortedRanges = selectedWords.map { $0.outputStart..<$0.outputEnd }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        var ranges: [Range<TimeInterval>] = []
+        for range in sortedRanges {
+            if let last = ranges.last, range.lowerBound < last.upperBound {
+                ranges[ranges.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                ranges.append(range)
+            }
+        }
+        await editSession.deleteOutputRanges(ranges)
+        if let error = editSession.errorMessage {
+            transcriptError = error
+        } else {
+            transcriptWordSelection.clear()
+            focusedTranscriptWordID = nil
             selectedPhraseID = nil
-            focusTranscriptRange(word.outputStart..<word.outputEnd)
+            selectedRange = nil
+            transcriptError = nil
+        }
+    }
+
+    private func transcriptWordButton(_ word: EditedTranscriptWord) -> some View {
+        let visibleWords = visibleTranscriptPhrases.flatMap { phrase in
+            expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
+        }
+        let isSelected = transcriptWordSelection.selectedIDs.contains(word.id)
+        return Button {
+            transcriptWordSelection.select(
+                word.id,
+                extendingWithShift: NSEvent.modifierFlags.contains(.shift),
+                orderedIDs: visibleWords.map(\.id)
+            )
+            selectedPhraseID = nil
+            let selected = transcriptWordSelection.orderedIDs(in: visibleWords.map(\.id))
+                .compactMap { id in visibleWords.first(where: { $0.id == id }) }
+            if let first = selected.first, let last = selected.last {
+                focusTranscriptRange(first.outputStart..<last.outputEnd)
+            }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(transcriptTime(word.outputStart))
@@ -947,7 +1056,7 @@ struct ProjectDetailView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(selectedWordOccurrenceID == word.id ? Color.accentColor.opacity(0.18) : .clear)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : .clear)
             .background(pendingAssistantCuts?.ranges.contains(where: {
                 $0.lowerBound < word.outputEnd && $0.upperBound > word.outputStart
             }) == true ? Color.red.opacity(0.15) : .clear)
@@ -957,17 +1066,9 @@ struct ProjectDetailView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focused($focusedTranscriptWordID, equals: word.id)
         .accessibilityLabel("\(word.text), \(word.outputStart.formatted()) seconds, \(word.timingStatus.rawValue) timing")
-    }
-
-    private var canReviewSelectedWordTiming: Bool {
-        guard let transcript, let selectedTranscriptWord, let selectedRange,
-              let timeline = editSession.timeline,
-              let sourceRange = try? timeline.sourceRange(for: selectedRange),
-              let sourceWord = transcript.words.first(where: { $0.id == selectedTranscriptWord.sourceWordID })
-        else { return false }
-        return abs(sourceRange.lowerBound - sourceWord.sourceStart) >= 0.001
-            || abs(sourceRange.upperBound - sourceWord.sourceEnd) >= 0.001
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func loadTranscript() {
@@ -1016,24 +1117,6 @@ struct ProjectDetailView: View {
                 projectID: projectID, sourceTrackID: timeline.trackID,
                 sourceDuration: timeline.sourceDuration, audioURL: audioURL
             ))
-        } catch {
-            transcriptError = error.localizedDescription
-        }
-    }
-
-    private func reviewSelectedWordTiming() {
-        guard canReviewSelectedWordTiming,
-              let transcript, let selectedTranscriptWord, let selectedRange,
-              let timeline = editSession.timeline else { return }
-        do {
-            let sourceRange = try timeline.sourceRange(for: selectedRange)
-            let reviewed = try transcript.reviewWord(selectedTranscriptWord.sourceWordID, sourceRange: sourceRange)
-            try TimedTranscriptStore().save(reviewed, in: project.rootURL)
-            self.transcript = reviewed
-            if let revisedWord = reviewed.words(in: timeline).first(where: { $0.id == selectedTranscriptWord.id }) {
-                self.selectedRange = revisedWord.outputStart..<revisedWord.outputEnd
-            }
-            transcriptError = nil
         } catch {
             transcriptError = error.localizedDescription
         }
@@ -1129,7 +1212,15 @@ struct ProjectDetailView: View {
                     proposedMove: pendingAssistantMove,
                     focusRequest: timelineFocusRequest,
                     requiresSelectionTimingReview:
-                        selectedTranscriptWord?.requiresTimingReview(for: selectedRange) == true
+                        selectedTranscriptWords.contains {
+                            $0.requiresTimingReview(for: selectedRange)
+                        }
+                        || (pendingAssistantCuts?.requiresTimingReview == true
+                            && pendingAssistantCuts?.ranges.contains(where: {
+                                guard let selectedRange else { return false }
+                                return selectedRange.lowerBound < $0.upperBound
+                                    && selectedRange.upperBound > $0.lowerBound
+                            }) == true)
                         || selectedTranscriptPhrase?.requiresTimingReview(for: selectedRange) == true
                 )
                     .padding(12)
