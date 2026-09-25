@@ -4,6 +4,12 @@ import AVKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum TranscriptAutoQueuePolicy {
+    static func shouldQueue(hasSavedTranscript: Bool, hasJob: Bool, fileUnreadable: Bool) -> Bool {
+        !hasSavedTranscript && !hasJob && !fileUnreadable
+    }
+}
+
 struct ProjectDetailView: View {
     private struct AssistantMessage: Identifiable {
         let id = UUID()
@@ -45,6 +51,7 @@ struct ProjectDetailView: View {
     @State private var transcriptError: String?
     @State private var transcriptFileUnreadable = false
     @State private var isQueuingTranscription = false
+    @State private var hasAttemptedAutomaticTranscription = false
     @AppStorage("openRouter.model") private var assistantModel = OpenRouterAssistantClient.defaultModel
     @AppStorage("assistant.provider") private var assistantProviderRaw = AssistantProvider.openRouter.rawValue
     @AppStorage("assistant.ollamaModel") private var localAssistantModel = "gemma3:4b"
@@ -133,15 +140,16 @@ struct ProjectDetailView: View {
         .task(id: programScreenTrackID) { await loadProgram() }
         .task(id: project.id) {
             loadTranscript()
-            await queueMissingTranscript()
+            await queueInitialTranscriptIfNeeded()
         }
         .onChange(of: editSession.timeline) { _, _ in
-            Task { await queueMissingTranscript() }
+            Task { await queueInitialTranscriptIfNeeded() }
         }
         .onChange(of: jobs) { _, _ in
             if transcriptionJob?.state == .completed { loadTranscript() }
         }
         .onChange(of: project.id) { _, _ in
+            hasAttemptedAutomaticTranscription = false
             assistantTask?.cancel()
             assistantTask = nil
             isAssistantWorking = false
@@ -795,6 +803,11 @@ struct ProjectDetailView: View {
             Divider()
             if let transcript, let timeline = editSession.timeline,
                transcript.isCompatible(with: timeline) {
+                let visiblePhrases = visibleTranscriptPhrases
+                let visibleWords = visiblePhrases.flatMap { phrase in
+                    expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
+                }
+                let selectedWords = selectedTranscriptWords(in: visibleWords)
                 TextField("Search transcript", text: $transcriptSearch)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 12)
@@ -829,7 +842,7 @@ struct ProjectDetailView: View {
                             .background(selectedRange == range ? Color.accentColor.opacity(0.18) : .clear)
                         }
                         Divider().padding(.vertical, 5)
-                        ForEach(visibleTranscriptPhrases) { phrase in
+                        ForEach(visiblePhrases) { phrase in
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(alignment: .top, spacing: 3) {
                                     Button {
@@ -869,7 +882,7 @@ struct ProjectDetailView: View {
                                 .background(selectedPhraseID == phrase.id ? Color.accentColor.opacity(0.18) : .clear)
                                 if expandedPhraseIDs.contains(phrase.id) {
                                     ForEach(phrase.words) { word in
-                                        transcriptWordButton(word).padding(.leading, 9)
+                                        transcriptWordButton(word, visibleWords: visibleWords).padding(.leading, 9)
                                     }
                                 }
                             }
@@ -879,15 +892,15 @@ struct ProjectDetailView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
-                if selectedTranscriptWords.count > 1,
-                   let first = selectedTranscriptWords.first,
-                   let last = selectedTranscriptWords.last {
-                    Text("\(selectedTranscriptWords.count) words · \(transcriptTime(first.outputStart))–\(transcriptTime(last.outputEnd))")
+                if selectedWords.count > 1,
+                   let first = selectedWords.first,
+                   let last = selectedWords.last {
+                    Text("\(selectedWords.count) words · \(transcriptTime(first.outputStart))–\(transcriptTime(last.outputEnd))")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)
                         .padding(.top, 8)
-                } else if let selectedTranscriptWord {
+                } else if let selectedTranscriptWord = selectedWords.first {
                     Text(String(
                         format: "Output %.2f–%.2f s · Source %.2f–%.2f s",
                         selectedTranscriptWord.outputStart, selectedTranscriptWord.outputEnd,
@@ -961,15 +974,15 @@ struct ProjectDetailView: View {
         return query.isEmpty ? phrases : phrases.filter { $0.text.localizedCaseInsensitiveContains(query) }
     }
 
-    private var selectedTranscriptWord: EditedTranscriptWord? {
-        selectedTranscriptWords.count == 1 ? selectedTranscriptWords.first : nil
-    }
-
     private var selectedTranscriptWords: [EditedTranscriptWord] {
         guard editSession.timeline != nil else { return [] }
         let visibleWords = visibleTranscriptPhrases.flatMap { phrase in
             expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
         }
+        return selectedTranscriptWords(in: visibleWords)
+    }
+
+    private func selectedTranscriptWords(in visibleWords: [EditedTranscriptWord]) -> [EditedTranscriptWord] {
         let orderedIDs = transcriptWordSelection.orderedIDs(in: visibleWords.map(\.id))
         let wordsByID = Dictionary(uniqueKeysWithValues: visibleWords.map { ($0.id, $0) })
         return orderedIDs.compactMap { wordsByID[$0] }
@@ -1024,10 +1037,7 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func transcriptWordButton(_ word: EditedTranscriptWord) -> some View {
-        let visibleWords = visibleTranscriptPhrases.flatMap { phrase in
-            expandedPhraseIDs.contains(phrase.id) ? phrase.words : []
-        }
+    private func transcriptWordButton(_ word: EditedTranscriptWord, visibleWords: [EditedTranscriptWord]) -> some View {
         let isSelected = transcriptWordSelection.selectedIDs.contains(word.id)
         return Button {
             transcriptWordSelection.select(
@@ -1099,6 +1109,18 @@ struct ProjectDetailView: View {
             }
         }
         return "Ukrainian words are recognized locally. Experimental word boundaries need waveform review before cutting."
+    }
+
+    private func queueInitialTranscriptIfNeeded() async {
+        guard !hasAttemptedAutomaticTranscription,
+              TranscriptAutoQueuePolicy.shouldQueue(
+                hasSavedTranscript: transcript != nil,
+                hasJob: transcriptionJob != nil,
+                fileUnreadable: transcriptFileUnreadable
+              ),
+              editSession.timeline != nil else { return }
+        hasAttemptedAutomaticTranscription = true
+        await queueMissingTranscript()
     }
 
     private func queueMissingTranscript() async {

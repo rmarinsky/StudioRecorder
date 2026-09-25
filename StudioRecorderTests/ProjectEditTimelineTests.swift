@@ -4,6 +4,21 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectEditTimelineTests: XCTestCase {
+    func testEditorAutoTranscriptionRunsOnlyForFirstMissingTranscript() {
+        XCTAssertTrue(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: false, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: true, hasJob: false, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: true, fileUnreadable: false
+        ))
+        XCTAssertFalse(TranscriptAutoQueuePolicy.shouldQueue(
+            hasSavedTranscript: false, hasJob: false, fileUnreadable: true
+        ))
+    }
+
     func testTranscriptWordSelectionExtendsFromAnchorAndWorksInReverse() {
         let order = ["first", "second", "third", "fourth"]
         var selection = TranscriptWordSelection()
