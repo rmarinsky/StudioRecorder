@@ -42,19 +42,8 @@ actor LiveSceneSnapshotExporter {
         shortcutLabel: String? = nil,
         to destinationURL: URL
     ) throws {
-        let presentation = presentation.validated()
-        guard let output = makeOutputBuffer(size: presentation.canvas.pixelSize) else {
-            throw LiveSceneSnapshotError.outputBufferUnavailable
-        }
-        compositor.render(
-            screen: CIImage(cgImage: sources.screen),
-            camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
-            presentation: presentation,
-            screenFraming: screenFraming,
-            cursor: cursor,
-            shortcutLabel: shortcutLabel,
-            to: output
-        )
+        let output = try render(sources: sources, presentation: presentation, screenFraming: screenFraming,
+                                cursor: cursor, shortcutLabel: shortcutLabel).pixelBuffer
         let canvas = CGRect(origin: .zero, size: presentation.canvas.pixelSize)
         guard let rendered = imageContext.createCGImage(CIImage(cvPixelBuffer: output), from: canvas) else {
             throw LiveSceneSnapshotError.renderedImageUnavailable
@@ -78,6 +67,22 @@ actor LiveSceneSnapshotExporter {
         } catch {
             throw LiveSceneSnapshotError.destinationWriteFailed
         }
+    }
+
+    func render(
+        sources: LiveSceneSnapshotSources, presentation: CapturePresentationSnapshot,
+        screenFraming: ScreenFramingSnapshot?, cursor: ProgramCursorState?, shortcutLabel: String? = nil
+    ) throws -> TimelapseFrame {
+        let presentation = presentation.validated()
+        guard let output = makeOutputBuffer(size: presentation.canvas.pixelSize) else {
+            throw LiveSceneSnapshotError.outputBufferUnavailable
+        }
+        compositor.render(
+            screen: CIImage(cgImage: sources.screen), camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
+            presentation: presentation, screenFraming: screenFraming, cursor: cursor,
+            shortcutLabel: shortcutLabel, to: output
+        )
+        return TimelapseFrame(pixelBuffer: output)
     }
 
     private func makeOutputBuffer(size: CGSize) -> CVPixelBuffer? {

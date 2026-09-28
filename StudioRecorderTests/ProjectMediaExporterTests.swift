@@ -4,6 +4,44 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectMediaExporterTests: XCTestCase {
+    @MainActor
+    func testTimelapseCaptureSkipsPausedTicksAndDoesNotAppendAFrameThatArrivesAfterStop() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "frames.mov")
+        let frame = TimelapseFrame(pixelBuffer: try pixelBuffer(color: 0xFFFF0000))
+        var pendingFrame: CheckedContinuation<TimelapseFrame, Error>?
+        var requests = 0
+        let session = try TimelapseCaptureSession(
+            outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64),
+            settings: TimelapseSettings(captureInterval: 1),
+            frameProvider: {
+                requests += 1
+                if requests == 1 { return frame }
+                return try await withCheckedThrowingContinuation { pendingFrame = $0 }
+            }
+        )
+        try await session.start()
+        session.pause()
+        try await Task.sleep(for: .milliseconds(1_100))
+        XCTAssertEqual(session.frameCount, 1)
+        XCTAssertEqual(requests, 1)
+        session.resume()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while pendingFrame == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let continuation = try XCTUnwrap(pendingFrame)
+        let stopping = Task { try await session.stop() }
+        await Task.yield()
+        continuation.resume(returning: frame)
+        _ = try await stopping.value
+        XCTAssertEqual(session.frameCount, 1)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        XCTAssertEqual(duration, 1, accuracy: 0.02)
+    }
+
     func testTimelapseRendersOnlySelectedFramesAtTheConfiguredPaceWithoutAudio() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
