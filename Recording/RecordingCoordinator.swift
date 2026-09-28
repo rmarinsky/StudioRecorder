@@ -922,23 +922,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     }
                 )
             } else {
-            let editDocument = try await projectEditStore.load(
-                from: project.rootURL, expectedProjectID: project.id
-            )
-            let editTimeline = preferredScreenTrackID(project: project, request: request)
-                .flatMap { editDocument?.timeline(for: $0) }
-            try await retentionFinalizer.finalize(
-                project: project,
-                request: request,
-                projectStore: projectStore,
-                cursorTimeline: projectStore.cursorTimeline(in: project),
-                shortcutTimeline: projectStore.shortcutTimeline(in: project),
-                sceneTimeline: projectStore.studioSceneTimeline(in: project),
-                editTimeline: editTimeline,
-                progress: { [weak self, project] fraction, phase in
-                    self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
-                }
-            )
+                let editDocument = try await projectEditStore.load(
+                    from: project.rootURL, expectedProjectID: project.id
+                )
+                let editTimeline = preferredScreenTrackID(project: project, request: request)
+                    .flatMap { editDocument?.timeline(for: $0) }
+                try await retentionFinalizer.finalize(
+                    project: project,
+                    request: request,
+                    projectStore: projectStore,
+                    cursorTimeline: projectStore.cursorTimeline(in: project),
+                    shortcutTimeline: projectStore.shortcutTimeline(in: project),
+                    sceneTimeline: projectStore.studioSceneTimeline(in: project),
+                    editTimeline: editTimeline,
+                    progress: { [weak self, project] fraction, phase in
+                        self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+                    }
+                )
             }
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
             job.state = .completed

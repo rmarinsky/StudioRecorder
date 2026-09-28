@@ -3447,60 +3447,60 @@ private struct StudioInspector: View {
                 isDisabled: isLocked
             )
         } else {
-        Picker("Frame rate", selection: $frameRate) {
-            ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
-                Text("\(frameRate) fps").tag(frameRate)
-            }
-        }
-        .pickerStyle(.menu)
-        .disabled(isLocked)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-        Picker("Codec", selection: $codecPolicy) {
-            Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
-            Text("H.264").tag(RecordingCodecPolicy.h264)
-        }
-        .disabled(isLocked)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-        Toggle("Include cursor", isOn: $includeCursor)
-            .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        if includeCursor {
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle("Highlight clicks", isOn: cursorClickBinding)
-                Text("The normal-size cursor and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(isLocked)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
-        }
-        Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
-            .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        if presentation.cursor.resolvedShowsShortcutKeys {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if !hasShortcutMonitoringAccess {
-                    Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(isLocked)
+            Picker("Frame rate", selection: $frameRate) {
+                ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
+                    Text("\(frameRate) fps").tag(frameRate)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
-        }
-        Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+            .pickerStyle(.menu)
             .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            Picker("Codec", selection: $codecPolicy) {
+                Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
+                Text("H.264").tag(RecordingCodecPolicy.h264)
+            }
+            .disabled(isLocked)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            Toggle("Include cursor", isOn: $includeCursor)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            if includeCursor {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Highlight clicks", isOn: cursorClickBinding)
+                    Text("The normal-size cursor and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(isLocked)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            }
+            Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            if presentation.cursor.resolvedShowsShortcutKeys {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if !hasShortcutMonitoringAccess {
+                        Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isLocked)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            }
+            Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
         }
     }
 
