@@ -4,6 +4,43 @@ import XCTest
 @testable import StudioRecorder
 
 final class ProjectMediaExporterTests: XCTestCase {
+    func testTimelapseRendersOnlySelectedFramesAtTheConfiguredPaceWithoutAudio() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "selected-frames.mov")
+        let outputURL = directory.appending(path: "timelapse.mov")
+        let source = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64))
+        for color: UInt32 in [0xFFFF0000, 0xFF0000FF, 0xFF00FF00] {
+            try await source.append(TimelapseFrame(pixelBuffer: try pixelBuffer(color: color)))
+        }
+        _ = try await source.finish()
+
+        let report = try await TimelapseMovieRenderer().exportMovie(
+            from: sourceURL, settings: TimelapseSettings(frameDuration: 0.2),
+            to: outputURL
+        )
+
+        let asset = AVURLAsset(url: outputURL)
+        let duration = try await asset.load(.duration).seconds
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(duration, 0.6, accuracy: 0.02)
+        XCTAssertTrue(audioTracks.isEmpty)
+        XCTAssertEqual(report.sourceFrameCount, 3)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let midpoint = try await generator.image(at: CMTime(seconds: 0.1, preferredTimescale: 600)).image
+        let context = CIContext()
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(CIImage(cgImage: midpoint), toBitmap: &pixel, rowBytes: 4,
+                       bounds: CGRect(x: 32, y: 32, width: 1, height: 1), format: .RGBA8,
+                       colorSpace: CGColorSpaceCreateDeviceRGB())
+        XCTAssertGreaterThan(pixel[0], 80, "The midpoint must contain both neighboring colors")
+        XCTAssertGreaterThan(pixel[2], 80)
+        XCTAssertLessThan(pixel[1], 50, "Allow chroma rounding from the native video encoder")
+    }
+
     func testGIFExportSettingsClampTheShareClipToAvailableMediaAndSafeLimits() throws {
         let settings = GIFExportSettings(
             startTime: 8,

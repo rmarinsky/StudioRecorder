@@ -50,6 +50,7 @@
 		9E66A31B8BDBDC9ADD80B878 /* SafeShortcutMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FFFDCE006ACC241BCF332B2 /* SafeShortcutMonitor.swift */; };
 		A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */; };
 		A66AADF142C1D940754C0E01 /* ProjectQuickEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 158EBFAEFC92DB31BAD3CA23 /* ProjectQuickEditorView.swift */; };
+		A909436C752F0C7BE0BAE688 /* Timelapse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 301A0A4ECE9FCBC980F95644 /* Timelapse.swift */; };
 		AB25A5EAFCE815654825E0C5 /* StudioSceneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB9AC39052582D728AB12C9 /* StudioSceneTests.swift */; };
 		ACD7EF0A9E898F71E4289452 /* YouTubeStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
@@ -117,6 +118,7 @@
 		2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentRecoveryPlanner.swift; sourceTree = "<group>"; };
 		2E4506FB56B1915ABE6670E0 /* YouTubeManagedSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeManagedSessionCoordinator.swift; sourceTree = "<group>"; };
 		2FDE68C573E8A4671703ACA8 /* LiveSceneSnapshotExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneSnapshotExporter.swift; sourceTree = "<group>"; };
+		301A0A4ECE9FCBC980F95644 /* Timelapse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Timelapse.swift; sourceTree = "<group>"; };
 		31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneSnapshotExporterTests.swift; sourceTree = "<group>"; };
 		32DC1B259E9687AC3F4AED72 /* ProjectPresentationEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPresentationEditorView.swift; sourceTree = "<group>"; };
 		39DAC799ABBEB02C029FD420 /* LiveProgramReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgramReadiness.swift; sourceTree = "<group>"; };
@@ -338,6 +340,7 @@
 				46AD5D447541362413D3EE64 /* SafeShortcutTimeline.swift */,
 				1115B8BE6C8C9D764FE83D18 /* StreamPreflight.swift */,
 				DCA14ECDD4691EE280281A86 /* StudioScene.swift */,
+				301A0A4ECE9FCBC980F95644 /* Timelapse.swift */,
 				26D27EA6A6B96CB8C774BC97 /* YouTubeManagedStreaming.swift */,
 				7126807F0F98EB846E410145 /* YouTubeStreaming.swift */,
 			);
@@ -525,6 +528,7 @@
 				E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */,
 				A302B7575401CF8ABFB3670E /* StudioRecorderRootView.swift in Sources */,
 				DF9DC8D6FF74179A58B7328F /* StudioScene.swift in Sources */,
+				A909436C752F0C7BE0BAE688 /* Timelapse.swift in Sources */,
 				7ED705E620EC9E7D80E13E79 /* YouTubeAuthorizationDisclosureView.swift in Sources */,
 				87A11B815C0786F85A80ED50 /* YouTubeManagedSessionCoordinator.swift in Sources */,
 				9C2CD86969C1D59EDADA492A /* YouTubeManagedStreaming.swift in Sources */,
