@@ -21,6 +21,29 @@ enum RecordingCodecPolicy: String, Codable, CaseIterable, Equatable, Sendable {
     case h264
 }
 
+enum TimelapseTransition: String, Codable, CaseIterable, Identifiable, Sendable {
+    case dissolve
+    case motion
+
+    var id: String { rawValue }
+    var label: String { self == .dissolve ? "Blend frames" : "Interpolate motion" }
+}
+
+struct TimelapseSettings: Codable, Equatable, Sendable {
+    var captureInterval: TimeInterval = 2
+    var frameDuration: TimeInterval = 0.2
+    var transition: TimelapseTransition = .dissolve
+
+    var speedMultiplier: Double { captureInterval / frameDuration }
+
+    func validated() -> Self {
+        var value = self
+        value.captureInterval = min(max(captureInterval.isFinite ? captureInterval : 2, 1), 60)
+        value.frameDuration = min(max(frameDuration.isFinite ? frameDuration : 0.2, 0.1), 0.5)
+        return value
+    }
+}
+
 enum MediaRetentionPolicy: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case editableTracks
     case programOnly
@@ -203,6 +226,7 @@ struct StudioDraft: Equatable {
     var armsCamera: Bool? = nil
     var cameraSyncOffsets: [String: TimeInterval] = [:]
     var defaultDisplayIDs: Set<UInt32> = []
+    var timelapse: TimelapseSettings? = nil
 
     mutating func reconcile(
         displays: [AvailableDisplay],
@@ -257,11 +281,11 @@ struct StudioDraft: Equatable {
         if !unavailableDisplayIDs.isEmpty {
             return unavailableDisplayIDs.map(StudioDraftValidationIssue.displayUnavailable)
         }
-        let needsScreenCapture = !requestedDisplayIDs.isEmpty || capturesSystemAudio || capturesMicrophone
+        let needsScreenCapture = !requestedDisplayIDs.isEmpty || (timelapse == nil && (capturesSystemAudio || capturesMicrophone))
         if needsScreenCapture, !permissions.screenRecording.isGranted {
             return [.screenRecordingPermission]
         }
-        if capturesMicrophone {
+        if capturesMicrophone, timelapse == nil {
             guard permissions.microphone.isGranted else { return [.microphonePermission] }
             guard let microphoneDeviceID,
                   microphones.contains(where: { $0.id == microphoneDeviceID }) else {
@@ -320,7 +344,7 @@ struct StudioDraft: Equatable {
                 metadataState: .known
             )]
         }
-        let microphone = capturesMicrophone
+        let microphone = capturesMicrophone && timelapse == nil
             ? microphones.first(where: { $0.id == microphoneDeviceID }).map {
                 MicrophoneSourceSnapshot(id: $0.id, name: $0.name)
             }
@@ -338,8 +362,8 @@ struct StudioDraft: Equatable {
             displaySources: displaySources,
             camera: camera,
             audio: AudioCaptureSnapshot(
-                capturesSystemAudio: capturesSystemAudio,
-                capturesMicrophone: capturesMicrophone,
+                capturesSystemAudio: capturesSystemAudio && timelapse == nil,
+                capturesMicrophone: capturesMicrophone && timelapse == nil,
                 microphone: microphone,
                 primaryAudioDisplayID: displaySources.first?.id,
                 excludesStudioRecorderAudio: excludeStudioRecorderAudio
@@ -361,7 +385,8 @@ struct StudioDraft: Equatable {
                 destinationBookmarkID: destination.bookmarkID,
                 fallbackPath: destination.fallbackPath,
                 retentionPolicy: retentionPolicyOverride ?? retentionPolicy
-            )
+            ),
+            timelapse: timelapse?.validated()
         )
     }
 }
@@ -478,6 +503,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
     let profile: CaptureProfileSnapshot
     let presentation: CapturePresentationSnapshot
     let storage: StorageCaptureSnapshot
+    let timelapse: TimelapseSettings?
 
     init(
         id: UUID,
@@ -488,7 +514,8 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         audio: AudioCaptureSnapshot,
         profile: CaptureProfileSnapshot,
         presentation: CapturePresentationSnapshot = .default,
-        storage: StorageCaptureSnapshot
+        storage: StorageCaptureSnapshot,
+        timelapse: TimelapseSettings? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -500,6 +527,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         self.profile = profile
         self.presentation = presentation
         self.storage = storage
+        self.timelapse = timelapse?.validated()
     }
 
     var sources: [RecordingSourceSnapshot] {
@@ -513,14 +541,14 @@ struct CaptureRequest: Codable, Equatable, Sendable {
             )
         }
     }
-    var captureProfile: String { profile.label }
+    var captureProfile: String { timelapse.map { "timelapse-\($0.captureInterval)s-\(profile.frameRate)fps" } ?? profile.label }
     var primaryAudioDisplayID: UInt32? { audio.primaryAudioDisplayID }
     var capturesMicrophone: Bool? { audio.capturesMicrophone }
     var includesCursor: Bool { profile.includeCursor }
     var excludesStudioRecorderAudio: Bool { audio.excludesStudioRecorderAudio }
 
     private enum CodingKeys: String, CodingKey {
-        case id, createdAt, recordingName, displaySources, camera, audio, profile, presentation, storage
+        case id, createdAt, recordingName, displaySources, camera, audio, profile, presentation, storage, timelapse
         case sources, captureProfile, primaryAudioDisplayID, capturesMicrophone
         case includesCursor, excludesStudioRecorderAudio
     }
@@ -530,6 +558,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         recordingName = try container.decodeIfPresent(String.self, forKey: .recordingName)
+        timelapse = try container.decodeIfPresent(TimelapseSettings.self, forKey: .timelapse)?.validated()
         if container.contains(.displaySources) {
             displaySources = try container.decode([DisplaySourceSnapshot].self, forKey: .displaySources)
             camera = try container.decodeIfPresent(CameraSourceSnapshot.self, forKey: .camera)
@@ -588,6 +617,7 @@ struct CaptureRequest: Codable, Equatable, Sendable {
         try container.encode(profile, forKey: .profile)
         try container.encode(presentation, forKey: .presentation)
         try container.encode(storage, forKey: .storage)
+        try container.encodeIfPresent(timelapse, forKey: .timelapse)
     }
 }
 
