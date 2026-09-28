@@ -79,6 +79,37 @@ final class ProjectMediaExporterTests: XCTestCase {
         XCTAssertLessThan(pixel[1], 50, "Allow chroma rounding from the native video encoder")
     }
 
+    func testTimelapseMotionTransitionMovesAFeatureThroughTheMidpoint() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "selected-frames.mov")
+        let outputURL = directory.appending(path: "timelapse.mov")
+        let dissolveURL = directory.appending(path: "dissolve.mov")
+        let source = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 128, height: 64))
+        try await source.append(TimelapseFrame(pixelBuffer: try movingFeatureFrame(x: 16)))
+        try await source.append(TimelapseFrame(pixelBuffer: try movingFeatureFrame(x: 32)))
+        _ = try await source.finish()
+
+        let renderer = TimelapseMovieRenderer()
+        let report = try await renderer.exportMovie(
+            from: sourceURL,
+            settings: TimelapseSettings(frameDuration: 0.2, transition: .motion),
+            to: outputURL
+        )
+        try await renderer.exportMovie(
+            from: sourceURL,
+            settings: TimelapseSettings(frameDuration: 0.2, transition: .dissolve),
+            to: dissolveURL
+        )
+
+        let motionRed = try await redPixel(in: outputURL, at: 0.1, x: 28, y: 32)
+        let dissolveRed = try await redPixel(in: dissolveURL, at: 0.1, x: 28, y: 32)
+        XCTAssertGreaterThan(Int(motionRed), Int(dissolveRed) + 30,
+                             "Motion interpolation should move the feature more clearly than a dissolve")
+        XCTAssertGreaterThan(report.blendedMotionTransitions, 0)
+    }
+
     func testGIFExportSettingsClampTheShareClipToAvailableMediaAndSafeLimits() throws {
         let settings = GIFExportSettings(
             startTime: 8,
@@ -208,6 +239,40 @@ final class ProjectMediaExporterTests: XCTestCase {
             }
         }
         return pixelBuffer
+    }
+
+    private func movingFeatureFrame(x: Int) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, 128, 64, kCVPixelFormatType_32BGRA, nil, &buffer),
+            kCVReturnSuccess
+        )
+        let pixelBuffer = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        let rowPixels = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt32>.size
+        let pixels = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixelBuffer))
+            .assumingMemoryBound(to: UInt32.self)
+        for y in 0..<64 {
+            for column in 0..<128 {
+                pixels[(y * rowPixels) + column] = column >= x && column < x + 16 && y >= 24 && y < 40
+                    ? 0xFFFF0000
+                    : 0xFF000000
+            }
+        }
+        return pixelBuffer
+    }
+
+    private func redPixel(in movieURL: URL, at seconds: TimeInterval, x: Int, y: Int) async throws -> UInt8 {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: movieURL))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let frame = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        var pixel = [UInt8](repeating: 0, count: 4)
+        CIContext().render(CIImage(cgImage: frame), toBitmap: &pixel, rowBytes: 4,
+                           bounds: CGRect(x: x, y: y, width: 1, height: 1), format: .RGBA8,
+                           colorSpace: CGColorSpaceCreateDeviceRGB())
+        return pixel[0]
     }
 
     private func imageBytes(_ image: CGImage) -> Data? {

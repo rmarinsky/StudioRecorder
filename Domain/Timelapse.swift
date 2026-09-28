@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreImage
 import Foundation
+import Vision
 
 struct TimelapseFrame: @unchecked Sendable {
     let pixelBuffer: CVPixelBuffer
@@ -9,6 +10,24 @@ struct TimelapseFrame: @unchecked Sendable {
 struct TimelapseRenderReport: Codable, Equatable, Sendable {
     let sourceFrameCount: Int
     let blendedMotionTransitions: Int
+    let motionFallbackTransitions: Int
+
+    init(sourceFrameCount: Int, blendedMotionTransitions: Int, motionFallbackTransitions: Int = 0) {
+        self.sourceFrameCount = sourceFrameCount
+        self.blendedMotionTransitions = blendedMotionTransitions
+        self.motionFallbackTransitions = motionFallbackTransitions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceFrameCount, blendedMotionTransitions, motionFallbackTransitions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sourceFrameCount = try container.decode(Int.self, forKey: .sourceFrameCount)
+        blendedMotionTransitions = try container.decode(Int.self, forKey: .blendedMotionTransitions)
+        motionFallbackTransitions = try container.decodeIfPresent(Int.self, forKey: .motionFallbackTransitions) ?? 0
+    }
 }
 
 struct TimelapseRenderDocument: Codable, Sendable {
@@ -114,6 +133,21 @@ actor TimelapseSourceWriter {
 actor TimelapseMovieRenderer {
     static let frameRate = 30
     private let context = CIContext(options: [.cacheIntermediates: false])
+    private let motionInterpolator = CIKernel(source: """
+        kernel vec4 timelapseMotionInterpolate(
+            sampler first, sampler second, sampler flow, float fraction, float scaleX, float scaleY
+        ) {
+            vec2 outputPoint = destCoord();
+            vec2 initialFlow = sample(flow, samplerTransform(flow, outputPoint)).xy * vec2(scaleX, scaleY);
+            vec2 initialPoint = outputPoint - fraction * initialFlow;
+            vec2 displacement = sample(flow, samplerTransform(flow, initialPoint)).xy * vec2(scaleX, scaleY);
+            vec2 firstPoint = outputPoint - fraction * displacement;
+            vec2 secondPoint = firstPoint + displacement;
+            vec4 firstColor = sample(first, samplerTransform(first, firstPoint));
+            vec4 secondColor = sample(second, samplerTransform(second, secondPoint));
+            return mix(firstColor, secondColor, fraction);
+        }
+        """)
 
     func exportMovie(
         from sourceURL: URL,
@@ -156,6 +190,8 @@ actor TimelapseMovieRenderer {
         let framesPerSample = Int((settings.frameDuration * Double(Self.frameRate)).rounded())
         var current = first
         var count = 0
+        var blendedMotionTransitions = 0
+        var motionFallbackTransitions = 0
         while true {
             try Task.checkCancellation()
             let next = output.copyNextSampleBuffer()
@@ -165,14 +201,49 @@ actor TimelapseMovieRenderer {
             }
             let image = CIImage(cvPixelBuffer: currentBuffer)
             let nextImage = next?.imageBuffer.map(CIImage.init(cvPixelBuffer:))
+            let flowMap: (image: CIImage, scaleX: CGFloat, scaleY: CGFloat)?
+            let shouldInterpolateMotion = settings.transition == .motion && nextImage != nil
+            if settings.transition == .motion, let nextImage {
+                flowMap = try? makeOpticalFlow(from: image, to: nextImage)
+            } else {
+                flowMap = nil
+            }
+            var usedMotionInterpolation = false
+            var usedMotionFallback = shouldInterpolateMotion && (flowMap == nil || motionInterpolator == nil)
             for frameIndex in 0..<framesPerSample {
                 try Task.checkCancellation()
                 let fraction = Double(frameIndex) / Double(framesPerSample)
-                let rendered = nextImage.map {
-                    image.applyingFilter("CIDissolveTransition", parameters: [
-                        kCIInputTargetImageKey: $0, kCIInputTimeKey: fraction
+                let rendered: CIImage
+                if let nextImage, let flowMap, let motionInterpolator {
+                    let bounds = CGRect(origin: .zero, size: size)
+                    let interpolated = motionInterpolator.apply(
+                        extent: bounds,
+                        roiCallback: { _, _ in bounds },
+                        arguments: [
+                            image,
+                            nextImage,
+                            flowMap.image,
+                            NSNumber(value: fraction),
+                            NSNumber(value: Double(flowMap.scaleX)),
+                            NSNumber(value: Double(flowMap.scaleY)),
+                        ]
+                    )
+                    if let interpolated {
+                        rendered = interpolated
+                        usedMotionInterpolation = true
+                    } else {
+                        usedMotionFallback = true
+                        rendered = image.applyingFilter("CIDissolveTransition", parameters: [
+                            kCIInputTargetImageKey: nextImage, kCIInputTimeKey: fraction
+                        ])
+                    }
+                } else if let nextImage {
+                    rendered = image.applyingFilter("CIDissolveTransition", parameters: [
+                        kCIInputTargetImageKey: nextImage, kCIInputTimeKey: fraction
                     ])
-                } ?? image
+                } else {
+                    rendered = image
+                }
                 var buffer: CVPixelBuffer?
                 guard CVPixelBufferCreate(kCFAllocatorDefault, Int(size.width), Int(size.height),
                                           kCVPixelFormatType_32BGRA,
@@ -184,6 +255,8 @@ actor TimelapseMovieRenderer {
                                colorSpace: CGColorSpaceCreateDeviceRGB())
                 try await writer.append(TimelapseFrame(pixelBuffer: buffer))
             }
+            if usedMotionInterpolation { blendedMotionTransitions += 1 }
+            if usedMotionFallback { motionFallbackTransitions += 1 }
             count += 1
             await progress(min(Double(count) / sourceDuration, 1))
             guard let next else { break }
@@ -206,6 +279,76 @@ actor TimelapseMovieRenderer {
         } else {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         }
-        return TimelapseRenderReport(sourceFrameCount: count, blendedMotionTransitions: 0)
+        return TimelapseRenderReport(
+            sourceFrameCount: count,
+            blendedMotionTransitions: blendedMotionTransitions,
+            motionFallbackTransitions: motionFallbackTransitions
+        )
+    }
+
+    private func makeOpticalFlow(from first: CIImage, to second: CIImage) throws -> (
+        image: CIImage, scaleX: CGFloat, scaleY: CGFloat
+    ) {
+        let extent = first.extent.integral
+        guard extent.width > 0, extent.height > 0, second.extent.integral == extent else {
+            throw TimelapseError.invalidSource
+        }
+        let maximumDimension: CGFloat = 960
+        let analysisScale = min(1, maximumDimension / max(extent.width, extent.height))
+        let analysisSize = CGSize(
+            width: max(1, (extent.width * analysisScale).rounded()),
+            height: max(1, (extent.height * analysisScale).rounded())
+        )
+        let transform = CGAffineTransform(scaleX: analysisSize.width / extent.width,
+                                          y: analysisSize.height / extent.height)
+        let analysisBounds = CGRect(origin: .zero, size: analysisSize)
+        guard let firstImage = context.createCGImage(
+            first.transformed(by: transform).cropped(to: analysisBounds), from: analysisBounds
+        ), let secondImage = context.createCGImage(
+            second.transformed(by: transform).cropped(to: analysisBounds), from: analysisBounds
+        ) else { throw TimelapseError.invalidSource }
+
+        func flowImage(from source: CGImage, to target: CGImage) throws -> CIImage {
+            let request = VNGenerateOpticalFlowRequest(targetedCGImage: target)
+            request.computationAccuracy = .high
+            request.outputPixelFormat = kCVPixelFormatType_TwoComponent32Float
+            try VNImageRequestHandler(cgImage: source, options: [:]).perform([request])
+            guard let buffer = request.results?.first?.pixelBuffer else { throw TimelapseError.invalidSource }
+            let width = CVPixelBufferGetWidth(buffer)
+            let height = CVPixelBufferGetHeight(buffer)
+            guard width > 0, height > 0,
+                  CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_TwoComponent32Float,
+                  CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else {
+                throw TimelapseError.invalidSource
+            }
+            defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+            guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw TimelapseError.invalidSource }
+            let input = base.assumingMemoryBound(to: Float.self)
+            let inputRowStride = CVPixelBufferGetBytesPerRow(buffer) / MemoryLayout<Float>.size
+            var rgba = [Float](repeating: 0, count: width * height * 4)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let inputIndex = y * inputRowStride + x * 2
+                    let outputIndex = (y * width + x) * 4
+                    rgba[outputIndex] = input[inputIndex]
+                    rgba[outputIndex + 1] = input[inputIndex + 1]
+                    rgba[outputIndex + 3] = 1
+                }
+            }
+            let data = rgba.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
+            let flowScale = CGAffineTransform(scaleX: extent.width / CGFloat(width),
+                                               y: extent.height / CGFloat(height))
+            return CIImage(
+                bitmapData: data,
+                bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+                size: CGSize(width: width, height: height),
+                format: .RGBAf,
+                colorSpace: nil
+            ).transformed(by: flowScale).cropped(to: extent)
+        }
+
+        return (try flowImage(from: firstImage, to: secondImage),
+                extent.width / analysisSize.width,
+                extent.height / analysisSize.height)
     }
 }
