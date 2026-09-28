@@ -270,10 +270,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     init(
         projectStore: RecordingProjectStore,
-        transcriber: any ProjectTranscribing = WhisperProjectTranscriber()
+        transcriber: any ProjectTranscribing = WhisperProjectTranscriber(),
+        initialState: RecordingState = .preparing
     ) {
         self.projectStore = projectStore
         self.transcriber = transcriber
+        state = initialState
         super.init()
     }
 

@@ -48,6 +48,58 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.settings.frameDuration, 0.4)
     }
 
+    func testTimelapseCoordinatorCapturesAndFinalizesASilentSelectedFrameProject() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+        let settings = TimelapseSettings(captureInterval: 1, frameDuration: 0.2)
+        let request = archiveCaptureRequest(destination: root, timelapse: settings, presentation: presentation)
+        let store = RecordingProjectStore(baseDirectory: root)
+        let coordinator = RecordingCoordinator(projectStore: store, initialState: .ready)
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &pixelBuffer),
+            kCVReturnSuccess
+        )
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(pixelBuffer))
+        var capturedContexts: [TimelapseCaptureContext] = []
+
+        await coordinator.startRecording(request, timelapseFrameProvider: { context in
+            capturedContexts.append(context)
+            return frame
+        })
+
+        XCTAssertEqual(coordinator.state, .recording)
+        XCTAssertEqual(coordinator.timelapseFrameCount, 1)
+        XCTAssertEqual(capturedContexts.first?.displayID, 9)
+        let activeRequest = try XCTUnwrap(coordinator.activeCaptureRequest)
+        XCTAssertFalse(activeRequest.audio.capturesMicrophone)
+        XCTAssertFalse(activeRequest.audio.capturesSystemAudio)
+        await coordinator.stopRecording()
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+        while coordinator.jobs.first(where: { $0.kind == .finalization })?.state != .completed,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .finalization }))
+        XCTAssertEqual(job.state, .completed)
+        let projects = await store.discoverProjects()
+        let project = try XCTUnwrap(projects.first)
+        XCTAssertEqual(project.lifecycle, .finalized)
+        XCTAssertEqual(Set(project.tracks.map(\.kind)), [.timelapse, .program])
+        XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.report.sourceFrameCount, 1)
+        let programTrack = try XCTUnwrap(project.tracks.first(where: { $0.kind == .program }))
+        let programURL = project.rootURL.appending(path: programTrack.relativePath)
+        let program = AVURLAsset(url: programURL)
+        let audioTracks = try await program.loadTracks(withMediaType: .audio)
+        XCTAssertTrue(audioTracks.isEmpty)
+    }
+
     private struct StubTranscriber: ProjectTranscribing {
         func transcribe(
             _ recipe: ProjectTranscriptionRecipe,
@@ -1182,7 +1234,11 @@ final class RecordingProjectStoreTests: XCTestCase {
         return packageURL
     }
 
-    private func archiveCaptureRequest(destination: URL, timelapse: TimelapseSettings? = nil) -> CaptureRequest {
+    private func archiveCaptureRequest(
+        destination: URL,
+        timelapse: TimelapseSettings? = nil,
+        presentation: CapturePresentationSnapshot = .default
+    ) -> CaptureRequest {
         CaptureRequest(
             id: UUID(),
             createdAt: Date(timeIntervalSinceReferenceDate: 42),
@@ -1210,7 +1266,7 @@ final class RecordingProjectStoreTests: XCTestCase {
                 programResolutionTarget: "1920x1080",
                 cursorRendering: .composited
             ),
-            presentation: .default,
+            presentation: presentation,
             storage: StorageCaptureSnapshot(
                 destinationURL: destination,
                 destinationBookmarkID: "test-destination",
