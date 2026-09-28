@@ -26,7 +26,7 @@ enum LiveSceneSnapshotError: LocalizedError, Equatable {
 }
 
 struct LiveSceneSnapshotSources: @unchecked Sendable {
-    let screen: CGImage
+    let screen: CGImage?
     let camera: CVPixelBuffer?
 }
 
@@ -42,9 +42,14 @@ actor LiveSceneSnapshotExporter {
         shortcutLabel: String? = nil,
         to destinationURL: URL
     ) throws {
-        let output = try render(sources: sources, presentation: presentation, screenFraming: screenFraming,
-                                cursor: cursor, shortcutLabel: shortcutLabel).pixelBuffer
-        let canvas = CGRect(origin: .zero, size: presentation.canvas.pixelSize)
+        let frame = try render(sources: sources, presentation: presentation, screenFraming: screenFraming,
+                               cursor: cursor, shortcutLabel: shortcutLabel)
+        try export(frame: frame, to: destinationURL)
+    }
+
+    func export(frame: TimelapseFrame, to destinationURL: URL) throws {
+        let output = frame.pixelBuffer
+        let canvas = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(output), height: CVPixelBufferGetHeight(output))
         guard let rendered = imageContext.createCGImage(CIImage(cvPixelBuffer: output), from: canvas) else {
             throw LiveSceneSnapshotError.renderedImageUnavailable
         }
@@ -78,7 +83,7 @@ actor LiveSceneSnapshotExporter {
             throw LiveSceneSnapshotError.outputBufferUnavailable
         }
         compositor.render(
-            screen: CIImage(cgImage: sources.screen), camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
+            screen: sources.screen.map(CIImage.init(cgImage:)), camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
             presentation: presentation, screenFraming: screenFraming, cursor: cursor,
             shortcutLabel: shortcutLabel, to: output
         )

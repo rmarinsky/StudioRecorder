@@ -369,7 +369,7 @@ struct StudioDraft: Equatable {
                 excludesStudioRecorderAudio: excludeStudioRecorderAudio
             ),
             profile: CaptureProfileSnapshot(
-                frameRate: frameRate,
+                frameRate: timelapse == nil ? frameRate : 30,
                 codecPolicy: codecPolicy,
                 includeCursor: includeCursor,
                 excludeStudioRecorder: excludeStudioRecorder,

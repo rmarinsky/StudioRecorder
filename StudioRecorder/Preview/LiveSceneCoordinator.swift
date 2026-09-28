@@ -58,6 +58,7 @@ private struct CameraFrameState {
     var outputID: ObjectIdentifier?
     var pixelBuffer: CVPixelBuffer?
     var generation: UInt64 = 0
+    var receivedAt: TimeInterval?
 }
 
 private struct LiveScreenStreamContext: Sendable {
@@ -714,19 +715,30 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         shortcutLabel: String? = nil,
         to destinationURL: URL
     ) async throws {
-        guard let previewedDisplay else {
-            throw LiveSceneSnapshotCaptureError.screenUnavailable
-        }
+        let frame = try await captureProgramFrame(context: TimelapseCaptureContext(
+            presentation: presentation, displayID: previewedDisplay?.displayID,
+            capturesCamera: capturesCamera, includesCursor: includesCursor,
+            excludesStudioRecorder: excludesStudioRecorder, shortcutLabel: shortcutLabel
+        ))
+        try await snapshotExporter.export(frame: frame, to: destinationURL)
+    }
+
+    func captureProgramFrame(context: TimelapseCaptureContext) async throws -> TimelapseFrame {
+        let presentation = context.presentation
+        var screen: CGImage?
+        var selectedDisplay: SCDisplay?
+        if presentation.screen.isVisible {
         let content = try await SCShareableContent.current
-        guard let display = content.displays.first(where: { $0.displayID == previewedDisplay.displayID }) else {
+        guard let display = content.displays.first(where: { $0.displayID == context.displayID }) else {
             throw LiveSceneSnapshotCaptureError.screenUnavailable
         }
+        selectedDisplay = display
         let ownApplication = content.applications.first {
             $0.processID == ProcessInfo.processInfo.processIdentifier
         }
         let filter = SCContentFilter(
             display: display,
-            excludingApplications: excludesStudioRecorder ? (ownApplication.map { [$0] } ?? []) : [],
+            excludingApplications: context.excludesStudioRecorder ? (ownApplication.map { [$0] } ?? []) : [],
             exceptingWindows: []
         )
         let configuration = SCStreamConfiguration()
@@ -734,27 +746,42 @@ final class LiveSceneCoordinator: NSObject, ObservableObject {
         configuration.height = display.height
         configuration.showsCursor = false
         configuration.capturesAudio = false
-        let screen = try await SCScreenshotManager.captureImage(
+        screen = try await SCScreenshotManager.captureImage(
             contentFilter: filter,
             configuration: configuration
         )
+        }
+        if context.capturesCamera, presentation.camera.isVisible {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while ContinuousClock.now < deadline {
+                let fresh = cameraFrameStateLock.withLock {
+                    cameraFrameState.pixelBuffer != nil
+                        && cameraFrameState.receivedAt.map { ProcessInfo.processInfo.systemUptime - $0 < 2 } == true
+                }
+                if fresh { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        let freshCamera = cameraFrameStateLock.withLock {
+            cameraFrameState.receivedAt.map { ProcessInfo.processInfo.systemUptime - $0 < 2 } == true
+                ? cameraFrameState.pixelBuffer : nil
+        }
         let camera = try LiveSceneSnapshotCaptureError.cameraFrame(
-            capturesCamera: capturesCamera,
+            capturesCamera: context.capturesCamera,
             cameraIsVisible: presentation.camera.isVisible,
-            availableFrame: cameraFrameStateLock.withLock { cameraFrameState.pixelBuffer }
+            availableFrame: freshCamera
         )
-        let cursor = includesCursor ? contentAlignedCursor(on: display) : nil
+        let cursor = context.includesCursor ? selectedDisplay.flatMap { contentAlignedCursor(on: $0) } : nil
         let framing = effectiveSnapshotFraming(
             presentation: presentation,
             cursor: cursor
         )
-        try await snapshotExporter.export(
+        return try await snapshotExporter.render(
             sources: LiveSceneSnapshotSources(screen: screen, camera: camera),
             presentation: presentation,
             screenFraming: framing,
             cursor: cursor,
-            shortcutLabel: shortcutLabel,
-            to: destinationURL
+            shortcutLabel: context.shortcutLabel
         )
     }
 
@@ -939,6 +966,7 @@ extension LiveSceneCoordinator: AVCaptureVideoDataOutputSampleBufferDelegate {
         let acceptedGeneration = cameraFrameStateLock.withLock { () -> UInt64? in
             guard cameraFrameState.outputID == outputID else { return nil }
             cameraFrameState.pixelBuffer = pixelBuffer
+            cameraFrameState.receivedAt = sampleReceivedAt
             return cameraFrameState.generation
         }
         guard let acceptedGeneration else { return }

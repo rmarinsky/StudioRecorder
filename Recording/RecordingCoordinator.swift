@@ -189,6 +189,7 @@ private final class RecordingAudioStemSessionState: @unchecked Sendable {
 @MainActor
 final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var state: RecordingState = .preparing
+    @Published private(set) var timelapseFrameCount = 0
     @Published private(set) var availableDisplays: [AvailableDisplay] = []
     @Published private(set) var availableMicrophones: [AvailableMicrophone] = []
     @Published private(set) var availableCameras: [AvailableCamera] = []
@@ -224,6 +225,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
+    private var timelapseSession: TimelapseCaptureSession?
     nonisolated private let audioStemSession = RecordingAudioStemSessionState()
     private var audioStemFailureReported = false
     private var durationTask: Task<Void, Never>?
@@ -385,6 +387,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
         try await projectStore.restorePauseEdits(from: project)
         try projectStore.recoverReadableTracks(from: project)
+        if project.timelapse != nil, let manifestID = project.identity.manifestID {
+            let recovered = try projectStore.openProject(at: project.rootURL, expectedID: manifestID)
+            try jobStore.save(RecordingJob(projectID: recovered.id, kind: .finalization), in: recovered)
+        }
         await refreshProjects()
     }
 
@@ -397,12 +403,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
-    func startRecording(_ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil) async {
+    func startRecording(
+        _ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil,
+        timelapseFrameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)? = nil
+    ) async {
         guard state == .ready else { return }
         let startAttempt = UUID()
         activeStartAttempt = startAttempt
         state = .preparing
         terminalFailure = nil
+        timelapseFrameCount = 0
         finalizationWarning = nil
         finalizationProgress = nil
         recordingStartedAt = nil
@@ -425,8 +435,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     CGSize(width: $0.pixelWidth, height: $0.pixelHeight)
                 },
                 canvasSize: request.presentation.canvas.pixelSize,
-                frameRate: request.profile.frameRate,
-                capturesCamera: request.camera != nil
+                frameRate: request.timelapse == nil ? request.profile.frameRate : 1,
+                capturesCamera: request.camera != nil && request.timelapse == nil
             )
             if let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
                !RecordingStoragePolicy.canStart(
@@ -441,6 +451,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 )
                 return
             }
+        }
+
+        if request.timelapse != nil {
+            await startTimelapse(request, attempt: startAttempt, frameProvider: timelapseFrameProvider)
+            return
         }
 
         do {
@@ -613,6 +628,82 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func startTimelapse(
+        _ request: CaptureRequest, attempt: UUID,
+        frameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)?
+    ) async {
+        do {
+            guard let settings = request.timelapse, let frameProvider else { throw TimelapseError.invalidSource }
+            let project = try projectStore.createProject(request: request)
+            activeProject = project
+            activeCaptureRequest = request
+            studioSceneTimeline = StudioSceneTimeline(initialPresentation: request.presentation,
+                                                     displayID: request.profile.programDisplayID)
+            recordingStartedAt = ProcessInfo.processInfo.systemUptime
+            recordingStartedHostTime = Self.currentHostTime
+            guard let outputURL = projectStore.rawTrackURL(for: "timelapse", in: project) else {
+                throw TimelapseError.invalidSource
+            }
+            let session = try TimelapseCaptureSession(
+                outputURL: outputURL, canvasSize: request.presentation.canvas.pixelSize,
+                settings: settings, codecPolicy: request.profile.codecPolicy,
+                frameProvider: { [weak self] in
+                    guard let self, let startedAt = recordingStartedAt else { throw CancellationError() }
+                    if let destination = request.storage.destinationURL,
+                       let capacity = RecordingStoragePolicy.availableCapacity(at: destination),
+                       RecordingStoragePolicy.shouldStop(availableCapacity: capacity) {
+                        throw TimelapseError.writerFailed("Not enough free disk space.")
+                    }
+                    let sourceTime = ProcessInfo.processInfo.systemUptime - startedAt
+                    return try await frameProvider(TimelapseCaptureContext(
+                        presentation: studioSceneTimeline?.presentation(at: sourceTime) ?? request.presentation,
+                        displayID: studioSceneTimeline?.displayID(at: sourceTime)
+                            ?? request.profile.programDisplayID ?? request.displaySources.first?.id,
+                        capturesCamera: request.camera != nil,
+                        includesCursor: request.profile.includeCursor,
+                        excludesStudioRecorder: request.profile.excludeStudioRecorder,
+                        shortcutLabel: safeShortcutTimeline.activeLabel(at: sourceTime)
+                    ))
+                },
+                onFrame: { [weak self] count in self?.timelapseFrameCount = count },
+                onFailure: { [weak self] message in
+                    Task { @MainActor in await self?.stopTimelapse(reason: message) }
+                }
+            )
+            timelapseSession = session
+            try await session.start()
+            guard canContinueRecordingStart(attempt) else { return }
+            try projectStore.markStarted(trackID: "timelapse", in: project)
+            startDurationTimer()
+            state = .recording
+            activeStartAttempt = nil
+        } catch {
+            await stopTimelapse(reason: error.localizedDescription)
+        }
+    }
+
+    private func stopTimelapse(reason: String? = nil) async {
+        guard !isTearingDown else { return }
+        isTearingDown = true
+        activeStartAttempt = nil
+        state = .stopping
+        durationTask?.cancel()
+        durationTask = nil
+        do {
+            guard let project = activeProject, let session = timelapseSession else { throw TimelapseError.invalidSource }
+            _ = try await session.stop()
+            try projectStore.markFinished(trackID: "timelapse", in: project)
+            if let reason { throw TimelapseError.writerFailed(reason) }
+            try jobStore.save(RecordingJob(projectID: project.id, kind: .finalization), in: project)
+            clearCaptureState()
+            state = .ready
+            isTearingDown = false
+            await refreshProjects()
+        } catch {
+            await completeInterruptedTeardown(reason: reason ?? error.localizedDescription)
+        }
+    }
+
     private func canContinueRecordingStart(_ attempt: UUID) -> Bool {
         RecordingStartContinuationPolicy.canContinue(
             attempt: attempt, activeAttempt: activeStartAttempt,
@@ -622,6 +713,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func pauseRecording() {
         guard state == .recording else { return }
+        timelapseSession?.pause()
         let timestamp = ProcessInfo.processInfo.systemUptime
         guard recordingPauseTimeline.pause(at: timestamp) else { return }
         if let activeProject {
@@ -644,6 +736,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func resumeRecording() {
         guard state == .paused else { return }
+        timelapseSession?.resume()
         guard recordingPauseTimeline.resume(at: ProcessInfo.processInfo.systemUptime) else { return }
         if let activeProject {
             do {
@@ -675,6 +768,10 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
     func stopRecording() async {
         guard state == .recording || state == .paused else { return }
+        if timelapseSession != nil {
+            await stopTimelapse()
+            return
+        }
         isTearingDown = true
         state = .stopping
         updateFinalizationProgress(0.04, "Stopping capture sources…")
@@ -1543,6 +1640,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         cursorSynchronizer.reset()
         captures.removeAll()
         cameraRecorder = nil
+        timelapseSession = nil
         audioStemSession.abortAndClear()
         audioStemFailureReported = false
         startedOutputIDs.removeAll()

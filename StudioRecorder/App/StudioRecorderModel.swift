@@ -190,6 +190,7 @@ enum AppIntent: Equatable {
     case setDraftCapturesSystemAudio(Bool)
     case setDraftMicrophoneDeviceID(String?)
     case setDraftFrameRate(Int)
+    case setDraftTimelapse(TimelapseSettings?)
     case setDraftCodecPolicy(RecordingCodecPolicy)
     case setDraftIncludeCursor(Bool)
     case setDraftExcludeStudioRecorder(Bool)
@@ -276,6 +277,7 @@ struct StudioRecorderSnapshot: Equatable {
     var studioDraft: StudioDraft?
     var activeCaptureRequest: CaptureRequest?
     var recordedDuration: TimeInterval = 0
+    var timelapseFrameCount = 0
     var finalizationWarning: String?
     var finalizationProgress: RecordingFinalizationProgress?
     var sourceHealth = LiveSourceHealthSnapshot.empty
@@ -291,7 +293,10 @@ struct StudioRecorderSnapshot: Equatable {
         }
     }
     var requiredCapturePermission: CapturePermission? {
-        permissionSnapshot.requiredPermission(capturesMicrophone: capturesMicrophone, capturesCamera: capturesCamera)
+        permissionSnapshot.requiredPermission(
+            capturesMicrophone: capturesMicrophone && studioDraft?.timelapse == nil,
+            capturesCamera: capturesCamera
+        )
     }
     var showsCaptureRepair: Bool {
         guard requiredCapturePermission != nil else { return false }
@@ -459,6 +464,7 @@ final class StudioRecorderModel: ObservableObject {
     private let preferencesStore: PreferencesStore
     private var coordinatorObservation: AnyCancellable?
     private var cameraPreviewSession: CameraSessionReference?
+    private var timelapseFrameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)?
     private var nextSceneSwitchSequence: UInt64 = 0
 
     convenience init() {
@@ -557,6 +563,16 @@ final class StudioRecorderModel: ObservableObject {
 
     func useCameraPreviewSessionForRecording(_ session: AVCaptureSession?) {
         cameraPreviewSession = session.map(CameraSessionReference.init(session:))
+    }
+
+    func useTimelapseFrameProvider(_ provider: @escaping @MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame) {
+        timelapseFrameProvider = provider
+    }
+
+    func enqueueTimelapseRender(projectID: UUID, settings: TimelapseSettings) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.enqueueTimelapseRender(projectID: projectID, settings: settings)
+        synchronizeFromCoordinator()
     }
 
     func recordSafeShortcut(_ label: String) {
@@ -738,6 +754,11 @@ final class StudioRecorderModel: ObservableObject {
                 frameRate,
                 for: snapshot.studioDraft?.presentation.canvas ?? CaptureCanvasSnapshot()
             )
+            result = .draftChanged
+
+        case .setDraftTimelapse(let settings):
+            guard canEditDraft else { return .ignored }
+            snapshot.studioDraft?.timelapse = settings?.validated()
             result = .draftChanged
 
         case .setDraftCodecPolicy(let policy):
@@ -1030,8 +1051,10 @@ final class StudioRecorderModel: ObservableObject {
         switch result {
         case .recordingStartRequested(let request):
             let cameraPreviewSession = cameraPreviewSession
+            let timelapseFrameProvider = timelapseFrameProvider
             Task { @MainActor [weak self] in
-                await coordinator.startRecording(request, cameraPreviewSession: cameraPreviewSession)
+                await coordinator.startRecording(request, cameraPreviewSession: cameraPreviewSession,
+                                                 timelapseFrameProvider: timelapseFrameProvider)
                 self?.cameraPreviewSession = nil
                 self?.synchronizeFromCoordinator()
             }
@@ -1072,6 +1095,7 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.finalizationWarning = coordinator.finalizationWarning
         snapshot.finalizationProgress = coordinator.finalizationProgress
         snapshot.recordedDuration = coordinator.recordedDuration
+        snapshot.timelapseFrameCount = coordinator.timelapseFrameCount
         snapshot.sourceHealth = coordinator.sourceHealth
         snapshot.sourceRecoveryState = coordinator.sourceRecoveryState
 

@@ -457,6 +457,9 @@ struct StudioRecorderRootView: View {
     private var lifecycleRoot: some View {
         presentedRoot
         .task {
+            model.useTimelapseFrameProvider { [liveScene] context in
+                try await liveScene.captureProgramFrame(context: context)
+            }
             await model.launch()
             await managedYouTube.reconcile(clientID: streamingSettings.oauthClientID)
             if managedYouTube.isAuthorized, managedYouTube.pendingSession == nil {
@@ -558,6 +561,9 @@ struct StudioRecorderRootView: View {
             } else {
                 persistActiveProfileConfiguration(from: draft)
             }
+        }
+        .onChange(of: snapshot.studioDraft?.timelapse != nil) { _, isTimelapse in
+            if isTimelapse { deliveryMode = .record }
         }
         .onChange(of: deliveryMode) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.serverURL) { _, _ in invalidateStreamPreflight() }
@@ -924,14 +930,25 @@ struct StudioRecorderRootView: View {
     private var projectsView: some View {
         Group {
             if let selectedProject = snapshot.projects.first(where: { $0.id == snapshot.selectedProjectID }) {
-                ProjectDetailView(
-                    project: selectedProject,
-                    onClose: { model.send(.closeProject) },
-                    exportRequest: editorExportRequest,
-                    queueExport: { try await model.enqueueExport($0) },
-                    jobs: snapshot.jobs,
-                    queueTranscription: { try await model.enqueueTranscription($0) }
-                )
+                Group {
+                    if selectedProject.timelapse != nil {
+                        TimelapseProjectView(
+                            project: selectedProject,
+                            jobs: snapshot.jobs,
+                            onClose: { model.send(.closeProject) },
+                            enqueueRender: { try await model.enqueueTimelapseRender(projectID: $0, settings: $1) }
+                        )
+                    } else {
+                        ProjectDetailView(
+                            project: selectedProject,
+                            onClose: { model.send(.closeProject) },
+                            exportRequest: editorExportRequest,
+                            queueExport: { try await model.enqueueExport($0) },
+                            jobs: snapshot.jobs,
+                            queueTranscription: { try await model.enqueueTranscription($0) }
+                        )
+                    }
+                }
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {
                 VStack(spacing: 20) {
@@ -1375,7 +1392,12 @@ struct StudioRecorderRootView: View {
                     onRequestShortcutMonitoringAccess: shortcutMonitor.requestGlobalAccess,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                         || isPreparingProgram,
-                    isPresentationLocked: isPresentationEditingLocked
+                    isPresentationLocked: isPresentationEditingLocked,
+                    timelapse: Binding(
+                        get: { snapshot.studioDraft?.timelapse },
+                        set: { model.send(.setDraftTimelapse($0)) }
+                    ),
+                    deliveryMode: $deliveryMode
                 )
                 .frame(width: 280)
                 .background(shellPanel)
@@ -1392,7 +1414,8 @@ struct StudioRecorderRootView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 286)
-                    .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram)
+                    .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram
+                              || snapshot.studioDraft?.timelapse != nil)
                     if deliveryMode.includesStreaming, !streaming.state.isActive {
                         streamDestinationControls
                     }
@@ -1517,10 +1540,17 @@ struct StudioRecorderRootView: View {
                     .disabled(snapshot.isCaptureCommandInFlight)
                     .help("Pause or resume local recording (⇧⌘P)")
 
-                    Text(formattedRecordedDuration)
-                        .font(.body.monospacedDigit().weight(.medium))
-                        .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
-                        .accessibilityLabel("Recorded duration \(formattedRecordedDuration)")
+                    if snapshot.activeCaptureRequest?.timelapse != nil {
+                        Label("\(snapshot.timelapseFrameCount) frames", systemImage: "timelapse")
+                            .font(.body.monospacedDigit().weight(.medium))
+                            .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
+                            .accessibilityLabel("\(snapshot.timelapseFrameCount) selected timelapse frames")
+                    } else {
+                        Text(formattedRecordedDuration)
+                            .font(.body.monospacedDigit().weight(.medium))
+                            .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
+                            .accessibilityLabel("Recorded duration \(formattedRecordedDuration)")
+                    }
                 }
                 Button(action: toggleDelivery) {
                     Label(deliveryButtonTitle, systemImage: isDeliveryActive ? "stop.fill" : "record.circle.fill")
@@ -3107,6 +3137,8 @@ private struct StudioInspector: View {
     let onRequestShortcutMonitoringAccess: () -> Void
     let isLocked: Bool
     let isPresentationLocked: Bool
+    @Binding var timelapse: TimelapseSettings?
+    @Binding var deliveryMode: StreamDeliveryMode
     @State private var activeSourceSettings: SourceSettings?
     @State private var activeQuickSettings: QuickSettings?
     @State private var overlayImportError: String?
@@ -3395,6 +3427,26 @@ private struct StudioInspector: View {
 
     @ViewBuilder
     private var captureControls: some View {
+        Toggle("Timelapse recording", isOn: Binding(
+            get: { timelapse != nil },
+            set: { enabled in
+                timelapse = enabled ? (timelapse ?? TimelapseSettings()) : nil
+                if enabled { deliveryMode = .record }
+            }
+        ))
+        .disabled(isLocked)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        if let _ = timelapse {
+            TimelapseSettingsControls(
+                settings: Binding(
+                    get: { timelapse ?? TimelapseSettings() },
+                    set: { timelapse = $0.validated() }
+                ),
+                captureIntervalEditable: true,
+                isDisabled: isLocked
+            )
+        } else {
         Picker("Frame rate", selection: $frameRate) {
             ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
                 Text("\(frameRate) fps").tag(frameRate)
@@ -3449,6 +3501,7 @@ private struct StudioInspector: View {
         Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
             .disabled(isLocked)
             .padding(.horizontal, 14).padding(.vertical, 8)
+        }
     }
 
     private var resilienceControls: some View {
@@ -3635,22 +3688,28 @@ private struct StudioInspector: View {
                 }
 
             case .microphone:
-                Toggle("Use microphone", isOn: $capturesMicrophone)
-                    .disabled(isLocked)
-                if capturesMicrophone {
-                    Picker("Device", selection: $microphoneDeviceID) {
-                        ForEach(microphones) { microphone in
-                            Text(microphone.name).tag(Optional(microphone.id))
+                if timelapse != nil {
+                    Label("Audio is disabled in timelapse mode.", systemImage: "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Toggle("Use microphone", isOn: $capturesMicrophone)
+                        .disabled(isLocked)
+                    if capturesMicrophone {
+                        Picker("Device", selection: $microphoneDeviceID) {
+                            ForEach(microphones) { microphone in
+                                Text(microphone.name).tag(Optional(microphone.id))
+                            }
                         }
+                        .disabled(microphones.isEmpty || isLocked)
+                        microphoneAvailabilityMessage
                     }
-                    .disabled(microphones.isEmpty || isLocked)
-                    microphoneAvailabilityMessage
+                    Divider()
+                    Toggle("Capture system audio", isOn: $capturesSystemAudio)
+                        .disabled(isLocked)
+                    Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
+                        .disabled(isLocked)
                 }
-                Divider()
-                Toggle("Capture system audio", isOn: $capturesSystemAudio)
-                    .disabled(isLocked)
-                Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
-                    .disabled(isLocked)
             }
         }
     }
@@ -3689,14 +3748,15 @@ private struct StudioInspector: View {
     }
 
     private var microphoneSourceNeedsAttention: Bool {
-        guard capturesMicrophone else { return false }
+        guard timelapse == nil, capturesMicrophone else { return false }
         if microphones.isEmpty { return true }
         if case .savedDeviceMissing = microphoneFallback { return true }
         return false
     }
 
     private var audioSourceSummary: String {
-        switch (capturesMicrophone, capturesSystemAudio) {
+        if timelapse != nil { return "Disabled in timelapse" }
+        return switch (capturesMicrophone, capturesSystemAudio) {
         case (true, true): "\(selectedMicrophoneName) + system audio"
         case (true, false): selectedMicrophoneName
         case (false, true): "System audio"

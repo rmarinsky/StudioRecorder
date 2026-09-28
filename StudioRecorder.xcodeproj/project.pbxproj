@@ -64,6 +64,7 @@
 		BF93C761E5B942D57216E719 /* LiveProgramReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DAC799ABBEB02C029FD420 /* LiveProgramReadiness.swift */; };
 		BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */; };
 		C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2897A189300917E718918A9E /* ProjectEditStore.swift */; };
+		C30C66B6AA12BB22344E726F /* TimelapseProjectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 143EA3DCF474C6F2432A5AC9 /* TimelapseProjectView.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
 		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
 		C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */; };
@@ -111,6 +112,7 @@
 		078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveProgramArchiveTests.swift; sourceTree = "<group>"; };
 		08A55ADC6536CD2D7A9808C0 /* LiveSourceHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSourceHealth.swift; sourceTree = "<group>"; };
 		1115B8BE6C8C9D764FE83D18 /* StreamPreflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamPreflight.swift; sourceTree = "<group>"; };
+		143EA3DCF474C6F2432A5AC9 /* TimelapseProjectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelapseProjectView.swift; sourceTree = "<group>"; };
 		158EBFAEFC92DB31BAD3CA23 /* ProjectQuickEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectQuickEditorView.swift; sourceTree = "<group>"; };
 		1645708A19AD6B64C39DE697 /* CameraTrackRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTrackRecorder.swift; sourceTree = "<group>"; };
 		17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSceneCoordinator.swift; sourceTree = "<group>"; };
@@ -201,6 +203,7 @@
 				96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */,
 				43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */,
 				4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */,
+				143EA3DCF474C6F2432A5AC9 /* TimelapseProjectView.swift */,
 				BBEFC6A40571CF75663E18D6 /* YouTubeAuthorizationDisclosureView.swift */,
 			);
 			path = UI;
@@ -533,6 +536,7 @@
 				DF9DC8D6FF74179A58B7328F /* StudioScene.swift in Sources */,
 				A909436C752F0C7BE0BAE688 /* Timelapse.swift in Sources */,
 				9B6AA01DD51D9F4E4F226586 /* TimelapseCaptureSession.swift in Sources */,
+				C30C66B6AA12BB22344E726F /* TimelapseProjectView.swift in Sources */,
 				7ED705E620EC9E7D80E13E79 /* YouTubeAuthorizationDisclosureView.swift in Sources */,
 				87A11B815C0786F85A80ED50 /* YouTubeManagedSessionCoordinator.swift in Sources */,
 				9C2CD86969C1D59EDADA492A /* YouTubeManagedStreaming.swift in Sources */,
