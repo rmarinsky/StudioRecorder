@@ -757,6 +757,19 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
+    func enqueueTimelapseRender(projectID: UUID, settings: TimelapseSettings) async throws {
+        guard let snapshot = projects.first(where: { $0.identity.manifestID == projectID }),
+              snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered,
+              !jobs.contains(where: { $0.projectID == projectID && $0.kind == .timelapseRender && ($0.state == .queued || $0.state == .running) }) else {
+            throw RecordingJobStoreError.invalidJob
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: projectID)
+        let job = RecordingJob(projectID: projectID, kind: .timelapseRender)
+        try jobStore.saveTimelapse(settings, for: job, in: project)
+        try jobStore.save(job, in: project)
+        await refreshProjects()
+    }
+
     func enqueueTranscription(_ recipe: ProjectTranscriptionRecipe) async throws {
         guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
               snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
@@ -781,7 +794,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
               activeTranscriptionJobID == nil,
               let job = RecordingJobQueuePolicy.nextHeavyJob(
                 in: jobs, blockedIDs: blockedFinalizationJobIDs
-              ), job.kind == .finalization else { return }
+              ), job.kind == .finalization || job.kind == .timelapseRender else { return }
         activeFinalizationJobID = job.id
         Task(priority: .background) { [weak self] in
             await self?.runFinalization(job)
@@ -803,6 +816,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             job.updatedAt = Date()
             try persistJob(job, in: project)
 
+            if job.kind == .timelapseRender {
+                let settings = try jobStore.loadTimelapse(for: job, in: project)
+                try await retentionFinalizer.renderTimelapse(
+                    project: project, settings: settings, projectStore: projectStore,
+                    progress: { [weak self, project] fraction, phase in
+                        self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
+                    }
+                )
+            } else {
             let editDocument = try await projectEditStore.load(
                 from: project.rootURL, expectedProjectID: project.id
             )
@@ -820,6 +842,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
                 }
             )
+            }
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
             job.state = .completed
             job.stage = "Completed"

@@ -1716,6 +1716,8 @@ struct ProjectDetailView: View {
             return "Camera track"
         case .program:
             return "Program movie"
+        case .timelapse:
+            return "Selected timelapse frames"
         case .screen:
             guard let displayID = track.displayID else { return "Screen track" }
             return project.sources.first(where: { $0.displayID == displayID })?.name ?? "Display \(displayID)"

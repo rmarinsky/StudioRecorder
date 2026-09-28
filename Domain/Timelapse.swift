@@ -11,6 +11,21 @@ struct TimelapseRenderReport: Codable, Equatable, Sendable {
     let blendedMotionTransitions: Int
 }
 
+struct TimelapseRenderDocument: Codable, Sendable {
+    let settings: TimelapseSettings
+    let report: TimelapseRenderReport
+
+    static func load(in rootURL: URL) throws -> Self? {
+        let url = rootURL.appending(path: "timelapse-render.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+    }
+
+    func save(in rootURL: URL) throws {
+        try JSONEncoder().encode(self).write(to: rootURL.appending(path: "timelapse-render.json"), options: .atomic)
+    }
+}
+
 enum TimelapseError: LocalizedError {
     case invalidSource
     case frameSizeMismatch
@@ -105,7 +120,7 @@ actor TimelapseMovieRenderer {
         settings: TimelapseSettings,
         codecPolicy: RecordingCodecPolicy = .h264,
         to destinationURL: URL,
-        progress: @Sendable (Double) -> Void = { _ in }
+        progress: @MainActor @Sendable (Double) -> Void = { _ in }
     ) async throws -> TimelapseRenderReport {
         let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
         let destination = destinationURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -170,7 +185,7 @@ actor TimelapseMovieRenderer {
                 try await writer.append(TimelapseFrame(pixelBuffer: buffer))
             }
             count += 1
-            progress(min(Double(count) / sourceDuration, 1))
+            await progress(min(Double(count) / sourceDuration, 1))
             guard let next else { break }
             current = next
         }

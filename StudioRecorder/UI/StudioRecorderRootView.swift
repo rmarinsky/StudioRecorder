@@ -1818,6 +1818,7 @@ struct StudioRecorderRootView: View {
         case .camera: "Camera"
         case .audio: "System & microphone stems"
         case .program: "Program movie"
+        case .timelapse: "Selected timelapse frames"
         }
     }
 
@@ -1827,6 +1828,7 @@ struct StudioRecorderRootView: View {
         case .camera: "video"
         case .audio: "waveform"
         case .program: "rectangle.inset.filled.and.person.filled"
+        case .timelapse: "timelapse"
         }
     }
 
@@ -3025,6 +3027,7 @@ private struct ProjectRow: View {
             case .finalization: "Finalization"
             case .export: "Export"
             case .transcription: "Transcription"
+            case .timelapseRender: "Timelapse"
             }
             return job.state == .failed ? "\(action) failed" : "\(action) \(job.state.rawValue)"
         }

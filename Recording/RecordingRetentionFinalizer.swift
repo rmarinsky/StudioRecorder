@@ -41,8 +41,12 @@ final class RecordingRetentionFinalizer {
         shortcutTimeline: SafeShortcutTimeline? = nil,
         sceneTimeline: StudioSceneTimeline? = nil,
         editTimeline: ProjectEditTimeline? = nil,
-        progress: @escaping (_ fraction: Double, _ phase: String) -> Void = { _, _ in }
+        progress: @escaping @MainActor @Sendable (_ fraction: Double, _ phase: String) -> Void = { _, _ in }
     ) async throws {
+        if let settings = request.timelapse {
+            try await renderTimelapse(project: project, settings: settings, projectStore: projectStore, progress: progress)
+            return
+        }
         guard request.storage.resolvedRetentionPolicy == .programOnly else {
             progress(0.2, "Closing recording package…")
             try projectStore.close(project)
@@ -166,6 +170,36 @@ final class RecordingRetentionFinalizer {
             try? fileManager.removeItem(at: shortcutTimelineURL)
         }
         progress(1, "Recording saved")
+    }
+
+    func renderTimelapse(
+        project: RecordingProject,
+        settings: TimelapseSettings,
+        projectStore: RecordingProjectStore,
+        progress: @escaping @MainActor @Sendable (_ fraction: Double, _ phase: String) -> Void = { _, _ in }
+    ) async throws {
+        guard let request = project.manifest.captureRequest, let original = request.timelapse,
+              original.captureInterval == settings.captureInterval,
+              let source = project.manifest.tracks?.first(where: { $0.kind == .timelapse }),
+              let sourceURL = projectStore.rawTrackURL(for: source.id, in: project),
+              sourceURL.resolvingSymlinksInPath().path.hasPrefix(project.rootURL.resolvingSymlinksInPath().path + "/raw-tracks/") else {
+            throw TimelapseError.invalidSource
+        }
+        let report = try await TimelapseMovieRenderer().exportMovie(
+            from: sourceURL, settings: settings, codecPolicy: request.profile.codecPolicy,
+            to: project.rootURL.appending(path: Self.programTrack.relativePath),
+            progress: { progress($0 * 0.9, "Rendering timelapse…") }
+        )
+        try TimelapseRenderDocument(settings: settings, report: report).save(in: project.rootURL)
+        if project.manifest.tracks?.contains(Self.programTrack) != true {
+            try projectStore.markPrepared(trackID: Self.programTrack.id, in: project)
+        }
+        try projectStore.markStarted(trackID: Self.programTrack.id, in: project)
+        try projectStore.markFinished(trackID: Self.programTrack.id, in: project)
+        if project.manifest.stoppedAt == nil || project.manifest.tracks?.contains(Self.programTrack) != true {
+            try projectStore.close(project, replacingTracks: [source, Self.programTrack])
+        }
+        progress(1, "Timelapse saved")
     }
 
     private func preferredScreenTrack(

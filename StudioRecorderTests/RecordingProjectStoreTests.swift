@@ -6,6 +6,48 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testTimelapseRetainsSelectedFramesAndRendersANewPaceThroughTheDurableJobQueue() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingProjectStore(baseDirectory: root)
+        let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings())
+        let project = try store.createProject(request: request)
+        XCTAssertEqual(project.manifest.tracks?.map(\.kind), [.timelapse])
+        let sourceURL = try XCTUnwrap(store.rawTrackURL(for: "timelapse", in: project))
+        let writer = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64))
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
+        try await writer.append(frame)
+        try await writer.append(frame)
+        _ = try await writer.finish()
+        try store.markStarted(trackID: "timelapse", in: project)
+        try store.markFinished(trackID: "timelapse", in: project)
+        let immutableSource = try Data(contentsOf: sourceURL)
+        try await RecordingRetentionFinalizer().finalize(
+            project: project, request: request, projectStore: store, cursorTimeline: nil
+        )
+        let snapshots = await store.discoverProjects()
+        let finalized = try XCTUnwrap(snapshots.first)
+        XCTAssertEqual(finalized.lifecycle, .finalized)
+        XCTAssertEqual(finalized.tracks.map(\.kind), [.timelapse, .program])
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueTimelapseRender(projectID: project.id, settings: TimelapseSettings(frameDuration: 0.4))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while coordinator.jobs.contains(where: { $0.kind == .timelapseRender && ($0.state == .queued || $0.state == .running) }),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.kind == .timelapseRender })?.state, .completed)
+        let movie = AVURLAsset(url: project.rootURL.appending(path: "program.mov"))
+        let duration = try await movie.load(.duration).seconds
+        XCTAssertEqual(duration, 0.8, accuracy: 0.02)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), immutableSource)
+        XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.settings.frameDuration, 0.4)
+    }
+
     private struct StubTranscriber: ProjectTranscribing {
         func transcribe(
             _ recipe: ProjectTranscriptionRecipe,
@@ -1140,7 +1182,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         return packageURL
     }
 
-    private func archiveCaptureRequest(destination: URL) -> CaptureRequest {
+    private func archiveCaptureRequest(destination: URL, timelapse: TimelapseSettings? = nil) -> CaptureRequest {
         CaptureRequest(
             id: UUID(),
             createdAt: Date(timeIntervalSinceReferenceDate: 42),
@@ -1154,8 +1196,8 @@ final class RecordingProjectStoreTests: XCTestCase {
                 ),
             ],
             audio: AudioCaptureSnapshot(
-                capturesSystemAudio: true,
-                capturesMicrophone: true,
+                capturesSystemAudio: timelapse == nil,
+                capturesMicrophone: timelapse == nil,
                 microphone: MicrophoneSourceSnapshot(id: "mic", name: "Microphone"),
                 primaryAudioDisplayID: 9,
                 excludesStudioRecorderAudio: true
@@ -1174,7 +1216,8 @@ final class RecordingProjectStoreTests: XCTestCase {
                 destinationBookmarkID: "test-destination",
                 fallbackPath: destination.path,
                 retentionPolicy: .programOnly
-            )
+            ),
+            timelapse: timelapse
         )
     }
 
