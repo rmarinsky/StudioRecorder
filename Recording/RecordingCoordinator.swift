@@ -271,11 +271,11 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     init(
         projectStore: RecordingProjectStore,
         transcriber: any ProjectTranscribing = WhisperProjectTranscriber(),
-        initialState: RecordingState = .preparing
+        isReadyForTesting: Bool = false
     ) {
         self.projectStore = projectStore
         self.transcriber = transcriber
-        state = initialState
+        state = isReadyForTesting ? .ready : .preparing
         super.init()
     }
 
