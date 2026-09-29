@@ -47,14 +47,21 @@ final class UpdateInstallationGate {
 
 @MainActor
 final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
+    private struct Activity {
+        let isBusy: () -> Bool
+        let persistenceFailure: (() -> String?)?
+        let retryPersistence: (() -> Void)?
+    }
+
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
     @Published private(set) var isWaitingForIdle = false
+    @Published private(set) var blockedSaveMessage: String?
     let unavailableReason: String?
     private let model: StudioRecorderModel
     private let gate = UpdateInstallationGate()
     private var controller: SPUStandardUpdaterController?
-    private var activities: [UUID: () -> Bool] = [:]
+    private var activities: [UUID: Activity] = [:]
     private var activityCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var waitTask: Task<Void, Never>?
     private var isInstallingUpdate = false
@@ -86,21 +93,27 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         controller?.updater.automaticallyChecksForUpdates = enabled
     }
 
-    func registerActivity(_ id: UUID, isBusy: @escaping () -> Bool) {
+    func registerActivity(
+        _ id: UUID,
+        isBusy: @escaping () -> Bool,
+        persistenceFailure: (() -> String?)? = nil,
+        retryPersistence: (() -> Void)? = nil
+    ) {
         activityCleanupTasks[id]?.cancel()
         activityCleanupTasks[id] = nil
-        activities[id] = isBusy
+        activities[id] = Activity(isBusy: isBusy, persistenceFailure: persistenceFailure,
+                                  retryPersistence: retryPersistence)
     }
 
     func unregisterActivity(_ id: UUID) {
         guard let activity = activities[id] else { return }
-        guard activity() else {
+        guard activity.isBusy() else {
             activities[id] = nil
             return
         }
         activityCleanupTasks[id]?.cancel()
         activityCleanupTasks[id] = Task { [weak self] in
-            while activity() {
+            while activity.isBusy() {
                 do { try await Task.sleep(for: .milliseconds(100)) }
                 catch { return }
             }
@@ -113,7 +126,18 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
     private var isBusy: Bool {
         model.snapshot.areRecordingSettingsLocked || model.snapshot.isCaptureCommandInFlight
             || model.snapshot.jobs.contains { $0.state == .queued || $0.state == .running }
-            || activities.values.contains { $0() }
+            || activities.values.contains { $0.isBusy() }
+    }
+
+    func retryBlockedSaves() {
+        for activity in activities.values where activity.persistenceFailure?() != nil {
+            activity.retryPersistence?()
+        }
+        refreshBlockedSaveMessage()
+    }
+
+    private func refreshBlockedSaveMessage() {
+        blockedSaveMessage = activities.values.compactMap { $0.persistenceFailure?() }.first
     }
 
     func updater(
@@ -140,13 +164,16 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
     private func postponeUntilIdle(_ installHandler: @escaping () -> Void) -> Bool {
         guard gate.postponeIfBusy(isBusy, install: installHandler) else { return false }
         isWaitingForIdle = true
+        refreshBlockedSaveMessage()
         waitTask?.cancel()
         waitTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self else { return }
+                refreshBlockedSaveMessage()
                 if !isBusy {
                     isWaitingForIdle = false
+                    blockedSaveMessage = nil
                     waitTask = nil
                     gate.resumeIfIdle(false)
                     return
@@ -161,6 +188,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         waitTask = nil
         gate.cancel()
         isWaitingForIdle = false
+        blockedSaveMessage = nil
         isInstallingUpdate = false
         let reply = terminationReply
         terminationReply = nil

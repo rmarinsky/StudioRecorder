@@ -425,6 +425,66 @@ final class ProjectEditRendererTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedEditSaveCanBeRetriedBeforeInstallingUpdate() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let parkedURL = rootURL.appendingPathExtension("parked")
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+            try? FileManager.default.removeItem(at: parkedURL)
+        }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "program.caf"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.6))
+        try FileManager.default.moveItem(at: rootURL, to: parkedURL)
+        session.stop()
+        for _ in 0..<40 where session.persistenceFailureMessage == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(session.persistenceFailureMessage)
+        XCTAssertTrue(session.hasPendingPersistence)
+
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let owner = UUID()
+        updates.registerActivity(owner, isBusy: { session.hasPendingPersistence },
+                                 persistenceFailure: { session.persistenceFailureMessage },
+                                 retryPersistence: { session.retryPendingPersistence() })
+        updates.unregisterActivity(owner)
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        let safeToRestart = expectation(description: "Saved edit is recovered")
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            safeToRestart.fulfill()
+        })
+        for _ in 0..<30 where updates.blockedSaveMessage == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(updates.blockedSaveMessage)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        updates.retryBlockedSaves()
+        await fulfillment(of: [safeToRestart], timeout: 3)
+        XCTAssertFalse(session.hasPendingPersistence)
+        XCTAssertNil(session.persistenceFailureMessage)
+        let saved = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+        XCTAssertEqual(saved?.audioAdjustment.gain, 0.6)
+    }
+
+    @MainActor
     func testPendingAudioEditSaveDelaysUpdateAfterEditorCloses() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
