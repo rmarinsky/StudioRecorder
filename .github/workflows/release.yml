@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: studio-recorder-stable-release
+  cancel-in-progress: false
+
 jobs:
   signed-release:
     runs-on: macos-26
@@ -21,33 +25,14 @@ jobs:
     env:
       GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
 
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
-
-      - name: Validate release configuration
-        shell: bash
-        env:
-          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-          CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          ASC_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          for name in GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET APPLE_TEAM_ID CERTIFICATE_P12 CERTIFICATE_PASSWORD ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "Missing required release configuration: $name" >&2
-              exit 1
-            fi
-          done
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != v* ]]; then
-            echo "Release tags must start with v." >&2
-            exit 1
-          fi
 
       - name: Resolve version
         id: version
@@ -68,20 +53,80 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "asset=Studio-Recorder-$VERSION-macOS-arm64.zip" >> "$GITHUB_OUTPUT"
 
+      - name: Validate release configuration
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          DEVELOPER_ID_CERTIFICATE_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          swift scripts/validate-release-configuration.swift "$VERSION"
+          test -s "Docs/releases/$VERSION.md"
+
+      - name: Check repository for secrets
+        run: |
+          brew bundle
+          ./scripts/check-secrets.sh ci
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate project
-        run: xcodegen generate --spec project.yml --project .
+        run: |
+          xcodegen generate --spec project.yml --project .
+          echo "BUILD_DIR=$RUNNER_TEMP/StudioRecorderBuild" >> "$GITHUB_ENV"
 
       - name: Run release-gating tests
         run: >-
           xcodebuild
           -project StudioRecorder.xcodeproj
           -scheme StudioRecorder
+          -derivedDataPath "$BUILD_DIR"
           -destination 'platform=macOS,arch=arm64'
           test
           CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify release tooling
+        run: ./scripts/prepare-sparkle-release.test.sh "$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin"
+
+      - name: Prepare Sparkle signing key and check previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DEVELOPER_ID_CERTIFICATE_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SPARKLE_PRIVATE_KEY_PATH="$RUNNER_TEMP/sparkle-private-seed"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_PRIVATE_KEY_PATH"
+          echo "SPARKLE_PRIVATE_KEY_PATH=$SPARKLE_PRIVATE_KEY_PATH" >> "$GITHUB_ENV"
+          existing_tags="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].tag_name')"
+          while IFS= read -r tag; do
+            if [[ "$tag" == "v$VERSION" && "$GITHUB_REF_TYPE" == tag ]]; then
+              echo 'This release already exists. Published assets are never replaced.' >&2
+              exit 1
+            fi
+          done <<< "$existing_tags"
+          previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [[ -n "$previous" ]]; then
+            mkdir "$RUNNER_TEMP/previous-release"
+            gh release download "$previous" --pattern appcast.xml --dir "$RUNNER_TEMP/previous-release"
+            export PREVIOUS_APPCAST_PATH="$RUNNER_TEMP/previous-release/appcast.xml"
+            "$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update" \
+              --verify --ed-key-file "$SPARKLE_PRIVATE_KEY_PATH" "$PREVIOUS_APPCAST_PATH"
+            swift scripts/validate-release-configuration.swift "$VERSION"
+          fi
 
       - name: Import Developer ID certificate
         shell: bash
@@ -90,11 +135,12 @@ jobs:
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
+          umask 077
           KEYCHAIN_PATH="$RUNNER_TEMP/studio-recorder.keychain-db"
           CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
           printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -102,6 +148,9 @@ jobs:
           security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/Developer ID Application/ {print $2; exit}')"
+          test -n "$SIGNING_IDENTITY"
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Prepare App Store Connect key
         shell: bash
@@ -110,6 +159,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
           set -euo pipefail
+          umask 077
           ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
           printf '%s' "$ASC_KEY_P8" | base64 --decode > "$ASC_KEY_PATH"
           chmod 600 "$ASC_KEY_PATH"
@@ -122,42 +172,67 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
         run: |
           set -euo pipefail
+          if [[ -z "$GOOGLE_OAUTH_CLIENT_ID" || -z "$GOOGLE_OAUTH_CLIENT_SECRET" ]]; then
+            GOOGLE_OAUTH_CLIENT_ID=""
+            GOOGLE_OAUTH_CLIENT_SECRET=""
+          fi
           xcodebuild archive \
             -project StudioRecorder.xcodeproj \
             -scheme StudioRecorder \
             -configuration Release \
             -destination 'generic/platform=macOS' \
             -archivePath "$RUNNER_TEMP/StudioRecorder.xcarchive" \
+            -derivedDataPath "$BUILD_DIR" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             OTHER_CODE_SIGN_FLAGS="--timestamp" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            SPARKLE_PUBLIC_KEY="$SPARKLE_PUBLIC_KEY" \
             GOOGLE_OAUTH_CLIENT_ID="$GOOGLE_OAUTH_CLIENT_ID" \
             GOOGLE_OAUTH_CLIENT_SECRET="$GOOGLE_OAUTH_CLIENT_SECRET"
+
+      - name: Export for Developer ID distribution
+        run: |
+          set -euo pipefail
+          ARCHIVE_APP="$RUNNER_TEMP/StudioRecorder.xcarchive/Products/Applications/Studio Recorder.app"
+          codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$ARCHIVE_APP/Contents/MacOS/whisper-cli"
+          codesign --force --sign "$SIGNING_IDENTITY" \
+            --preserve-metadata=entitlements,requirements,flags --options runtime --timestamp "$ARCHIVE_APP"
+          export EXPORT_OPTIONS_PATH="$RUNNER_TEMP/ExportOptions.plist"
+          python3 - <<'PY'
+          import os, plistlib
+          with open(os.environ["EXPORT_OPTIONS_PATH"], "wb") as file:
+              plistlib.dump({"method": "developer-id", "signingStyle": "manual",
+                            "signingCertificate": os.environ["SIGNING_IDENTITY"],
+                            "teamID": os.environ["APPLE_TEAM_ID"], "manageAppVersionAndBuildNumber": False}, file)
+          PY
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/StudioRecorder.xcarchive" \
+            -exportOptionsPlist "$EXPORT_OPTIONS_PATH" \
+            -exportPath "$RUNNER_TEMP/export"
 
       - name: Notarize, staple, and validate
         shell: bash
         env:
-          ASSET_NAME: ${{ steps.version.outputs.asset }}
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           set -euo pipefail
-          APP="$RUNNER_TEMP/StudioRecorder.xcarchive/Products/Applications/Studio Recorder.app"
+          APP="$RUNNER_TEMP/export/Studio Recorder.app"
           NOTARIZATION_ZIP="$RUNNER_TEMP/notarization.zip"
-          RELEASE_DIR="$RUNNER_TEMP/release"
-          mkdir -p "$RELEASE_DIR"
-          HELPER="$APP/Contents/MacOS/whisper-cli"
-          test -x "$HELPER"
-          codesign --force --sign "Developer ID Application" --options runtime --timestamp "$HELPER"
-          codesign --force --sign "Developer ID Application" \
-            --preserve-metadata=entitlements,requirements,flags \
-            --options runtime --timestamp "$APP"
-          codesign --verify --strict --verbose=2 "$HELPER"
+          [[ "$(lipo -archs "$APP/Contents/MacOS/Studio Recorder")" == arm64 ]]
+          SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+          for code in "$APP" "$APP/Contents/MacOS/whisper-cli" "$SPARKLE/Autoupdate" \
+                      "$SPARKLE/Updater.app" "$SPARKLE/XPCServices/Installer.xpc" "$SPARKLE/XPCServices/Downloader.xpc"; do
+            codesign --verify --strict --verbose=2 "$code"
+            details="$(codesign -dv --verbose=4 "$code" 2>&1)"
+            grep -q "^TeamIdentifier=$APPLE_TEAM_ID$" <<< "$details"
+            grep -q '^Authority=Developer ID Application' <<< "$details"
+          done
           codesign --verify --deep --strict --verbose=2 "$APP"
           ditto -c -k --keepParent "$APP" "$NOTARIZATION_ZIP"
           xcrun notarytool submit "$NOTARIZATION_ZIP" \
@@ -168,18 +243,28 @@ jobs:
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
-          ditto -c -k --keepParent "$APP" "$RELEASE_DIR/$ASSET_NAME"
-          cd "$RELEASE_DIR"
-          shasum -a 256 "$ASSET_NAME" > "$ASSET_NAME.sha256"
-          echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Prepare signed update and appcast
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./scripts/prepare-sparkle-release.sh \
+            "$RUNNER_TEMP/export/Studio Recorder.app" "$RUNNER_TEMP/release" "$VERSION" "$GITHUB_RUN_NUMBER" \
+            "Docs/releases/$VERSION.md" "$SPARKLE_PRIVATE_KEY_PATH" \
+            "$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin"
 
       - name: Upload signed validation artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: studio-recorder-${{ steps.version.outputs.version }}-signed
-          path: |
-            ${{ runner.temp }}/release/${{ steps.version.outputs.asset }}
-            ${{ runner.temp }}/release/${{ steps.version.outputs.asset }}.sha256
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+
+      - name: Retain debug symbols
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: studio-recorder-${{ steps.version.outputs.version }}-symbols
+          path: ${{ runner.temp }}/StudioRecorder.xcarchive/dSYMs
           if-no-files-found: error
 
       - name: Publish GitHub release for tag
@@ -187,13 +272,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET_NAME: ${{ steps.version.outputs.asset }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          "$RELEASE_DIR/$ASSET_NAME"
-          "$RELEASE_DIR/$ASSET_NAME.sha256"
-          --verify-tag
-          --generate-notes
-          --title "Studio Recorder $GITHUB_REF_NAME"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/release/$ASSET_NAME" "$RUNNER_TEMP/release/$ASSET_NAME.sha256" \
+            "$RUNNER_TEMP/release/appcast.xml" --draft --verify-tag \
+            --notes-file "Docs/releases/$VERSION.md" --title "Studio Recorder $GITHUB_REF_NAME"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
 
       - name: Remove temporary signing material
         if: always()
@@ -202,4 +288,4 @@ jobs:
           if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
-          rm -f "${ASC_KEY_PATH:-}" "$RUNNER_TEMP/developer-id.p12"
+          rm -f "${ASC_KEY_PATH:-}" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/sparkle-private-seed"

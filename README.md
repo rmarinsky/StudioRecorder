@@ -74,20 +74,8 @@ separate from a future release build.
 
 ## Releases
 
-CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The release workflow signs an arm64 app with Developer ID, submits it to Apple notarization, staples and validates it, then produces a ZIP and SHA-256 checksum. Manual runs upload an internal validation artifact. A `v*` tag additionally publishes those files as a GitHub release.
+CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The Release workflow archives and exports with Developer ID, verifies nested helpers, notarizes and staples the app, then creates a signed Sparkle appcast, ZIP, and SHA-256 checksum. Manual runs produce internal artifacts; a `vX.Y.Z` tag publishes a GitHub release only after all checks pass. Production builds offer Check for Updates and defer installation while media work is active; DEV builds do not receive production updates.
 
-Repository variables:
-
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `APPLE_TEAM_ID`
-
-Repository secrets:
-
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `DEVELOPER_ID_CERTIFICATE_P12_BASE64`
-- `DEVELOPER_ID_CERTIFICATE_PASSWORD`
-- `APP_STORE_CONNECT_API_KEY_P8_BASE64`
-- `APP_STORE_CONNECT_KEY_ID`
-- `APP_STORE_CONNECT_ISSUER_ID`
+See [the release setup and verification guide](Docs/releases/sparkle.md) for required Apple/Sparkle credentials, first-install bootstrap, and the signed upgrade rehearsal. Production signing and upgrade verification require those credentials and are not proved by local fixture tests.
 
 Rotate the Google OAuth client secret before the first public build. Product information, privacy terms, and release links are published at [rmarinsky.com.ua/studio-recorder](https://rmarinsky.com.ua/en/studio-recorder/).
