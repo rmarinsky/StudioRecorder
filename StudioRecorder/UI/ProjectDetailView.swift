@@ -946,8 +946,12 @@ struct ProjectDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     if let transcriptionJob,
                        transcriptionJob.state == .queued || transcriptionJob.state == .running {
-                        ProgressView(value: transcriptionJob.progress)
-                            .accessibilityLabel(transcriptionJob.stage)
+                        if transcriptionJob.stage == "Recognizing Ukrainian words locally" {
+                            ProgressView().accessibilityLabel(transcriptionJob.stage)
+                        } else {
+                            ProgressView(value: transcriptionJob.progress)
+                                .accessibilityLabel(transcriptionJob.stage)
+                        }
                     } else if transcriptFileUnreadable {
                         Button("Reveal Project") { revealProject() }
                     } else if transcriptionJob?.state != .failed {
@@ -1105,6 +1109,7 @@ struct ProjectDetailView: View {
             switch transcriptionJob.state {
             case .queued, .running: return transcriptionJob.stage
             case .failed: return "\(transcriptionJob.failure ?? "Transcription failed.") Retry from Jobs."
+            case .cancelled: return "Transcription cancelled. Retry from Jobs or transcribe again."
             case .completed: return "The saved transcript is missing or belongs to another track."
             }
         }

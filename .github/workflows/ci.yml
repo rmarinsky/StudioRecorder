@@ -23,7 +23,16 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
-        run: xcodegen generate --spec project.yml --project .
+        run: |
+          xcodegen generate --spec project.yml --project .
+          python3 - <<'PYTHON'
+          import xml.etree.ElementTree as ET
+          scheme = ET.parse("StudioRecorder.xcodeproj/xcshareddata/xcschemes/StudioRecorder.xcscheme").getroot()
+          test_action = scheme.find("TestAction")
+          isolation = test_action.find("EnvironmentVariables/EnvironmentVariable[@key='STUDIO_RECORDER_TEST_MODE']")
+          assert test_action.get("shouldUseLaunchSchemeArgsEnv") == "NO"
+          assert isolation is not None and isolation.get("value") == "1" and isolation.get("isEnabled") == "YES"
+          PYTHON
       - name: Build and test
         run: >-
           xcodebuild

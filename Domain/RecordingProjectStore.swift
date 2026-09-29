@@ -21,6 +21,7 @@ enum RecordingJobState: String, Codable, Sendable {
     case running
     case failed
     case completed
+    case cancelled
 }
 
 struct RecordingJob: Codable, Equatable, Identifiable, Sendable {
@@ -133,6 +134,7 @@ enum RecordingJobStoreError: LocalizedError {
     case invalidJob
     case jobNotFound
     case notRetryable
+    case notCancellable
     case invalidExport
     case invalidTranscription
 
@@ -142,7 +144,8 @@ enum RecordingJobStoreError: LocalizedError {
         case .projectMismatch: "A job belongs to another recording project."
         case .invalidJob: "The saved job is invalid."
         case .jobNotFound: "The job no longer exists."
-        case .notRetryable: "Only failed jobs can be retried."
+        case .notRetryable: "Only failed or cancelled jobs can be retried."
+        case .notCancellable: "Only queued or running jobs can be cancelled."
         case .invalidExport: "The saved export request is invalid or references media outside this project."
         case .invalidTranscription: "The saved transcription request is invalid or references media outside this project."
         }
@@ -292,12 +295,29 @@ final class RecordingJobStore {
         guard var job = try load(in: project).first(where: { $0.id == jobID }) else {
             throw RecordingJobStoreError.jobNotFound
         }
-        guard job.state == .failed else { throw RecordingJobStoreError.notRetryable }
+        guard job.state == .failed || job.state == .cancelled else {
+            throw RecordingJobStoreError.notRetryable
+        }
         job.state = .queued
         job.stage = "Queued"
         job.progress = 0
         job.failure = nil
         job.attempt += 1
+        job.updatedAt = Date()
+        try save(job, in: project)
+        return job
+    }
+
+    func cancel(jobID: UUID, in project: RecordingProject) throws -> RecordingJob {
+        guard var job = try load(in: project).first(where: { $0.id == jobID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        guard job.state == .queued || job.state == .running else {
+            throw RecordingJobStoreError.notCancellable
+        }
+        job.state = .cancelled
+        job.stage = "Cancelled"
+        job.failure = nil
         job.updatedAt = Date()
         try save(job, in: project)
         return job

@@ -575,6 +575,12 @@ final class StudioRecorderModel: ObservableObject {
         synchronizeFromCoordinator()
     }
 
+    func cancelJob(_ jobID: UUID) async throws {
+        guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
+        try await coordinator.cancelJob(jobID)
+        synchronizeFromCoordinator()
+    }
+
     func enqueueExport(_ recipe: ProjectExportRecipe) async throws {
         guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
         try await coordinator.enqueueExport(recipe)
