@@ -4,6 +4,31 @@ import Sparkle
 
 final class AppUpdateTests: XCTestCase {
     @MainActor
+    func testDepartingBusyOwnerRemainsProtectedUntilItsWorkFinishes() async {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        let owner = UUID()
+        var busy = true
+        updates.registerActivity(owner) { busy }
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        updates.unregisterActivity(owner)
+        let resumed = expectation(description: "Departing owner's work finishes")
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            resumed.fulfill()
+        })
+        busy = false
+        await fulfillment(of: [resumed], timeout: 3)
+        XCTAssertFalse(updates.isWaitingForIdle)
+    }
+
+    @MainActor
     func testUpdateTerminationWaitsEvenIfSparkleSkipsItsPostponementCallback() async {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .ready
@@ -41,6 +66,7 @@ final class AppUpdateTests: XCTestCase {
         }
         for state: RecordingJobState in [.queued, .running] {
             var snapshot = StudioRecorderSnapshot()
+            snapshot.captureState = .ready
             var job = RecordingJob(projectID: UUID(), kind: .export)
             job.state = state
             snapshot.jobs = [job]
