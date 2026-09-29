@@ -2,6 +2,22 @@ import XCTest
 @testable import StudioRecorder
 
 final class AppUpdateTests: XCTestCase {
+    @MainActor
+    func testInstallationWaitsForMediaWorkAndRunsOnlyOnceWhenIdle() {
+        let gate = UpdateInstallationGate()
+        var installed = false
+        XCTAssertTrue(gate.postponeIfBusy(true) { installed = true })
+        gate.resumeIfIdle(true)
+        XCTAssertFalse(installed)
+        gate.resumeIfIdle(false)
+        XCTAssertTrue(installed)
+        installed = false
+        gate.resumeIfIdle(false)
+        XCTAssertFalse(installed)
+        XCTAssertFalse(gate.postponeIfBusy(false) { installed = true })
+        XCTAssertFalse(installed)
+    }
+
     func testOnlyConfiguredProductionBuildsEnableUpdates() {
         let info: [String: Any] = [
             "StudioRecorderUpdatesEnabled": "YES",

@@ -35,5 +35,19 @@
 	<string>Studio Recorder records your selected microphone as part of the primary raw capture.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Studio Recorder records the displays you select into editable tracks or a composed program movie.</string>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/rmarinsky/StudioRecorder/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SPARKLE_PUBLIC_KEY)</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUSendProfileInfo</key>
+	<false/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>StudioRecorderUpdatesEnabled</key>
+	<string>$(STUDIO_UPDATES_ENABLED)</string>
 </dict>
 </plist>

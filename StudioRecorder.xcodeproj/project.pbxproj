@@ -34,6 +34,7 @@
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		52EACC473103D020DC165C02 /* RecordingAudioStemWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D0224672BDE9D69ED2DF56 /* RecordingAudioStemWriter.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
+		5CEAFDE84BF5D8D65DD96CE9 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
 		752BC4475696E6F70E745485 /* YouTubeManagedStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B73ABFB9A06A02B1D70EE6D /* YouTubeManagedStreamingTests.swift */; };
 		7A3FC4B989264F481E7C3616 /* ProjectAudioWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AEB84D5875ABFF7914F90A4 /* ProjectAudioWaveform.swift */; };
@@ -43,7 +44,7 @@
 		8297859DF0D5F66FFE439544 /* LiveSceneSnapshotExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
 		87A11B815C0786F85A80ED50 /* YouTubeManagedSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E4506FB56B1915ABE6670E0 /* YouTubeManagedSessionCoordinator.swift */; };
-		8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
+		8D068381CAA6590CB8859700 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
 		8F1D72903453CB425A8CB5A0 /* LiveProgramArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D186F94CE3B34BB52DB31A3A /* LiveProgramArchive.swift */; };
 		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
 		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
@@ -54,7 +55,7 @@
 		AB25A5EAFCE815654825E0C5 /* StudioSceneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB9AC39052582D728AB12C9 /* StudioSceneTests.swift */; };
 		ACD7EF0A9E898F71E4289452 /* YouTubeStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
-		B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
+		B46A023909CBD36987C33FE0 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 9A734F92563C7390931598A4 /* Sparkle */; };
 		B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */; };
 		B6506577198A699DDE3C47B3 /* StreamPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1115B8BE6C8C9D764FE83D18 /* StreamPreflight.swift */; };
 		BD135B56D8540BDA0B299432 /* StreamPreflightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43189D89C72F98BB2574771F /* StreamPreflightTests.swift */; };
@@ -186,8 +187,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */,
-				8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */,
+				B46A023909CBD36987C33FE0 /* Sparkle in Frameworks */,
+				8D068381CAA6590CB8859700 /* HaishinKit in Frameworks */,
+				5CEAFDE84BF5D8D65DD96CE9 /* RTMPHaishinKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -388,6 +390,7 @@
 			);
 			name = StudioRecorder;
 			packageProductDependencies = (
+				9A734F92563C7390931598A4 /* Sparkle */,
 				48264C86C007CE4D5C35A458 /* HaishinKit */,
 				20760362B2E4B0080237C2D6 /* RTMPHaishinKit */,
 			);
@@ -435,6 +438,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */,
+				387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 330971FAA4ECDBCD9C3F2F9F /* Products */;
@@ -570,6 +574,8 @@
 				PRODUCT_MODULE_NAME = StudioRecorder;
 				PRODUCT_NAME = "Studio Recorder";
 				SDKROOT = macosx;
+				SPARKLE_PUBLIC_KEY = "";
+				STUDIO_UPDATES_ENABLED = NO;
 			};
 			name = Debug;
 		};
@@ -685,6 +691,8 @@
 				PRODUCT_MODULE_NAME = StudioRecorder;
 				PRODUCT_NAME = "Studio Recorder";
 				SDKROOT = macosx;
+				SPARKLE_PUBLIC_KEY = "";
+				STUDIO_UPDATES_ENABLED = YES;
 			};
 			name = Release;
 		};
@@ -794,6 +802,14 @@
 				version = 2.2.5;
 			};
 		};
+		387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -806,6 +822,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */;
 			productName = HaishinKit;
+		};
+		9A734F92563C7390931598A4 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

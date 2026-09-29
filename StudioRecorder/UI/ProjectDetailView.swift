@@ -11,6 +11,8 @@ enum TranscriptAutoQueuePolicy {
 }
 
 struct ProjectDetailView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
     private struct AssistantMessage: Identifiable {
         let id = UUID()
         let role: String
@@ -134,6 +136,11 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
+        .onAppear {
+            updates.registerActivity(updateActivityID) {
+                editSession.isWorking || isPreparingGIF || isExporting
+            }
+        }
         .onChange(of: exportRequest) { _, _ in
             if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
         }
@@ -169,6 +176,7 @@ struct ProjectDetailView: View {
             isConfirmingAssistantEstimatedCuts = false
         }
         .onDisappear {
+            updates.unregisterActivity(updateActivityID)
             assistantTask?.cancel()
             assistantTask = nil
             isAssistantWorking = false

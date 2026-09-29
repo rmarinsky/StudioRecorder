@@ -40,6 +40,8 @@ private enum GIFQualityPreset: String, CaseIterable, Identifiable {
 }
 
 struct GIFMakerView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
     let source: GIFMakerSource
     let onDismiss: () -> Void
 
@@ -89,6 +91,7 @@ struct GIFMakerView: View {
         }
         .frame(minWidth: 820, idealWidth: 940, minHeight: 590, idealHeight: 650)
         .task { await loadSource() }
+        .onAppear { updates.registerActivity(updateActivityID) { isExporting } }
         .onChange(of: startTime) { _, next in
             cancelPreview()
             player.seek(to: CMTime(seconds: next, preferredTimescale: 600))
@@ -103,6 +106,7 @@ struct GIFMakerView: View {
         .onChange(of: maxPixelWidth) { _, _ in invalidateResult() }
         .onChange(of: loops) { _, _ in invalidateResult() }
         .onDisappear {
+            updates.unregisterActivity(updateActivityID)
             player.pause()
             cancelPreview()
             exportTask?.cancel()

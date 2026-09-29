@@ -7,6 +7,7 @@ struct StudioRecorderApp: App {
     @StateObject private var managedYouTube: YouTubeManagedSessionCoordinator
     @StateObject private var model: StudioRecorderModel
     @StateObject private var sceneLibrary: StudioSceneLibraryStore
+    @StateObject private var updates: AppUpdateController
 
     init() {
         let preferencesStore = PreferencesStore()
@@ -14,14 +15,14 @@ struct StudioRecorderApp: App {
         _streamingSettings = StateObject(wrappedValue: YouTubeStreamingSettingsStore())
         _managedYouTube = StateObject(wrappedValue: YouTubeManagedSessionCoordinator())
         _sceneLibrary = StateObject(wrappedValue: StudioSceneLibraryStore())
-        _model = StateObject(
-            wrappedValue: StudioRecorderModel(
-                coordinator: RecordingCoordinator(),
-                permissionCenter: PermissionCenter(),
-                preferencesStore: preferencesStore,
-                initialSnapshot: StudioRecorderSnapshot()
-            )
+        let model = StudioRecorderModel(
+            coordinator: RecordingCoordinator(),
+            permissionCenter: PermissionCenter(),
+            preferencesStore: preferencesStore,
+            initialSnapshot: StudioRecorderSnapshot()
         )
+        _model = StateObject(wrappedValue: model)
+        _updates = StateObject(wrappedValue: AppUpdateController(model: model))
     }
 
     var body: some Scene {
@@ -33,12 +34,17 @@ struct StudioRecorderApp: App {
                 managedYouTube: managedYouTube,
                 sceneLibrary: sceneLibrary
             )
+                .environmentObject(updates)
                 .frame(minWidth: 1_080, minHeight: 700)
                 .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
         .defaultSize(width: 1_260, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckForUpdates || updates.isWaitingForIdle)
+            }
             CommandGroup(replacing: .appSettings) {
                 OpenSettingsCommand()
             }
@@ -73,6 +79,7 @@ struct StudioRecorderApp: App {
 
         Window("Recording Controls", id: "recording-controls") {
             RecordingControlsView(model: model, sceneLibrary: sceneLibrary)
+                .environmentObject(updates)
                 .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
         .defaultSize(width: 360, height: 280)
@@ -86,6 +93,7 @@ struct StudioRecorderApp: App {
                 streamingSettings: streamingSettings,
                 managedYouTube: managedYouTube
             )
+            .environmentObject(updates)
             .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
         .defaultSize(width: 760, height: 540)
