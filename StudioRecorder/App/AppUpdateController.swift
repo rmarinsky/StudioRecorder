@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import Sparkle
@@ -55,6 +56,8 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
     private var controller: SPUStandardUpdaterController?
     private var activities: [UUID: () -> Bool] = [:]
     private var waitTask: Task<Void, Never>?
+    private var isInstallingUpdate = false
+    private var terminationReply: ((Bool) -> Void)?
 
     init(model: StudioRecorderModel, bundle: Bundle = .main) {
         self.model = model
@@ -95,6 +98,24 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         _ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
         untilInvokingBlock installHandler: @escaping () -> Void
     ) -> Bool {
+        postponeUntilIdle(installHandler)
+    }
+
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        isInstallingUpdate = true
+    }
+
+    // Sparkle can skip its relaunch postponement hook on a resumed installation.
+    func postponeTerminationIfNeeded(_ reply: @escaping (Bool) -> Void) -> Bool {
+        guard isInstallingUpdate, isBusy else { return false }
+        terminationReply = reply
+        return postponeUntilIdle { [weak self] in
+            self?.terminationReply = nil
+            reply(true)
+        }
+    }
+
+    private func postponeUntilIdle(_ installHandler: @escaping () -> Void) -> Bool {
         guard gate.postponeIfBusy(isBusy, install: installHandler) else { return false }
         isWaitingForIdle = true
         waitTask?.cancel()
@@ -104,6 +125,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
                 guard !Task.isCancelled, let self else { return }
                 if !isBusy {
                     isWaitingForIdle = false
+                    waitTask = nil
                     gate.resumeIfIdle(false)
                     return
                 }
@@ -117,5 +139,21 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         waitTask = nil
         gate.cancel()
         isWaitingForIdle = false
+        isInstallingUpdate = false
+        let reply = terminationReply
+        terminationReply = nil
+        reply?(false)
+    }
+}
+
+@MainActor
+final class UpdateApplicationDelegate: NSObject, NSApplicationDelegate {
+    weak var updates: AppUpdateController?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if updates?.postponeTerminationIfNeeded({ sender.reply(toApplicationShouldTerminate: $0) }) == true {
+            return .terminateLater
+        }
+        return .terminateNow
     }
 }
