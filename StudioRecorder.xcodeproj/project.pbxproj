@@ -20,6 +20,7 @@
 		13B8ECF226E15196B0B70E26 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */; };
 		196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
+		1E1D0E3B980274E648C760AA /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */; };
 		208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */; };
 		20C17E0BFE64D70D666A93FD /* LocalWhisperTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FCA6E4448CB9D3CDFFF0C7E /* LocalWhisperTranscriber.swift */; };
 		2809BF3A553F8C0CCA242A40 /* OpenRouterAssistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76EB29E72ABF5E9DB50C41E6 /* OpenRouterAssistant.swift */; };
@@ -69,6 +70,7 @@
 		D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF06D65D7BBCD8B359710577 /* ProjectEditSession.swift */; };
 		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
 		DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */; };
+		DE8B00F61FAA0F0D3A3568F5 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */; };
 		DF9DC8D6FF74179A58B7328F /* StudioScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA14ECDD4691EE280281A86 /* StudioScene.swift */; };
 		E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */; };
 		E6102E345B72130B25AFBD3A /* YouTubeStreamSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */; };
@@ -131,8 +133,10 @@
 		4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStoreTests.swift; sourceTree = "<group>"; };
 		51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesStoreTests.swift; sourceTree = "<group>"; };
 		567C7B2048F0280A1B184E8C /* OpenRouterAssistantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistantTests.swift; sourceTree = "<group>"; };
+		586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
 		5A11DDF9D81A956435CD8B2D /* LiveSourceRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSourceRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraBackgroundProcessor.swift; sourceTree = "<group>"; };
+		6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateTests.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6FE27C7C08A80AB23D56F3A4 /* ProjectAudioWaveformTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAudioWaveformTests.swift; sourceTree = "<group>"; };
 		6FFFDCE006ACC241BCF332B2 /* SafeShortcutMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeShortcutMonitor.swift; sourceTree = "<group>"; };
@@ -266,6 +270,7 @@
 		AEB60D501EAC087B4F803C04 /* StudioRecorderTests */ = {
 			isa = PBXGroup;
 			children = (
+				6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */,
 				AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */,
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
 				078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */,
@@ -347,6 +352,7 @@
 		CBA642BF5C7EBB2A6DD26436 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */,
 				FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */,
 				EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */,
 			);
@@ -457,6 +463,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1E1D0E3B980274E648C760AA /* AppUpdateTests.swift in Sources */,
 				C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */,
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
 				02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */,
@@ -485,6 +492,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE8B00F61FAA0F0D3A3568F5 /* AppUpdateController.swift in Sources */,
 				0F3C5FC0DB845064C64E7F85 /* CameraBackgroundProcessor.swift in Sources */,
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
