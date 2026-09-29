@@ -175,8 +175,13 @@ struct SettingsView: View {
                     ))
                     Button("Check for Updates…") { updates.checkForUpdates() }
                         .disabled(!updates.canCheckForUpdates || updates.isWaitingForIdle)
+                    if let failure = updates.blockedSaveMessage {
+                        Text("An editor change could not be saved: \(failure)")
+                            .foregroundStyle(.red)
+                        Button("Retry Saving Edits") { updates.retryBlockedSaves() }
+                    }
                     Text(updates.isWaitingForIdle
-                         ? "The update will restart the app after recording, streaming, and media processing finish."
+                         ? "The update will restart the app after recording, streaming, and media processing finish. If an edit cannot be saved, retry it here."
                          : "Updates are signed. Restart waits until your media work finishes.")
                         .font(.caption).foregroundStyle(.secondary)
                 }

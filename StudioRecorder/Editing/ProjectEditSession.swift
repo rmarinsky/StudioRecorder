@@ -46,6 +46,7 @@ final class ProjectEditSession: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isWorking = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var persistenceFailureMessage: String?
 
     private let store: ProjectEditStore
     private let renderer: ProjectEditRenderer
@@ -139,7 +140,8 @@ final class ProjectEditSession: ObservableObject {
         isLoading = true
         documentRevision += 1
         let pendingRevision = documentRevision
-        documentSaveTask?.cancel()
+        let priorSave = documentSaveTask
+        priorSave?.cancel()
         documentSaveTask = nil
         presentationRenderTask?.cancel()
         presentationRenderTask = nil
@@ -157,13 +159,17 @@ final class ProjectEditSession: ObservableObject {
 
         if let pendingDocument = document, let pendingProjectRootURL = self.projectRootURL {
             do {
+                await priorSave?.value
+                guard loadID == requestID else { return }
                 try await store.save(pendingDocument, in: pendingProjectRootURL)
                 if loadID == requestID, documentRevision == pendingRevision {
                     hasUnsavedDocument = false
+                    persistenceFailureMessage = nil
                 }
             } catch {
                 guard loadID == requestID else { return }
                 errorMessage = error.localizedDescription
+                persistenceFailureMessage = error.localizedDescription
                 return
             }
         }
@@ -189,6 +195,7 @@ final class ProjectEditSession: ObservableObject {
         redoStack = []
         audioAdjustmentGestureStart = nil
         errorMessage = nil
+        persistenceFailureMessage = nil
         self.projectRootURL = projectRootURL
         self.sourceURL = sourceURL
         self.programSources = programSources
@@ -965,19 +972,41 @@ final class ProjectEditSession: ObservableObject {
         isDetectingSilence = false
         audioAdjustmentGestureStart = nil
         if let document, let projectRootURL {
-            hasUnsavedDocument = true
-            pendingDocumentSaves += 1
-            documentSaveTask = Task { [self, store] in
-                defer { pendingDocumentSaves -= 1 }
-                await priorSave?.value
-                do {
-                    try await store.save(document, in: projectRootURL)
-                    if loadID == operationID, documentRevision == revision {
-                        hasUnsavedDocument = false
-                    }
-                } catch {
-                    if loadID == operationID { errorMessage = error.localizedDescription }
+            saveDocument(document, in: projectRootURL, after: priorSave,
+                         operationID: operationID, revision: revision)
+        }
+    }
+
+    func retryPendingPersistence() {
+        guard hasUnsavedDocument, pendingDocumentSaves == 0,
+              let document, let projectRootURL else { return }
+        saveDocument(document, in: projectRootURL, after: documentSaveTask,
+                     operationID: loadID, revision: documentRevision)
+    }
+
+    private func saveDocument(
+        _ document: ProjectEditDocument,
+        in projectRootURL: URL,
+        after priorSave: Task<Void, Never>?,
+        operationID: UUID,
+        revision: Int
+    ) {
+        hasUnsavedDocument = true
+        pendingDocumentSaves += 1
+        persistenceFailureMessage = nil
+        documentSaveTask = Task { [self, store] in
+            defer { pendingDocumentSaves -= 1 }
+            await priorSave?.value
+            do {
+                try await store.save(document, in: projectRootURL)
+                if loadID == operationID, documentRevision == revision {
+                    hasUnsavedDocument = false
+                    persistenceFailureMessage = nil
                 }
+            } catch {
+                guard loadID == operationID else { return }
+                errorMessage = error.localizedDescription
+                persistenceFailureMessage = error.localizedDescription
             }
         }
     }
@@ -1056,6 +1085,7 @@ final class ProjectEditSession: ObservableObject {
             try await store.save(nextDocument, in: projectRootURL)
             guard loadID == operationID else { return }
             hasUnsavedDocument = false
+            persistenceFailureMessage = nil
             document = nextDocument
             documentRevision += 1
             timeline = next.timeline
@@ -1264,6 +1294,7 @@ final class ProjectEditSession: ObservableObject {
             try await store.save(nextDocument, in: projectRootURL)
             guard loadID == operationID else { return }
             hasUnsavedDocument = false
+            persistenceFailureMessage = nil
             document = nextDocument
             documentRevision += 1
             privacyOverlays = next
@@ -1295,12 +1326,14 @@ final class ProjectEditSession: ObservableObject {
                 try await store.save(document, in: projectRootURL)
                 if self.loadID == operationID, self.documentRevision == revision {
                     self.hasUnsavedDocument = false
+                    self.persistenceFailureMessage = nil
                 }
             } catch is CancellationError {
                 return
             } catch {
                 guard let self, self.loadID == operationID else { return }
                 self.errorMessage = error.localizedDescription
+                self.persistenceFailureMessage = error.localizedDescription
             }
         }
     }

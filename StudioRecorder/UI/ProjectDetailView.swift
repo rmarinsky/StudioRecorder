@@ -137,10 +137,15 @@ struct ProjectDetailView: View {
         }
         .navigationTitle("Recording")
         .onAppear {
-            updates.registerActivity(updateActivityID) {
-                editSession.isWorking || editSession.hasPendingPersistence
-                    || isPreparingGIF || isExporting
-            }
+            updates.registerActivity(
+                updateActivityID,
+                isBusy: {
+                    editSession.isWorking || editSession.hasPendingPersistence
+                        || isPreparingGIF || isExporting
+                },
+                persistenceFailure: { editSession.persistenceFailureMessage },
+                retryPersistence: { editSession.retryPendingPersistence() }
+            )
         }
         .onChange(of: exportRequest) { _, _ in
             if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
