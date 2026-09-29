@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct StudioRecorderApp: App {
+    @NSApplicationDelegateAdaptor(UpdateApplicationDelegate.self) private var appDelegate
     @StateObject private var preferencesStore: PreferencesStore
     @StateObject private var streamingSettings: YouTubeStreamingSettingsStore
     @StateObject private var managedYouTube: YouTubeManagedSessionCoordinator
@@ -35,6 +36,7 @@ struct StudioRecorderApp: App {
                 sceneLibrary: sceneLibrary
             )
                 .environmentObject(updates)
+                .onAppear { appDelegate.updates = updates }
                 .frame(minWidth: 1_080, minHeight: 700)
                 .preferredColorScheme(preferencesStore.preferences.appearance.colorScheme)
         }
