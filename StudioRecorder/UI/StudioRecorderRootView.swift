@@ -245,7 +245,7 @@ struct StudioRecorderRootView: View {
         } message: {
             Text(sceneLibraryError ?? "The scene library could not be updated.")
         }
-        .alert("Job Could Not Be Retried", isPresented: Binding(
+        .alert("Job Action Failed", isPresented: Binding(
             get: { jobError != nil },
             set: { if !$0 { jobError = nil } }
         )) {
@@ -427,18 +427,40 @@ struct StudioRecorderRootView: View {
                 }
                 ForEach(snapshot.jobs) { job in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(snapshot.projects.first(where: { $0.identity.manifestID == job.projectID }).map(projectTitle) ?? "Recording")
-                            .font(.subheadline.weight(.semibold))
+                        HStack {
+                            Text(snapshot.projects.first(where: { $0.identity.manifestID == job.projectID }).map(projectTitle) ?? "Recording")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 8)
+                            if job.state == .queued || job.state == .running {
+                                Button {
+                                    Task {
+                                        do { try await model.cancelJob(job.id) }
+                                        catch { jobError = error.localizedDescription }
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Cancel \(job.kind.rawValue) job")
+                                .accessibilityLabel("Cancel \(job.kind.rawValue) job")
+                            }
+                        }
                         Text("\(job.kind.rawValue.capitalized) · \(job.stage)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if job.state == .running {
-                            ProgressView(value: job.progress)
+                            if job.kind == .transcription && job.stage == "Recognizing Ukrainian words locally" {
+                                ProgressView()
+                                    .accessibilityLabel(job.stage)
+                                    .help("Recognition is running. Completion time depends on recording length.")
+                            } else {
+                                ProgressView(value: job.progress)
+                            }
                         }
                         if let failure = job.failure {
                             Text(failure).font(.caption).foregroundStyle(.orange)
                         }
-                        if job.state == .failed {
+                        if job.state == .failed || job.state == .cancelled {
                             Button("Retry") {
                                 Task {
                                     do { try await model.retryJob(job.id) }
@@ -465,6 +487,7 @@ struct StudioRecorderRootView: View {
             }
         }
         .task {
+            guard ProcessInfo.processInfo.environment["STUDIO_RECORDER_TEST_MODE"] != "1" else { return }
             model.useTimelapseFrameProvider { [liveScene] context in
                 try await liveScene.captureProgramFrame(context: context)
             }
@@ -656,6 +679,7 @@ struct StudioRecorderRootView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard ProcessInfo.processInfo.environment["STUDIO_RECORDER_TEST_MODE"] != "1" else { return }
             shortcutMonitor.refreshAccess()
             Task { await model.appBecameActive() }
         }

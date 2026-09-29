@@ -264,6 +264,7 @@ actor TimelapseMovieRenderer {
         }
         guard reader.status == .completed else { throw TimelapseError.invalidSource }
         _ = try await writer.finish()
+        try Task.checkCancellation()
         let exported = AVURLAsset(url: temporaryURL)
         let expectedDuration = Double(count * framesPerSample) / Double(Self.frameRate)
         guard await RecordingOutputFinalizationPolicy.isCompleteProgram(
@@ -274,6 +275,7 @@ actor TimelapseMovieRenderer {
             audioTrackCount: (try? exported.loadTracks(withMediaType: .audio).count) ?? -1,
             expectedAudioTrackCount: 0
         ) else { throw TimelapseError.invalidSource }
+        try Task.checkCancellation()
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {

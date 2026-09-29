@@ -221,6 +221,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var activeFinalizationJobID: UUID?
     private var activeExportJobID: UUID?
     private var activeTranscriptionJobID: UUID?
+    private var activeFinalizationTask: Task<Void, Never>?
+    private var activeExportTask: Task<Void, Never>?
+    private var activeTranscriptionTask: Task<Void, Never>?
     private var didCheckAbandonedTranscriptionModels = false
     private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
@@ -844,6 +847,22 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
+    func cancelJob(_ jobID: UUID) async throws {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+        let cancelled = try jobStore.cancel(jobID: jobID, in: project)
+        if let index = jobs.firstIndex(where: { $0.id == jobID }) {
+            jobs[index] = cancelled
+        }
+        if activeFinalizationJobID == jobID { activeFinalizationTask?.cancel() }
+        if activeExportJobID == jobID { activeExportTask?.cancel() }
+        if activeTranscriptionJobID == jobID { activeTranscriptionTask?.cancel() }
+        await refreshProjects()
+    }
+
     func enqueueExport(_ recipe: ProjectExportRecipe) async throws {
         guard let snapshot = projects.first(where: { $0.identity.manifestID == recipe.projectID }),
               snapshot.lifecycle == .finalized || snapshot.lifecycle == .recovered else {
@@ -895,14 +914,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 in: jobs, blockedIDs: blockedFinalizationJobIDs
               ), job.kind == .finalization || job.kind == .timelapseRender else { return }
         activeFinalizationJobID = job.id
-        Task(priority: .background) { [weak self] in
-            await self?.runFinalization(job)
+        activeFinalizationTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            await self.runFinalization(job)
         }
     }
 
     private func runFinalization(_ queuedJob: RecordingJob) async {
         var job = queuedJob
         do {
+            try Task.checkCancellation()
             guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
                 throw RecordingJobStoreError.jobNotFound
             }
@@ -942,6 +963,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     }
                 )
             }
+            try Task.checkCancellation()
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
             job.state = .completed
             job.stage = "Completed"
@@ -951,21 +973,24 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            job.state = .failed
-            job.stage = "Failed"
-            job.failure = error.localizedDescription
-            job.updatedAt = Date()
-            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
-               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
-                do {
-                    try persistJob(job, in: project)
-                } catch {
-                    blockedFinalizationJobIDs.insert(job.id)
-                    finalizationWarning = "Finalization failed and its status could not be saved. The raw project remains in Recovery. \(error.localizedDescription)"
+            if job.state != .cancelled {
+                job.state = .failed
+                job.stage = "Failed"
+                job.failure = error.localizedDescription
+                job.updatedAt = Date()
+                if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+                   let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                    do {
+                        try persistJob(job, in: project)
+                    } catch {
+                        blockedFinalizationJobIDs.insert(job.id)
+                        finalizationWarning = "Finalization failed and its status could not be saved. The raw project remains in Recovery. \(error.localizedDescription)"
+                    }
                 }
             }
         }
         activeFinalizationJobID = nil
+        activeFinalizationTask = nil
         await refreshProjects()
     }
 
@@ -976,14 +1001,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 in: jobs, blockedIDs: blockedFinalizationJobIDs
               ), job.kind == .export else { return }
         activeExportJobID = job.id
-        Task(priority: .background) { [weak self] in
-            await self?.runExport(job)
+        activeExportTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            await self.runExport(job)
         }
     }
 
     private func runExport(_ queuedJob: RecordingJob) async {
         var job = queuedJob
         do {
+            try Task.checkCancellation()
             guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
                 throw RecordingJobStoreError.jobNotFound
             }
@@ -1020,6 +1047,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     to: recipe.destinationURL
                 )
             }
+            try Task.checkCancellation()
             let exported = AVURLAsset(url: recipe.destinationURL)
             let audioSource = AVURLAsset(url: recipe.programSources?.audioURL ?? recipe.sourceURL)
             let expectedAudio = try await audioSource.loadTracks(withMediaType: .audio).isEmpty ? 0 : 1
@@ -1033,6 +1061,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             ) else {
                 throw RecordingJobStoreError.invalidExport
             }
+            try Task.checkCancellation()
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
             job.state = .completed
             job.stage = "Completed"
@@ -1042,20 +1071,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            job.state = .failed
-            job.stage = "Failed"
-            job.failure = error.localizedDescription
-            job.updatedAt = Date()
-            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
-               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
-                do { try persistJob(job, in: project) }
-                catch {
-                    blockedFinalizationJobIDs.insert(job.id)
-                    finalizationWarning = "Export failed and its status could not be saved. \(error.localizedDescription)"
+            if job.state != .cancelled {
+                job.state = .failed
+                job.stage = "Failed"
+                job.failure = error.localizedDescription
+                job.updatedAt = Date()
+                if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+                   let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                    do { try persistJob(job, in: project) }
+                    catch {
+                        blockedFinalizationJobIDs.insert(job.id)
+                        finalizationWarning = "Export failed and its status could not be saved. \(error.localizedDescription)"
+                    }
                 }
             }
         }
         activeExportJobID = nil
+        activeExportTask = nil
         await refreshProjects()
     }
 
@@ -1065,14 +1097,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
               let job = RecordingJobQueuePolicy.nextHeavyJob(in: jobs, blockedIDs: blockedFinalizationJobIDs),
               job.kind == .transcription else { return }
         activeTranscriptionJobID = job.id
-        Task(priority: .background) { [weak self] in
-            await self?.runTranscription(job)
+        activeTranscriptionTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            await self.runTranscription(job)
         }
     }
 
     private func runTranscription(_ queuedJob: RecordingJob) async {
         var job = queuedJob
         do {
+            try Task.checkCancellation()
             guard let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
                 throw RecordingJobStoreError.jobNotFound
             }
@@ -1085,6 +1119,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             let transcript = try await transcriber.transcribe(recipe) { [weak self, project] fraction, phase in
                 self?.updateJobProgress(queuedJob.id, project: project, fraction: fraction, phase: phase)
             }
+            try Task.checkCancellation()
             guard transcript.projectID == recipe.projectID,
                   transcript.sourceTrackID == recipe.sourceTrackID,
                   abs(transcript.sourceDuration - recipe.sourceDuration) < 0.1 else {
@@ -1100,20 +1135,23 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            job.state = .failed
-            job.stage = "Failed"
-            job.failure = error.localizedDescription
-            job.updatedAt = Date()
-            if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
-               let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
-                do { try persistJob(job, in: project) }
-                catch {
-                    blockedFinalizationJobIDs.insert(job.id)
-                    finalizationWarning = "Transcription failed and its status could not be saved. \(error.localizedDescription)"
+            if job.state != .cancelled {
+                job.state = .failed
+                job.stage = "Failed"
+                job.failure = error.localizedDescription
+                job.updatedAt = Date()
+                if let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }),
+                   let project = try? projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID) {
+                    do { try persistJob(job, in: project) }
+                    catch {
+                        blockedFinalizationJobIDs.insert(job.id)
+                        finalizationWarning = "Transcription failed and its status could not be saved. \(error.localizedDescription)"
+                    }
                 }
             }
         }
         activeTranscriptionJobID = nil
+        activeTranscriptionTask = nil
         await refreshProjects()
     }
 
@@ -1132,7 +1170,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         fraction: Double,
         phase: String
     ) {
-        guard var job = jobs.first(where: { $0.id == jobID }) else { return }
+        guard var job = jobs.first(where: { $0.id == jobID }), job.state == .running else { return }
         let progress = min(max(fraction, 0), 1)
         guard phase != job.stage || progress - job.progress >= 0.02 else { return }
         job.stage = phase

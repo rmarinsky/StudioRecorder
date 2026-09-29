@@ -195,7 +195,13 @@ final class ProjectProgramRenderer {
             }
         }
         defer { progressTask.cancel() }
-        try await session.export(to: temporaryURL, as: .mov)
+        let cancellation = AssetExportCancellation(session)
+        try await withTaskCancellationHandler {
+            try await session.export(to: temporaryURL, as: .mov)
+        } onCancel: {
+            cancellation.cancel()
+        }
+        try Task.checkCancellation()
         progress(1)
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
