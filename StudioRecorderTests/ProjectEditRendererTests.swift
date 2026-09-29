@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Combine
 import ImageIO
+import Sparkle
 import XCTest
 @testable import StudioRecorder
 
@@ -424,6 +425,48 @@ final class ProjectEditRendererTests: XCTestCase {
     }
 
     @MainActor
+    func testPendingAudioEditSaveDelaysUpdateAfterEditorCloses() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "program.caf"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let owner = UUID()
+        updates.registerActivity(owner) { session.hasPendingPersistence }
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.6))
+        XCTAssertTrue(session.hasPendingPersistence)
+        session.stop()
+        updates.unregisterActivity(owner)
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        let safeToRestart = expectation(description: "Edited audio was saved")
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            safeToRestart.fulfill()
+        })
+        await fulfillment(of: [safeToRestart], timeout: 3)
+        XCTAssertFalse(session.hasPendingPersistence)
+        let saved = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+        XCTAssertEqual(saved?.audioAdjustment.gain, 0.6)
+    }
+
+    @MainActor
     func testAudioSliderGestureCreatesOneUndoStep() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -464,6 +507,8 @@ final class ProjectEditRendererTests: XCTestCase {
         await session.undo()
         XCTAssertEqual(session.audioAdjustment.gain, 1, accuracy: 0.001)
         XCTAssertFalse(session.canUndo)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(session.hasPendingPersistence, "A successfully saved undo must release the update gate")
         cancellable.cancel()
         session.stop()
     }
