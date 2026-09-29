@@ -87,4 +87,20 @@ path.write_text(path.read_text().replace("Test release notes", "Altered release 
 PY
 reject 'Error' "$tools/sign_update" --verify --ed-key-file "$fixture/key" "$feed"
 cp "$fixture/original.xml" "$feed"
+
+# The same entry point guards CI configuration before expensive signing work.
+export APPLE_TEAM_ID=ABCDEFGHIJ GITHUB_RUN_NUMBER=124
+export DEVELOPER_ID_CERTIFICATE_P12_BASE64=AA== DEVELOPER_ID_CERTIFICATE_PASSWORD=fixture
+export APP_STORE_CONNECT_API_KEY_P8_BASE64=AA== APP_STORE_CONNECT_KEY_ID=fixture APP_STORE_CONNECT_ISSUER_ID=fixture
+SPARKLE_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
+SPARKLE_PRIVATE_KEY="$(cat "$fixture/key")"
+export SPARKLE_PUBLIC_KEY SPARKLE_PRIVATE_KEY
+export PREVIOUS_APPCAST_PATH="$feed"
+swift "$root/scripts/validate-release-configuration.swift" 0.1.1
+reject 'SPARKLE_PRIVATE_KEY' env -u SPARKLE_PRIVATE_KEY swift "$root/scripts/validate-release-configuration.swift" 0.1.1
+reject 'key pair' env SPARKLE_PUBLIC_KEY=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= \
+    swift "$root/scripts/validate-release-configuration.swift" 0.1.1
+reject 'newer version' swift "$root/scripts/validate-release-configuration.swift" 0.1.0
+reject 'higher build' env GITHUB_RUN_NUMBER=123 swift "$root/scripts/validate-release-configuration.swift" 0.1.1
+reject 'semantic version' swift "$root/scripts/validate-release-configuration.swift" v0.1.1
 echo 'Sparkle release preparation checks passed.'
