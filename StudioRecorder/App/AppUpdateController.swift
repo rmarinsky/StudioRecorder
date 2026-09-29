@@ -55,6 +55,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
     private let gate = UpdateInstallationGate()
     private var controller: SPUStandardUpdaterController?
     private var activities: [UUID: () -> Bool] = [:]
+    private var activityCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var waitTask: Task<Void, Never>?
     private var isInstallingUpdate = false
     private var terminationReply: ((Bool) -> Void)?
@@ -85,8 +86,29 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         controller?.updater.automaticallyChecksForUpdates = enabled
     }
 
-    func registerActivity(_ id: UUID, isBusy: @escaping () -> Bool) { activities[id] = isBusy }
-    func unregisterActivity(_ id: UUID) { activities[id] = nil }
+    func registerActivity(_ id: UUID, isBusy: @escaping () -> Bool) {
+        activityCleanupTasks[id]?.cancel()
+        activityCleanupTasks[id] = nil
+        activities[id] = isBusy
+    }
+
+    func unregisterActivity(_ id: UUID) {
+        guard let activity = activities[id] else { return }
+        guard activity() else {
+            activities[id] = nil
+            return
+        }
+        activityCleanupTasks[id]?.cancel()
+        activityCleanupTasks[id] = Task { [weak self] in
+            while activity() {
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            self?.activities[id] = nil
+            self?.activityCleanupTasks[id] = nil
+        }
+    }
 
     private var isBusy: Bool {
         model.snapshot.areRecordingSettingsLocked || model.snapshot.isCaptureCommandInFlight
