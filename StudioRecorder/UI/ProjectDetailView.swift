@@ -138,7 +138,8 @@ struct ProjectDetailView: View {
         .navigationTitle("Recording")
         .onAppear {
             updates.registerActivity(updateActivityID) {
-                editSession.isWorking || isPreparingGIF || isExporting
+                editSession.isWorking || editSession.hasPendingPersistence
+                    || isPreparingGIF || isExporting
             }
         }
         .onChange(of: exportRequest) { _, _ in
@@ -176,7 +177,6 @@ struct ProjectDetailView: View {
             isConfirmingAssistantEstimatedCuts = false
         }
         .onDisappear {
-            updates.unregisterActivity(updateActivityID)
             assistantTask?.cancel()
             assistantTask = nil
             isAssistantWorking = false
@@ -184,6 +184,7 @@ struct ProjectDetailView: View {
             editSession.stop()
             cancelGIFPreparation()
             cleanupGIFSource()
+            updates.unregisterActivity(updateActivityID)
         }
         .sheet(item: $gifMakerSource, onDismiss: cleanupGIFSource) { source in
             GIFMakerView(source: source) { gifMakerSource = nil }

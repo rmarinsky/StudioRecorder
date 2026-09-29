@@ -59,6 +59,8 @@ final class ProjectEditSession: ObservableObject {
     private var redoStack: [EditHistoryState] = []
     private var audioAdjustmentGestureStart: EditHistoryState?
     private var documentSaveTask: Task<Void, Never>?
+    private var pendingDocumentSaves = 0
+    private var hasUnsavedDocument = false
     private var presentationRenderTask: Task<Void, Never>?
     private var audioWaveformTask: Task<Void, Never>?
     private var silenceTask: Task<Void, Never>?
@@ -80,6 +82,7 @@ final class ProjectEditSession: ObservableObject {
     }
 
     var canUndo: Bool { !undoStack.isEmpty && !isWorking }
+    var hasPendingPersistence: Bool { pendingDocumentSaves > 0 || hasUnsavedDocument }
     var canRedo: Bool { !redoStack.isEmpty && !isWorking }
     var canPersistEdits: Bool { document != nil }
     var editRevision: Int { documentRevision }
@@ -135,6 +138,7 @@ final class ProjectEditSession: ObservableObject {
         dismissProposalPreview()
         isLoading = true
         documentRevision += 1
+        let pendingRevision = documentRevision
         documentSaveTask?.cancel()
         documentSaveTask = nil
         presentationRenderTask?.cancel()
@@ -154,6 +158,9 @@ final class ProjectEditSession: ObservableObject {
         if let pendingDocument = document, let pendingProjectRootURL = self.projectRootURL {
             do {
                 try await store.save(pendingDocument, in: pendingProjectRootURL)
+                if loadID == requestID, documentRevision == pendingRevision {
+                    hasUnsavedDocument = false
+                }
             } catch {
                 guard loadID == requestID else { return }
                 errorMessage = error.localizedDescription
@@ -945,8 +952,11 @@ final class ProjectEditSession: ObservableObject {
     func stop() {
         loadID = UUID()
         documentRevision += 1
+        let operationID = loadID
+        let revision = documentRevision
         dismissProposalPreview()
         player.pause()
+        let priorSave = documentSaveTask
         documentSaveTask?.cancel()
         presentationRenderTask?.cancel()
         audioWaveformTask?.cancel()
@@ -955,8 +965,19 @@ final class ProjectEditSession: ObservableObject {
         isDetectingSilence = false
         audioAdjustmentGestureStart = nil
         if let document, let projectRootURL {
-            documentSaveTask = Task { [store] in
-                try? await store.save(document, in: projectRootURL)
+            hasUnsavedDocument = true
+            pendingDocumentSaves += 1
+            documentSaveTask = Task { [self, store] in
+                defer { pendingDocumentSaves -= 1 }
+                await priorSave?.value
+                do {
+                    try await store.save(document, in: projectRootURL)
+                    if loadID == operationID, documentRevision == revision {
+                        hasUnsavedDocument = false
+                    }
+                } catch {
+                    if loadID == operationID { errorMessage = error.localizedDescription }
+                }
             }
         }
     }
@@ -995,7 +1016,8 @@ final class ProjectEditSession: ObservableObject {
               let projectRootURL,
               document != nil else { return }
         dismissProposalPreview()
-        documentSaveTask?.cancel()
+        let priorSave = documentSaveTask
+        priorSave?.cancel()
         documentSaveTask = nil
         presentationRenderTask?.cancel()
         presentationRenderTask = nil
@@ -1029,8 +1051,11 @@ final class ProjectEditSession: ObservableObject {
             nextDocument.segmentAudioAdjustments.append(contentsOf: next.segmentAudioAdjustments)
             let allSegmentIDs = Set(nextDocument.timelines.flatMap { $0.segments.map(\.id) })
             nextDocument.retainSegmentAudioAdjustments(for: allSegmentIDs)
+            await priorSave?.value
+            guard loadID == operationID else { return }
             try await store.save(nextDocument, in: projectRootURL)
             guard loadID == operationID else { return }
+            hasUnsavedDocument = false
             document = nextDocument
             documentRevision += 1
             timeline = next.timeline
@@ -1217,7 +1242,8 @@ final class ProjectEditSession: ObservableObject {
               let projectRootURL,
               var nextDocument = document else { return }
         dismissProposalPreview()
-        documentSaveTask?.cancel()
+        let priorSave = documentSaveTask
+        priorSave?.cancel()
         presentationRenderTask?.cancel()
         let operationID = loadID
         let seekTime = playhead
@@ -1233,8 +1259,11 @@ final class ProjectEditSession: ObservableObject {
             )
             guard loadID == operationID else { return }
             nextDocument.replacePrivacyOverlays(next)
+            await priorSave?.value
+            guard loadID == operationID else { return }
             try await store.save(nextDocument, in: projectRootURL)
             guard loadID == operationID else { return }
+            hasUnsavedDocument = false
             document = nextDocument
             documentRevision += 1
             privacyOverlays = next
@@ -1252,7 +1281,10 @@ final class ProjectEditSession: ObservableObject {
         let revision = documentRevision
         let operationID = loadID
         documentSaveTask?.cancel()
+        hasUnsavedDocument = true
+        pendingDocumentSaves += 1
         documentSaveTask = Task { [weak self, store] in
+            defer { self?.pendingDocumentSaves -= 1 }
             do {
                 try await Task.sleep(for: .milliseconds(120))
                 try Task.checkCancellation()
@@ -1261,6 +1293,9 @@ final class ProjectEditSession: ObservableObject {
                       self.documentRevision == revision,
                       let document = self.document else { return }
                 try await store.save(document, in: projectRootURL)
+                if self.loadID == operationID, self.documentRevision == revision {
+                    self.hasUnsavedDocument = false
+                }
             } catch is CancellationError {
                 return
             } catch {
