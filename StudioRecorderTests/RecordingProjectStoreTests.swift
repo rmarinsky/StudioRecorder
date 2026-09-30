@@ -96,6 +96,85 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(restarted.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
     }
 
+    private actor RetryingTranscriber: ProjectTranscribing {
+        let started: XCTestExpectation
+        let cancellationStarted: XCTestExpectation
+        let retryStarted: XCTestExpectation
+        private var calls = 0
+        private var cancellationContinuation: CheckedContinuation<Void, Never>?
+
+        init(started: XCTestExpectation, cancellationStarted: XCTestExpectation, retryStarted: XCTestExpectation) {
+            self.started = started
+            self.cancellationStarted = cancellationStarted
+            self.retryStarted = retryStarted
+        }
+
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            calls += 1
+            if calls == 1 {
+                started.fulfill()
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch is CancellationError {
+                    cancellationStarted.fulfill()
+                    await withCheckedContinuation { cancellationContinuation = $0 }
+                    throw CancellationError()
+                }
+            } else {
+                retryStarted.fulfill()
+                try await Task.sleep(for: .seconds(30))
+            }
+            throw CancellationError()
+        }
+
+        func finishCancellation() {
+            cancellationContinuation?.resume()
+            cancellationContinuation = nil
+        }
+    }
+
+    func testRetryWhileCancellationFinishesDoesNotLoseTheNewAttempt() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program",
+            sourceDuration: try await AVURLAsset(url: sourceURL).load(.duration).seconds,
+            audioURL: sourceURL
+        )
+        let started = expectation(description: "first attempt started")
+        let cancellationStarted = expectation(description: "first attempt is stopping")
+        let retryStarted = expectation(description: "retry started")
+        let transcriber = RetryingTranscriber(
+            started: started, cancellationStarted: cancellationStarted, retryStarted: retryStarted
+        )
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: transcriber)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueTranscription(recipe)
+        await fulfillment(of: [started], timeout: 5)
+        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
+
+        try await coordinator.cancelJob(job.id)
+        await fulfillment(of: [cancellationStarted], timeout: 5)
+        try await coordinator.retryJob(job.id)
+        await transcriber.finishCancellation()
+        await fulfillment(of: [retryStarted], timeout: 5)
+
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .running)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first(where: { $0.id == job.id })?.attempt, 2)
+        try? await coordinator.cancelJob(job.id)
+    }
+
     func testCancellingQueuedJobLeavesFollowingWorkAvailable() throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }

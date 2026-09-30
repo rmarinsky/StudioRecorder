@@ -851,7 +851,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription
@@ -949,7 +949,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription
@@ -1013,7 +1013,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription
