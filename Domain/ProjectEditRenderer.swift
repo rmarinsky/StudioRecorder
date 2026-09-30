@@ -1,6 +1,18 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+final class AssetExportCancellation: @unchecked Sendable {
+    private let session: AVAssetExportSession
+
+    init(_ session: AVAssetExportSession) {
+        self.session = session
+    }
+
+    func cancel() {
+        session.cancelExport()
+    }
+}
+
 enum ProjectEditRendererError: LocalizedError, Equatable {
     case unreadableSource
     case noMediaTracks
@@ -65,7 +77,13 @@ final class ProjectEditRenderer {
             .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
-        try await session.export(to: temporaryURL, as: .mov)
+        let cancellation = AssetExportCancellation(session)
+        try await withTaskCancellationHandler {
+            try await session.export(to: temporaryURL, as: .mov)
+        } onCancel: {
+            cancellation.cancel()
+        }
+        try Task.checkCancellation()
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {

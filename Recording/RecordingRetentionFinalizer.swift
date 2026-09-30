@@ -146,6 +146,8 @@ final class RecordingRetentionFinalizer {
             throw RecordingRetentionFinalizerError.unreadableProgramMovie
         }
 
+        try Task.checkCancellation()
+
         try projectStore.markStarted(trackID: Self.programTrack.id, in: project)
         try projectStore.markFinished(trackID: Self.programTrack.id, in: project)
         progress(0.94, "Closing recording package…")

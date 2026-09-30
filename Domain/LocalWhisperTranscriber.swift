@@ -126,9 +126,10 @@ struct WhisperProcessRunner {
         let box = CancellableWhisperProcess()
         let process = box.process
         process.executableURL = executableURL
+        let threadCount = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2))
         process.arguments = [
-            "-ng", "-t", "2", "-m", modelURL.path, "-f", wavURL.path,
-            "-l", "uk", "-dtw", "small", "-ml", "1", "-sow", "-ojf", "-of", outputBaseURL.path,
+            "-t", String(threadCount), "-m", modelURL.path, "-f", wavURL.path,
+            "-l", "uk", "-nfa", "-dtw", "small", "-ml", "1", "-sow", "-ojf", "-of", outputBaseURL.path,
         ]
         let logURL = outputBaseURL.deletingLastPathComponent().appending(path: "recognition.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)

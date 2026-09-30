@@ -74,5 +74,7 @@ schemes:
         StudioRecorder: all
         StudioRecorderTests: [test]
     test:
+      environmentVariables:
+        STUDIO_RECORDER_TEST_MODE: "1"
       targets:
         - StudioRecorderTests

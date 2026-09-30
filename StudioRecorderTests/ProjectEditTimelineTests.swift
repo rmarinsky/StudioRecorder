@@ -56,6 +56,20 @@ final class ProjectEditTimelineTests: XCTestCase {
         try process.run()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
+
+        let links = Process()
+        links.executableURL = URL(fileURLWithPath: "/usr/bin/otool")
+        links.arguments = ["-L", resource.path]
+        let output = Pipe()
+        links.standardOutput = output
+        links.standardError = FileHandle.nullDevice
+        try links.run()
+        links.waitUntilExit()
+        XCTAssertEqual(links.terminationStatus, 0)
+        let linkedFrameworks = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+        ) ?? ""
+        XCTAssertTrue(linkedFrameworks.contains("/System/Library/Frameworks/Metal.framework"))
     }
 
     func testWhisperTaskWorkspaceRemovesModelsAfterFailure() async throws {
@@ -110,7 +124,7 @@ final class ProjectEditTimelineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appending(path: "recognizer")
-        try Data("#!/bin/sh\npreset=\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -dtw) shift; preset=\"$1\" ;;\n    -of) shift; output=\"$1\" ;;\n  esac\n  shift\ndone\n[ \"$preset\" = small ] || exit 3\n[ -n \"$output\" ] || exit 2\nprintf '{\"transcription\":[]}' > \"$output.json\"\n".utf8)
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\npreset=\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -dtw) shift; preset=\"$1\" ;;\n    -of) shift; output=\"$1\" ;;\n  esac\n  shift\ndone\n[ \"$preset\" = small ] || exit 3\n[ -n \"$output\" ] || exit 2\nprintf '{\"transcription\":[]}' > \"$output.json\"\n".utf8)
             .write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let output = try await WhisperProcessRunner().run(
@@ -120,6 +134,48 @@ final class ProjectEditTimelineTests: XCTestCase {
             outputBaseURL: root.appending(path: "words")
         )
         XCTAssertEqual(try Data(contentsOf: output), Data("{\"transcription\":[]}".utf8))
+        let arguments = try String(contentsOf: root.appending(path: "arguments"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertFalse(arguments.contains("-ng"), "Local transcription must allow Metal GPU inference")
+        XCTAssertTrue(arguments.contains("-nfa"), "Flash attention disables DTW word timestamps")
+        let threadsIndex = try XCTUnwrap(arguments.firstIndex(of: "-t"))
+        XCTAssertEqual(
+            arguments[threadsIndex + 1],
+            String(max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
+        )
+    }
+
+    func testCancellingWhisperRunnerTerminatesItsChildProcess() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appending(path: "recognizer")
+        try Data("#!/bin/sh\nprintf '%s' \"$$\" > \"$(dirname \"$0\")/pid\"\nexec /bin/sleep 30\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let operation = Task {
+            try await WhisperProcessRunner().run(
+                executableURL: executable,
+                modelURL: root.appending(path: "model.bin"),
+                wavURL: root.appending(path: "audio.wav"),
+                outputBaseURL: root.appending(path: "words")
+            )
+        }
+        let pidURL = root.appending(path: "pid")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: pidURL.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidURL, encoding: .utf8)))
+
+        operation.cancel()
+        do {
+            _ = try await operation.value
+            XCTFail("Cancelled recognizer completed")
+        } catch is CancellationError {
+            XCTAssertEqual(kill(pid, 0), -1)
+            XCTAssertEqual(errno, ESRCH)
+        }
     }
 
     func testLocalWhisperTranscribesApprovedUkrainianSample() async throws {
