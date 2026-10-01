@@ -2,10 +2,51 @@
 import Combine
 import ImageIO
 import XCTest
+import SwiftUI
 @testable import StudioRecorder
 
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
+    func testTimelineKeepsEditingControlsWithoutASecondExportButton() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: root,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: source, programSources: nil, initialPresentation: .default
+        )
+        defer { session.stop() }
+        let host = NSHostingView(rootView: ProjectQuickEditorView(session: session))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Split"), "The actual timeline must be rendered: \(labels)")
+        XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
+    }
+
+    private func accessibilityLabels(in element: Any) -> [String] {
+        guard let object = element as? NSObject else { return [] }
+        let labels = ["accessibilityLabel", "accessibilityTitle"].compactMap { name -> String? in
+            let selector = NSSelectorFromString(name)
+            guard object.responds(to: selector) else { return nil }
+            return object.perform(selector)?.takeUnretainedValue() as? String
+        }
+        let childrenSelector = NSSelectorFromString("accessibilityChildren")
+        let children = object.responds(to: childrenSelector)
+            ? object.perform(childrenSelector)?.takeUnretainedValue() as? [Any] : nil
+        return labels + (children ?? []).flatMap { accessibilityLabels(in: $0) }
+    }
+
     func testReorderedSegmentsExportInEditedPictureOrder() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
