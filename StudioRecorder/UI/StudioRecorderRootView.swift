@@ -442,11 +442,11 @@ struct StudioRecorderRootView: View {
                                 .controlSize(.small)
                                 .help("Cancel \(job.kind.rawValue) job")
                                 .accessibilityLabel("Cancel \(job.kind.rawValue) job")
-                            } else if job.kind == .export, job.state == .completed {
+                            } else if job.state == .completed {
                                 Button {
                                     Task {
                                         do {
-                                            let destination = try await model.completedExportDestination(for: job.id)
+                                            let destination = try await model.completedJobResult(for: job.id)
                                             NSWorkspace.shared.activateFileViewerSelecting([destination])
                                         } catch { jobError = error.localizedDescription }
                                     }
@@ -455,8 +455,8 @@ struct StudioRecorderRootView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
-                                .help("Show exported movie in Finder")
-                                .accessibilityLabel("Show exported movie in Finder")
+                                .help("Show job result in Finder")
+                                .accessibilityLabel("Show job result in Finder")
                             }
                         }
                         Text("\(job.kind.rawValue.capitalized) · \(job.stage)")

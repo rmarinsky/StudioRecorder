@@ -569,9 +569,9 @@ final class StudioRecorderModel: ObservableObject {
         synchronizeFromCoordinator()
     }
 
-    func completedExportDestination(for jobID: UUID) async throws -> URL {
+    func completedJobResult(for jobID: UUID) async throws -> URL {
         guard let coordinator else { throw RecordingJobStoreError.jobNotFound }
-        return try await coordinator.completedExportDestination(for: jobID)
+        return try await coordinator.completedJobResult(for: jobID)
     }
 
     func retryJob(_ jobID: UUID) async throws {

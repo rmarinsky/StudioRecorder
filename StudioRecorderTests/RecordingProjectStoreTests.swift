@@ -258,6 +258,8 @@ final class RecordingProjectStoreTests: XCTestCase {
             in: project.rootURL, expectedProjectID: project.id
         ))
         XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
+        let resultURL = try await coordinator.completedJobResult(for: job.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "analysis/transcript.json").resolvingSymlinksInPath())
     }
 
     func testUnreadableJobHistoryRemainsVisibleOnReadyProject() async throws {
@@ -371,7 +373,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         try jobStore.saveExport(recipe, for: job, in: project)
         job.state = .running
         try jobStore.save(job, in: project)
-        XCTAssertThrowsError(try jobStore.completedExportDestination(jobID: job.id, in: project))
+        XCTAssertThrowsError(try jobStore.completedJobResult(jobID: job.id, in: project))
         try await ProjectEditStore().save(
             ProjectEditDocument(
                 projectID: project.id,
@@ -387,7 +389,7 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
-        let revealURL = try await coordinator.completedExportDestination(for: job.id)
+        let revealURL = try await coordinator.completedJobResult(for: job.id)
         XCTAssertEqual(revealURL, exportedURL)
         let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
@@ -506,6 +508,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(coordinator.jobs.first?.attempt, 2)
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalized)
         XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "program.mov").path))
+        let resultURL = try await coordinator.completedJobResult(for: interruptedJob.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "program.mov").resolvingSymlinksInPath())
     }
 
     func testFailedBackgroundFinalizationKeepsProjectInRecoveryWithRetryableJob() async throws {

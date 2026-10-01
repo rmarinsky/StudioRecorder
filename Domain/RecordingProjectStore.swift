@@ -137,7 +137,7 @@ enum RecordingJobStoreError: LocalizedError {
     case notCancellable
     case invalidExport
     case invalidTranscription
-    case exportResultUnavailable
+    case jobResultUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -149,7 +149,7 @@ enum RecordingJobStoreError: LocalizedError {
         case .notCancellable: "Only queued or running jobs can be cancelled."
         case .invalidExport: "The saved export request is invalid or references media outside this project."
         case .invalidTranscription: "The saved transcription request is invalid or references media outside this project."
-        case .exportResultUnavailable: "The export has not completed or its output file is no longer available."
+        case .jobResultUnavailable: "The job has not completed or its result file is no longer available."
         }
     }
 }
@@ -259,16 +259,24 @@ final class RecordingJobStore {
         }
     }
 
-    func completedExportDestination(jobID: UUID, in project: RecordingProject) throws -> URL {
+    func completedJobResult(jobID: UUID, in project: RecordingProject) throws -> URL {
         guard let job = try load(in: project).first(where: { $0.id == jobID }) else {
             throw RecordingJobStoreError.jobNotFound
         }
-        guard job.kind == .export, job.state == .completed else {
-            throw RecordingJobStoreError.exportResultUnavailable
+        guard job.state == .completed else {
+            throw RecordingJobStoreError.jobResultUnavailable
         }
-        let destination = try loadExport(for: job, in: project).destinationURL
+        let destination: URL
+        switch job.kind {
+        case .export:
+            destination = try loadExport(for: job, in: project).destinationURL
+        case .transcription:
+            destination = project.rootURL.appending(path: "analysis/transcript.json")
+        case .finalization:
+            destination = project.rootURL.appending(path: "program.mov")
+        }
         guard fileManager.fileExists(atPath: destination.path) else {
-            throw RecordingJobStoreError.exportResultUnavailable
+            throw RecordingJobStoreError.jobResultUnavailable
         }
         return destination
     }
