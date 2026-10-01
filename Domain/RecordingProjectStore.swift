@@ -137,6 +137,7 @@ enum RecordingJobStoreError: LocalizedError {
     case notCancellable
     case invalidExport
     case invalidTranscription
+    case jobResultUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -148,6 +149,7 @@ enum RecordingJobStoreError: LocalizedError {
         case .notCancellable: "Only queued or running jobs can be cancelled."
         case .invalidExport: "The saved export request is invalid or references media outside this project."
         case .invalidTranscription: "The saved transcription request is invalid or references media outside this project."
+        case .jobResultUnavailable: "The job has not completed or its result file is no longer available."
         }
     }
 }
@@ -255,6 +257,28 @@ final class RecordingJobStore {
               knownSource, knownAudio else {
             throw RecordingJobStoreError.invalidTranscription
         }
+    }
+
+    func completedJobResult(jobID: UUID, in project: RecordingProject) throws -> URL {
+        guard let job = try load(in: project).first(where: { $0.id == jobID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        guard job.state == .completed else {
+            throw RecordingJobStoreError.jobResultUnavailable
+        }
+        let destination: URL
+        switch job.kind {
+        case .export:
+            destination = try loadExport(for: job, in: project).destinationURL
+        case .transcription:
+            destination = project.rootURL.appending(path: "analysis/transcript.json")
+        case .finalization:
+            destination = project.rootURL.appending(path: "program.mov")
+        }
+        guard fileManager.fileExists(atPath: destination.path) else {
+            throw RecordingJobStoreError.jobResultUnavailable
+        }
+        return destination
     }
 
     private func exportURL(for job: RecordingJob, in project: RecordingProject) -> URL {

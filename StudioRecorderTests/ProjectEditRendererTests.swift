@@ -2,10 +2,128 @@
 import Combine
 import ImageIO
 import XCTest
+import SwiftUI
 @testable import StudioRecorder
 
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
+    func testTimelineKeepsFrequentActionsWithoutDuplicateExportOrSecondaryButtons() async throws {
+        try await requireNativeAccessibility()
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: UUID(), projectRootURL: root,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "source.mov"),
+            sourceURL: source, programSources: nil, initialPresentation: .default
+        )
+        defer { session.stop() }
+        let host = NSHostingView(rootView: ProjectQuickEditorView(session: session))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Split") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Split"), "The actual timeline must be rendered: \(labels)")
+        XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
+        XCTAssertTrue(labels.contains("Play selection"))
+        XCTAssertTrue(labels.contains("Delete Selection"))
+        XCTAssertTrue(labels.contains("Undo timeline edit"))
+        XCTAssertTrue(labels.contains("Redo timeline edit"))
+        for secondaryAction in ["Trim Before", "Trim After", "Delete Segment", "Reset", "Audition"] {
+            XCTAssertFalse(labels.contains(secondaryAction), "\(secondaryAction) must not compete with frequent timeline actions")
+        }
+    }
+
+    func testEditorKeepsOptionalPanelsAndOriginalMediaOutOfThePrimaryControls() async throws {
+        try await requireNativeAccessibility()
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await writeReadableMovie(to: root.appending(path: "program.mov"))
+        let sourceDuration = try await AVURLAsset(url: root.appending(path: "program.mov")).load(.duration).seconds
+        let projectID = UUID()
+        let project = RecordingProjectSnapshot(
+            identity: .init(packageURL: root, manifestID: projectID),
+            createdAt: Date(), stoppedAt: Date(), lifecycle: .finalized,
+            captureProfile: "fixture", sources: [], tracks: [.program],
+            recoveryReport: .init(tracks: [.init(descriptor: .program, state: .finalized, fileSize: nil)], diagnostics: []),
+            presentation: .default, primaryAudioDisplayID: nil
+        )
+        try TimedTranscriptStore().save(TimedTranscript(
+            projectID: projectID, sourceTrackID: "program", sourceDuration: sourceDuration,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Hello", sourceStart: 0.1, sourceEnd: 0.3, timingStatus: .aligned)]
+        ), in: root)
+        let host = NSHostingView(rootView: ProjectDetailView(
+            project: project, onClose: {}, queueExport: { _ in }, jobs: [],
+            queueTranscription: { _ in XCTFail("A saved transcript must not be queued again") }
+        ))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1000),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<300 {
+            host.layoutSubtreeIfNeeded()
+            let loadedLabels = accessibilityLabels(in: host)
+            if loadedLabels.contains("Split"), loadedLabels.contains("Search transcript"),
+               loadedLabels.contains("Select phrase: Hello") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Split"), "Editor must finish loading: \(labels)")
+        XCTAssertTrue(labels.contains("Show Assistant"))
+        XCTAssertFalse(labels.contains("Hide Assistant"))
+        XCTAssertTrue(labels.contains("Find pauses"))
+        XCTAssertFalse(labels.contains("Find Silences"))
+        XCTAssertFalse(labels.contains("Find"), "Transcript must reuse the timeline pause finder")
+        XCTAssertTrue(labels.contains("Search transcript"))
+        XCTAssertTrue(labels.contains("Select phrase: Hello"))
+        XCTAssertFalse(labels.contains("Open Raw Movie"))
+        XCTAssertFalse(labels.contains("Share Raw Movie"))
+        XCTAssertFalse(labels.contains("Save Frame"))
+    }
+
+    private func requireNativeAccessibility() async throws {
+        _ = NSApplication.shared
+        let host = NSHostingView(rootView: Button("Native accessibility probe") {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<40 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Native accessibility probe") { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw XCTSkip("This host does not expose a known SwiftUI button through native accessibility; UI assertions require a desktop accessibility session")
+    }
+
+    private func accessibilityLabels(in element: Any) -> [String] {
+        guard let object = element as? NSObject else { return [] }
+        let labels = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].compactMap { name -> String? in
+            let selector = NSSelectorFromString(name)
+            guard object.responds(to: selector) else { return nil }
+            return object.perform(selector)?.takeUnretainedValue() as? String
+        }
+        let childrenSelector = NSSelectorFromString("accessibilityChildren")
+        let children = object.responds(to: childrenSelector)
+            ? object.perform(childrenSelector)?.takeUnretainedValue() as? [Any] : nil
+        return labels + (children ?? []).flatMap { accessibilityLabels(in: $0) }
+    }
+
     func testReorderedSegmentsExportInEditedPictureOrder() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: "\(UUID().uuidString).recordingproject", directoryHint: .isDirectory)
@@ -1240,6 +1358,48 @@ final class ProjectEditRendererTests: XCTestCase {
         let center = try color(in: frameURL, normalizedX: 0.5, normalizedY: 0.5)
         XCTAssertGreaterThan(center.red, 180)
         XCTAssertLessThan(center.green, 80)
+    }
+
+    func testProgramExportDoesNotInventACursorBeforeItsFirstRecordedPosition() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let screen = root.appending(path: "screen.mov")
+        let output = root.appending(path: "output.mov")
+        try await writeReadableMovie(to: screen, colors: Array(repeating: 0xFF0000FF, count: 5))
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.screen = SourcePlacementSnapshot(centerX: 0.5, centerY: 0.5, width: 1, height: 1, shape: .rectangle)
+        presentation.cursor = CursorTreatmentSnapshot(scale: 2, highlightsClicks: true)
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screen, cameraURL: nil, screenDisplayID: 3,
+                cursorTimeline: CursorSceneTimeline(samples: [
+                    CursorSceneSample(time: 1, displayID: 3, normalizedX: 0.5,
+                                      normalizedY: 0.5, isPrimaryButtonDown: true),
+                    CursorSceneSample(time: 1.25, displayID: 3, normalizedX: 0.5,
+                                      normalizedY: 0.5, isPrimaryButtonDown: false, isVisible: false)
+                ]), screenWasCapturedAsFixedRegion: true, rendersCursor: true
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: presentation, to: output
+        )
+        let before = root.appending(path: "before.png")
+        let after = root.appending(path: "after.png")
+        let outside = root.appending(path: "outside.png")
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 0.5, to: before)
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.1, to: after)
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.5, to: outside)
+        let hidden = try color(in: outside, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        XCTAssertGreaterThan(hidden.blue, 180)
+        XCTAssertLessThan(hidden.red, 80)
+        let absent = try color(in: before, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        let visible = try color(in: after, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        XCTAssertGreaterThan(absent.blue, 180)
+        XCTAssertLessThan(absent.red, 80)
+        XCTAssertGreaterThan(visible.red, 180)
+        XCTAssertLessThan(visible.blue, 120)
     }
 
     func testFollowCursorSceneReplaysRecordedCursorMovement() async throws {

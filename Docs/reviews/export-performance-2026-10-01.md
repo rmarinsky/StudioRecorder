@@ -1,0 +1,74 @@
+# StudioRecorder: чому повільно експортується 42-хвилинний запис
+
+Дата: 2026-10-01. Діагностика поточного запису; код експорту не змінено.
+
+## Висновок
+
+Є дві підтверджені причини: Export повністю збирає відео з відновлених доріжок, а одночасно відкриті production і DEV виконують експорти того самого проєкту. Короткий контрольний рендер дає приблизно 31 хвилину на 42 хвилини матеріалу; це оцінка за одним фрагментом, не вимір повного експорту.
+
+Окремо виявлено ризик спільної черги між процесами: `running`-задача одного процесу може бути сприйнята іншим як перервана. Тому до оптимізації рендера треба забезпечити одного власника виконання задач.
+
+## Що перевірено наживо
+
+- Вихідний screen має тривалість **2531,967 с = 42 хв 11,967 с**, 1920 × 1080, H.264; файл приблизно 449 MB.
+- Камера: 1920 × 1080, H.264, приблизно 29,95 fps і 23,63 Mbit/s; файл приблизно 7,55 GB. Screen є змінним за частотою кадрів; його nominalFrameRate близько 17,98 не означає, що вихід треба експортувати з такою частотою.
+- Рецепти двох експортів: один сегмент на всю довжину, 1080p / 30 fps, камера ввімкнена, cursor compositing увімкнений, 66 294 cursor samples. Privacy overlays немає; camera background mode = off; scene timeline змін немає.
+- У journal є `projectInterrupted` о 14:54:10 UTC з повідомленням про несподівану зупинку screen recording; далі `recoveryCompleted` о 14:55:58 UTC. Це **не доказ нестачі диска**: повідомлення лише радить її перевірити.
+- `program.mov` у пакеті відсутній. Збережено окремі screen, camera та audio stems. Попри запит retention `programOnly`, після цього переривання готової композиції немає.
+- Два процеси: production PID 16536 з `build/releases/.../Studio Recorder.app` та DEV PID 71121 з `/Applications/Studio Recorder DEV.app`.
+- `lsof` підтвердив, що обидва відкрили ті самі screen/camera/audio stems і різні `.StudioRecorder-program-*.mov` для результатів. Навантаження процесів в одному знімку було близько 33% і 37% CPU; це не загальне навантаження GPU/медіарушія.
+- Обидва експортні записи в `jobs.json` змінювали прогрес одночасно. Пізніше зафіксовано один `completed`, інший `running` із progress 0. Сам файл не доводить, який процес виконав перехід; для цього потрібні owner/attempt-події або додаткова трасировка.
+
+## Реальний контрольний рендер
+
+Прочитано збережений рецепт. Рендерився інтервал **1000–1010 с** через `ProjectProgramRenderer.exportMovie`, ту саму реалізацію, що виконує queue export. Результати створювалися лише в `/tmp`; оригінальні файли, монтаж і чинні задачі не змінювалися. Кожен отриманий результат мав 10 с тривалості. Це діагностичні варіанти, не пропозиція видаляти камеру або курсор з експорту.
+
+| Варіант | Перший прогін | Повторний прогін |
+| --- | ---: | ---: |
+| Повна композиція | 13,82 с | **7,26 с** |
+| Та сама композиція без composited cursor | 4,92 с | **4,46 с** |
+| Та сама композиція без камери | 4,30 с | **4,08 с** |
+
+Перший прогін може включати старт кодека та більше паралельного навантаження. Порядок був однаковий; це не контрольований isolated benchmark. Різниця між варіантами показує помітну вартість композиції, але не дозволяє точно розподілити весь час між GPU, декодером, курсором, тінями та кодером.
+
+Лінійна оцінка повторного повного прогону: 2531,967 × 7,255 / 10 ≈ **1837 с, або 30,6 хв**. Час інших фрагментів, температура, активний запис, інші jobs та I/O можуть її змінити. Повний 42-хвилинний контрольний експорт не запускався.
+
+## Шлях у коді
+
+1. `RecordingCoordinator.runExport` завантажує recipe. Якщо `programSources` присутні, викликає `ProjectProgramRenderer.exportMovie`.
+2. Renderer створює composition, додає custom `videoComposition` та `audioMix`, запускає `AVAssetExportSession` з quality preset.
+3. `ProjectVideoCompositor.startRequest` бере screen і camera frame, обчислює presentation/framing/cursor, викликає `ProgramFrameCompositor.render` для кожного вихідного кадру.
+4. `ProgramFrameCompositor` складає screen/camera/cursor/тіні/оверлеї через Core Image, рендерить pixel buffer, після чого AVFoundation кодує MOV.
+5. Для 42 хв при 30 fps це приблизно **75 959 вихідних кадрів**. Монтаж без cuts не вимикає композицію, якщо sources містять окрему камеру й cursor.
+
+Поточний screen і камера вже є H.264, проте це не дозволяє просто скопіювати їх як готове composed відео. Passthrough окремого screen втратить камеру, cursor і композицію. У цьому відновленому пакеті немає готового `program.mov`, який можна було б безпечно взяти за основу.
+
+Інший renderer, `ProjectEditRenderer`, також використовує `AVAssetExportPresetHighestQuality` навіть для простих cuts. Це потенційна зайва перекодировка для program-only проєктів, але **не шлях досліджених активних експортів**.
+
+## Чому дві версії - проблема
+
+У `RecordingCoordinator` є `activeExportJobID`, `activeFinalizationJobID` і `activeTranscriptionJobID`. Вони обмежують важку роботу **в одному процесі**. Production і DEV мають різні значення цих полів, але спільні файли проєкту.
+
+`refreshProjects` відрізняє локальну активну задачу за цими ID, інакше використовує reconciliation. У job storage немає підтвердженого міжпроцесного lease/lock для виконання. Atomic write `jobs.json` сам собою не встановлює власника задачі й не запобігає read-modify-write конфліктам.
+
+Підтверджено паралельну роботу двох процесів. Повторне виконання конкретного job і точний механізм зміни progress залишаються висновком із коду та спостережень, а не завершеною двопроцесною репродукцією.
+
+## Рекомендований порядок окремого виправлення
+
+1. **Один worker-власник для спільного сховища.** Використати native міжпроцесний lock, що звільняється при завершенні процесу. Інша версія може читати стан, але не повинна requeue/execute чужі активні jobs. Перевірити двома процесами, crash/restart і відсутністю lost updates.
+2. **Повторний експорт незмінної композиції.** Після успішного першого рендера можна повторно використати перевірений результат для точно того самого recipe. Cache key мусить охоплювати sources, timeline, presentation, camera sync, cursor, audio, privacy, overlays та параметри кодування. Не підміняти новий монтаж старим результатом.
+3. **Program-only без візуальних змін.** Окремо виміряти passthrough для готового program movie і простих cuts. Audio gain/mute, privacy, reordering та неточні GOP boundaries потребують перевірки; blind passthrough небезпечний.
+4. **Рендер композиції.** Уже на одному worker профілювати декодування, Core Image, cursor/shadow та encoding. Не знижувати якість, fps і не прибирати потрібні ефекти без окремого продуктового рішення.
+
+Застосунки не закривалися, задачі не скасовувалися, записи не видалялися. UI cleanup не змінює швидкість цього рендера. Виправлення ownership і оптимізація експорту потребують окремої реалізації та тестів.
+
+## Додаткові кандидати після перевірки коду
+
+1. **Кеш cursor sprite.** `ProgramFrameCompositor.cursorImage` створює CGContext, path і CGImage для кожного кадру. Кешувати лише статичне зображення за validated scale і click highlight state, потім змінювати позицію transform. Кеш має бути обмеженим і безпечним для паралельних render requests. Заміри без cursor показують вартість усього cursor path, а не очікуваний виграш саме цього кешу; числової обіцянки прискорення немає.
+2. **Статичні маски та тіні.** Поточна тінь будується з alpha поточного frame й Gaussian blur. Для гарантовано непрозорого rectangle/rounded rectangle можна дослідити кеш геометричної маски за shape/placement/shadow/canvas. Transparent overlays, segmentation і dynamic geometry потребують старого коректного шляху. Потрібен візуальний pixel comparison, а не лише таймінг.
+3. **Готовий program для незмінного export.** Якщо існує перевірений program movie з відповідним recipe, копіювання/remux прибирає повторний compositor. Для cuts окремо перевірити passthrough і точність boundaries; за audio/privacy/scene змінами fast path вимикається. Для поточного recovered пакета готового program немає.
+4. **Спочатку профіль, потім encoder rewrite.** Custom compositor запитує BGRA для source й output; дослідити фактичну вартість conversion/copy та зайнятість hardware encoder. AVAssetExportSession сам собою не є доказом software encoding. Перехід на explicit VideoToolbox/AVAssetWriter до цих вимірів передчасний; HEVC не гарантує швидший export.
+
+`CIContext` уже створений один раз на compositor, а `.cacheIntermediates: false` відповідає рекомендації Apple для мінливих video frames. Не слід просто вмикати глобальний intermediate cache. Apple: [Optimize the Core Image pipeline for your video app](https://developer.apple.com/videos/play/wwdc2020/10008/), [Passthrough preset](https://developer.apple.com/documentation/avfoundation/avassetexportpresetpassthrough).
+
+Рекомендована наступна реалізація: міжпроцесне ownership, потім cursor sprite cache. Для cache порівняти full-composition median на кількох репрезентативних фрагментах за одного worker, peak memory, кінцеві кадри/click states і синхронізацію audio. Не переносити результат 10-секундного probe на гарантований час повного запису.

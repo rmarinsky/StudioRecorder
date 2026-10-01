@@ -74,7 +74,7 @@ separate from a future release build.
 
 ## Releases
 
-CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The release workflow signs an arm64 app with Developer ID, submits it to Apple notarization, staples and validates it, then produces a ZIP and SHA-256 checksum. Manual runs upload an internal validation artifact. A `v*` tag additionally publishes those files as a GitHub release.
+CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The release workflow signs an arm64 app with Developer ID, submits it to Apple notarization, staples and validates it, then produces a ZIP and SHA-256 checksum. After successful push CI on `main`, the release workflow checks out that exact commit, increments the latest stable patch version (first release: 0.1.0), and publishes the signed ZIP and checksum in GitHub Releases. The short, informal notes use the real first-parent change/PR titles since the previous version. The version is stored in the app bundle and tag; build numbers use the release workflow run number. Release runs are serialized; rerunning a tagged commit reuses its version and preserves an existing release. Manual runs still upload an internal validation artifact, with an optional version override. A `v*` tag also publishes a release. Failed CI and PR/fork runs cannot trigger privileged automatic publishing. Apple signing/notarization configuration is required; missing values fail the release instead of silently publishing an unsigned build.
 
 Repository variables:
 

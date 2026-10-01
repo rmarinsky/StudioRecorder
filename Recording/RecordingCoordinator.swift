@@ -737,6 +737,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         finalizationProgress = nil
     }
 
+    func completedJobResult(for jobID: UUID) async throws -> URL {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+        return try await Task.detached(priority: .userInitiated) {
+            try RecordingJobStore().completedJobResult(jobID: jobID, in: project)
+        }.value
+    }
+
     func retryJob(_ jobID: UUID) async throws {
         guard let job = jobs.first(where: { $0.id == jobID }),
               let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {

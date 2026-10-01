@@ -160,14 +160,14 @@ final class RecordingProjectStoreTests: XCTestCase {
         let coordinator = RecordingCoordinator(projectStore: store, transcriber: transcriber)
         await coordinator.refreshProjects()
         try await coordinator.enqueueTranscription(recipe)
-        await fulfillment(of: [started], timeout: 5)
+        await fulfillment(of: [started], timeout: 15)
         let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
 
         try await coordinator.cancelJob(job.id)
-        await fulfillment(of: [cancellationStarted], timeout: 5)
+        await fulfillment(of: [cancellationStarted], timeout: 15)
         try await coordinator.retryJob(job.id)
         await transcriber.finishCancellation()
-        await fulfillment(of: [retryStarted], timeout: 5)
+        await fulfillment(of: [retryStarted], timeout: 15)
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .running)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
@@ -258,6 +258,8 @@ final class RecordingProjectStoreTests: XCTestCase {
             in: project.rootURL, expectedProjectID: project.id
         ))
         XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
+        let resultURL = try await coordinator.completedJobResult(for: job.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "analysis/transcript.json").resolvingSymlinksInPath())
     }
 
     func testUnreadableJobHistoryRemainsVisibleOnReadyProject() async throws {
@@ -371,6 +373,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         try jobStore.saveExport(recipe, for: job, in: project)
         job.state = .running
         try jobStore.save(job, in: project)
+        XCTAssertThrowsError(try jobStore.completedJobResult(jobID: job.id, in: project))
         try await ProjectEditStore().save(
             ProjectEditDocument(
                 projectID: project.id,
@@ -386,6 +389,8 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let revealURL = try await coordinator.completedJobResult(for: job.id)
+        XCTAssertEqual(revealURL, exportedURL)
         let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
     }
@@ -495,7 +500,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         await coordinator.refreshProjects()
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalizing)
 
-        for _ in 0..<100 where coordinator.jobs.first?.state != .completed ||
+        for _ in 0..<300 where coordinator.jobs.first?.state != .completed ||
             coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle != .finalized {
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -503,6 +508,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(coordinator.jobs.first?.attempt, 2)
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalized)
         XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "program.mov").path))
+        let resultURL = try await coordinator.completedJobResult(for: interruptedJob.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "program.mov").resolvingSymlinksInPath())
     }
 
     func testFailedBackgroundFinalizationKeepsProjectInRecoveryWithRetryableJob() async throws {

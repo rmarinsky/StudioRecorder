@@ -438,9 +438,25 @@ struct StudioRecorderRootView: View {
                                 } label: {
                                     Image(systemName: "xmark")
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                                 .help("Cancel \(job.kind.rawValue) job")
                                 .accessibilityLabel("Cancel \(job.kind.rawValue) job")
+                            } else if job.state == .completed {
+                                Button {
+                                    Task {
+                                        do {
+                                            let destination = try await model.completedJobResult(for: job.id)
+                                            NSWorkspace.shared.activateFileViewerSelecting([destination])
+                                        } catch { jobError = error.localizedDescription }
+                                    }
+                                } label: {
+                                    Image(systemName: "folder")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help("Show job result in Finder")
+                                .accessibilityLabel("Show job result in Finder")
                             }
                         }
                         Text("\(job.kind.rawValue.capitalized) · \(job.stage)")

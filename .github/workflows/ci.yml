@@ -18,6 +18,10 @@ jobs:
         run: ./scripts/check-secrets.test.sh
       - name: Check repository for secrets
         run: ./scripts/check-secrets.sh ci
+      - name: Validate workflows and release planning
+        run: |
+          actionlint
+          python3 scripts/prepare-release.test.py
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
       - name: Install XcodeGen
