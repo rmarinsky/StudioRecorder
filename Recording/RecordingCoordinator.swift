@@ -919,6 +919,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     audioAdjustment: recipe.audioAdjustment,
                     sourceAudioAdjustments: recipe.sourceAudioAdjustments,
                     segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    metadata: recipe.metadata,
                     to: recipe.destinationURL,
                     progress: { [weak self, project] fraction in
                         self?.updateJobProgress(
@@ -933,6 +934,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     timeline: recipe.timeline,
                     audioAdjustment: recipe.audioAdjustment,
                     segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    metadata: recipe.metadata,
                     to: recipe.destinationURL
                 )
             }

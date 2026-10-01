@@ -363,10 +363,18 @@ final class RecordingProjectStoreTests: XCTestCase {
         let sourceDuration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
         var selectedTimeline = try ProjectEditTimeline(trackID: "program", sourceDuration: sourceDuration)
         try selectedTimeline.delete(range: 0.5..<1.2)
+        let transcript = TimedTranscript(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: sourceDuration,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Збережено.", sourceStart: 1.4, sourceEnd: 1.8, timingStatus: .aligned)]
+        )
+        var metadata = ProjectExportMetadata(title: "Знімок монтажу", createdAt: Date(timeIntervalSince1970: 0),
+                                             transcript: transcript, timeline: selectedTimeline)
+        metadata.description = "Опис вибраного монтажу."
         let recipe = ProjectExportRecipe(
             projectID: project.id, sourceURL: sourceURL, destinationURL: exportedURL,
             timeline: selectedTimeline, presentation: .default,
-            programSources: nil
+            programSources: nil, metadata: metadata
         )
         let jobStore = RecordingJobStore()
         var job = RecordingJob(projectID: project.id, kind: .export)
@@ -381,6 +389,12 @@ final class RecordingProjectStoreTests: XCTestCase {
             ), in: project.rootURL
         )
 
+        // A newer transcript must not change the resumed export's captured subtitles.
+        try TimedTranscriptStore().save(TimedTranscript(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: sourceDuration,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.1, sourceEnd: 0.4, timingStatus: .aligned)]
+        ), in: project.rootURL)
         let coordinator = RecordingCoordinator(projectStore: store)
         await coordinator.refreshProjects()
         for _ in 0..<100 where coordinator.jobs.first(where: { $0.id == job.id })?.state != .completed {
@@ -393,6 +407,12 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(revealURL, exportedURL)
         let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
+        let srt = try String(contentsOf: ProjectExportMetadata.subtitleURL(for: exportedURL), encoding: .utf8)
+        XCTAssertEqual(srt, "1\n00:00:00,700 --> 00:00:01,100\nЗбережено.\n\n")
+        let items = try await AVURLAsset(url: exportedURL).load(.metadata)
+        let description = try XCTUnwrap(items.first { $0.identifier == .quickTimeMetadataDescription })
+        let descriptionText = try await description.load(.stringValue)
+        XCTAssertEqual(descriptionText, "Опис вибраного монтажу.")
     }
 
     func testFailedExportRetainsRecipeAndRetryWritesOutput() async throws {
