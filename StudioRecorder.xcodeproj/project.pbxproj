@@ -62,6 +62,7 @@
 		BF93C761E5B942D57216E719 /* LiveProgramReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DAC799ABBEB02C029FD420 /* LiveProgramReadiness.swift */; };
 		BFC02BFF31A0C274A4683D75 /* ProgramFrameCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */; };
 		C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2897A189300917E718918A9E /* ProjectEditStore.swift */; };
+		C299DB58382666E5117E56ED /* ProjectExportMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B9DEE39AD3B626AAEFF3F19 /* ProjectExportMetadata.swift */; };
 		C3DCED2DAD4D690025A4930C /* SegmentRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A543FD71B224ECF3C3EDD8D /* SegmentRecoveryPlanner.swift */; };
 		C4C20ECD0358BBC971A6A54B /* StudioRecorderModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21C4DA9C72F1DEBCDE9B8B2 /* StudioRecorderModelTests.swift */; };
 		C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */; };
@@ -133,6 +134,7 @@
 		567C7B2048F0280A1B184E8C /* OpenRouterAssistantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistantTests.swift; sourceTree = "<group>"; };
 		5A11DDF9D81A956435CD8B2D /* LiveSourceRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSourceRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraBackgroundProcessor.swift; sourceTree = "<group>"; };
+		6B9DEE39AD3B626AAEFF3F19 /* ProjectExportMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectExportMetadata.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6FE27C7C08A80AB23D56F3A4 /* ProjectAudioWaveformTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAudioWaveformTests.swift; sourceTree = "<group>"; };
 		6FFFDCE006ACC241BCF332B2 /* SafeShortcutMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeShortcutMonitor.swift; sourceTree = "<group>"; };
@@ -331,6 +333,7 @@
 				F7024163CE6097121A239F4A /* ProjectEditRenderer.swift */,
 				2897A189300917E718918A9E /* ProjectEditStore.swift */,
 				CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */,
+				6B9DEE39AD3B626AAEFF3F19 /* ProjectExportMetadata.swift */,
 				ADFE8A95E62F46884D456041 /* ProjectMediaExporter.swift */,
 				442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */,
 				B6DB6E4F6EA9B9E7FBE4C490 /* RecordingPreferences.swift */,
@@ -507,6 +510,7 @@
 				D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */,
 				C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */,
 				196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */,
+				C299DB58382666E5117E56ED /* ProjectExportMetadata.swift in Sources */,
 				E9E0C0A0A54C9D2CC336B3DA /* ProjectMediaExporter.swift in Sources */,
 				28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */,
 				B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */,
