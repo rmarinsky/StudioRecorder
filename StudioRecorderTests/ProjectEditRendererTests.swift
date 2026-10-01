@@ -5,6 +5,27 @@ import XCTest
 import SwiftUI
 @testable import StudioRecorder
 
+// A real-file race fixture: another writer changes the SRT after preflight.
+private final class SubtitleRaceFileManager: FileManager, @unchecked Sendable {
+    let subtitleURL: URL
+    let replacement: Data
+    private var hasChanged = false
+
+    init(subtitleURL: URL, replacement: Data) {
+        self.subtitleURL = subtitleURL
+        self.replacement = replacement
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        if path == subtitleURL.path, !hasChanged {
+            hasChanged = true
+            try? replacement.write(to: subtitleURL, options: .atomic)
+        }
+        return super.fileExists(atPath: path)
+    }
+}
+
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
     func testTimelineKeepsFrequentActionsWithoutDuplicateExportOrSecondaryButtons() async throws {
@@ -93,6 +114,38 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertFalse(labels.contains("Open Raw Movie"))
         XCTAssertFalse(labels.contains("Share Raw Movie"))
         XCTAssertFalse(labels.contains("Save Frame"))
+    }
+
+    func testExportOptionsShowsMetadataAndExplicitCloudGenerationDisclosure() async throws {
+        try await requireNativeAccessibility()
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Привіт!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let host = NSHostingView(rootView: ProjectExportOptionsView(
+            metadata: metadata, projectID: transcript.projectID, assistantProvider: .openRouter,
+            assistantModel: "fixture", onCancel: {}, onExport: { _ in }
+        ))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 550, height: 650),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Generate via OpenRouter") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Роман Марінський"))
+        XCTAssertTrue(labels.contains("Ukrainian (uk)"))
+        XCTAssertTrue(labels.contains("Generate via OpenRouter"))
+        XCTAssertTrue(labels.contains("Sends only the edited transcript to OpenRouter and the selected model provider when you click Generate."))
+        XCTAssertTrue(labels.contains("Export"))
+        XCTAssertTrue(labels.contains("Cancel"))
     }
 
     private func requireNativeAccessibility() async throws {
@@ -1815,6 +1868,183 @@ final class ProjectEditRendererTests: XCTestCase {
         }
 
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
+    }
+
+    func testSubtitleChangeBetweenPreflightAndPublicationStillRequiresApproval() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appending(path: "output.mov")
+        let temporaryMovie = directory.appending(path: "new.mov")
+        let previousMovie = Data("previous movie".utf8)
+        try previousMovie.write(to: output)
+        try Data("new movie".utf8).write(to: temporaryMovie)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        try Data(metadata.subtitleSRT.utf8).write(to: subtitles)
+        let otherWriter = Data("changed by another writer".utf8)
+        let manager = SubtitleRaceFileManager(subtitleURL: subtitles, replacement: otherWriter)
+        XCTAssertThrowsError(try metadata.publishMovie(from: temporaryMovie, to: output, fileManager: manager))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertEqual(try Data(contentsOf: subtitles), otherWriter)
+    }
+
+    func testFailedMoviePublicationRestoresPreviousSubtitles() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appending(path: "output.mov")
+        let previousMovie = Data("previous movie".utf8)
+        try previousMovie.write(to: output)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        var metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        metadata.allowsSubtitleReplacement = true
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        let previousSubtitles = Data("previous subtitles".utf8)
+        try previousSubtitles.write(to: subtitles)
+        XCTAssertThrowsError(try metadata.publishMovie(from: directory.appending(path: "missing.mov"), to: output))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertEqual(try Data(contentsOf: subtitles), previousSubtitles)
+        try FileManager.default.removeItem(at: subtitles)
+        XCTAssertThrowsError(try metadata.publishMovie(from: directory.appending(path: "missing.mov"), to: output))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: subtitles.path))
+    }
+
+    func testSubtitleConflictDuringRenderingPreservesThePreviousMovie() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        let output = directory.appending(path: "edited.mov")
+        try await writeReadableMovie(to: source)
+        let original = Data("previous movie".utf8)
+        try original.write(to: output)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        let unrelatedSubtitles = Data("created during rendering".utf8)
+        do {
+            try await ProjectProgramRenderer().exportMovie(
+                sources: .init(screenURL: source, cameraURL: nil), timeline: timeline,
+                presentation: .default, metadata: metadata, to: output,
+                progress: { fraction in
+                    if fraction == 0 { try? unrelatedSubtitles.write(to: subtitles) }
+                }
+            )
+            XCTFail("A late subtitle conflict must fail without replacing the old movie")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("subtitle file"))
+        }
+        XCTAssertEqual(try Data(contentsOf: output), original)
+        XCTAssertEqual(try Data(contentsOf: subtitles), unrelatedSubtitles)
+    }
+
+    func testExportPreservesExistingMovieAndSubtitlesWithoutSubtitleReplacementApproval() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        for program in [false, true] {
+            let output = directory.appending(path: program ? "program.mov" : "edited.mov")
+            let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+            let existingMovie = Data("existing movie".utf8)
+            let existingSubtitles = Data("existing subtitles".utf8)
+            try existingMovie.write(to: output)
+            try existingSubtitles.write(to: subtitles)
+            do {
+                if program {
+                    try await ProjectProgramRenderer().exportMovie(
+                        sources: .init(screenURL: source, cameraURL: nil), timeline: timeline,
+                        presentation: .default, metadata: metadata, to: output
+                    )
+                } else {
+                    try await ProjectEditRenderer().exportMovie(from: source, timeline: timeline, metadata: metadata, to: output)
+                }
+                XCTFail("Replacing subtitle files requires separate approval")
+            } catch {}
+            XCTAssertEqual(try Data(contentsOf: output), existingMovie)
+            XCTAssertEqual(try Data(contentsOf: subtitles), existingSubtitles)
+        }
+    }
+
+    func testBothMovieRenderersWriteReadableMetadataAndUkrainianSubtitles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Вітаю!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        var metadata = ProjectExportMetadata(title: "Тестове відео", createdAt: Date(timeIntervalSince1970: 0),
+                                             transcript: transcript, timeline: timeline)
+        metadata.description = "Короткий опис відео."
+        for program in [false, true] {
+            let output = directory.appending(path: program ? "program.mov" : "edited.mov")
+            if program {
+                try await ProjectProgramRenderer().exportMovie(
+                    sources: .init(screenURL: source, cameraURL: nil), timeline: timeline, presentation: .default,
+                    metadata: metadata, to: output
+                )
+            } else {
+                try await ProjectEditRenderer().exportMovie(from: source, timeline: timeline, metadata: metadata, to: output)
+            }
+            let hiddenSource = directory.appending(path: "hidden-source.mov")
+            try FileManager.default.moveItem(at: source, to: hiddenSource)
+            let asset = AVURLAsset(url: output)
+            let items = try await asset.load(.metadata)
+            for (identifier, expected) in [
+                (AVMetadataIdentifier.quickTimeMetadataAuthor, "Роман Марінський"),
+                (.quickTimeMetadataTitle, "Тестове відео"),
+                (.quickTimeMetadataDescription, "Короткий опис відео."),
+                (.quickTimeMetadataCreationDate, "1970-01-01T00:00:00Z"),
+                (.quickTimeMetadataSoftware, "Studio Recorder")
+            ] {
+                let item = try XCTUnwrap(items.first { $0.identifier == identifier })
+                let value = try await item.load(.stringValue)
+                XCTAssertEqual(value, expected)
+            }
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            let video = try XCTUnwrap(tracks.first)
+            let language = try await video.load(.languageCode)
+            XCTAssertEqual(language, "ukr")
+            let frame = directory.appending(path: program ? "program.png" : "edited.png")
+            try await ProjectMediaExporter().exportScreenshot(from: output, at: 0.1, to: frame)
+            let color = try averageColor(in: frame)
+            XCTAssertGreaterThan(color.red, 100, "Header updates must preserve self-contained media")
+            XCTAssertGreaterThan(color.red, color.blue + 50)
+            let srt = try String(contentsOf: ProjectExportMetadata.subtitleURL(for: output), encoding: .utf8)
+            XCTAssertEqual(srt, "1\n00:00:00,200 --> 00:00:00,800\nВітаю!\n\n")
+            try FileManager.default.moveItem(at: hiddenSource, to: source)
+        }
     }
 
     func testRendererExportsOnlyTheOrderedSegmentsInTheEditTimeline() async throws {

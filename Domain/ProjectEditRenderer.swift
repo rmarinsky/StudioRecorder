@@ -60,9 +60,12 @@ final class ProjectEditRenderer {
         timeline: ProjectEditTimeline,
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
+        metadata: ProjectExportMetadata? = nil,
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, for: sourceURL)
+        try metadata?.validate(duration: timeline.duration)
+        try metadata?.validateSubtitleDestination(for: destinationURL)
         let composition = try await makeComposition(from: sourceURL, timeline: timeline)
         guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw ProjectEditRendererError.exportUnavailable
@@ -73,6 +76,7 @@ final class ProjectEditRenderer {
             timeline: timeline,
             segmentAdjustments: segmentAudioAdjustments
         )
+        metadata?.apply(to: session)
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
@@ -84,7 +88,11 @@ final class ProjectEditRenderer {
             cancellation.cancel()
         }
         try Task.checkCancellation()
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
+        try metadata?.writeLanguage(to: temporaryURL)
+        try Task.checkCancellation()
+        if let metadata {
+            try metadata.publishMovie(from: temporaryURL, to: destinationURL)
+        } else if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)

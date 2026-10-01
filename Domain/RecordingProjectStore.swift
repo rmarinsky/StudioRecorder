@@ -84,6 +84,8 @@ struct ProjectExportRecipe: Codable, Sendable {
     let sourceAudioAdjustments: [ProjectAudioSourceAdjustment]
     let segmentAudioAdjustments: [ProjectSegmentAudioAdjustment]
 
+    var metadata: ProjectExportMetadata?
+
     init(
         projectID: UUID,
         sourceURL: URL,
@@ -95,7 +97,8 @@ struct ProjectExportRecipe: Codable, Sendable {
         privacyOverlays: [ProjectPrivacyOverlay] = [],
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
         sourceAudioAdjustments: [ProjectAudioSourceAdjustment] = [],
-        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = []
+        segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
+        metadata: ProjectExportMetadata? = nil
     ) {
         schemaVersion = 1
         self.projectID = projectID
@@ -109,6 +112,7 @@ struct ProjectExportRecipe: Codable, Sendable {
         self.audioAdjustment = audioAdjustment
         self.sourceAudioAdjustments = sourceAudioAdjustments
         self.segmentAudioAdjustments = segmentAudioAdjustments
+        self.metadata = metadata
     }
 }
 
@@ -313,6 +317,7 @@ final class RecordingJobStore {
               !recipe.destinationURL.pathComponents.contains(where: { $0.hasSuffix(".recordingproject") }),
               !destination.hasPrefix(root + "/"),
               destination != root else { throw RecordingJobStoreError.invalidExport }
+        try recipe.metadata?.validate(duration: recipe.timeline.duration)
     }
 
     func retry(jobID: UUID, in project: RecordingProject) throws -> RecordingJob {
