@@ -68,6 +68,26 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
         }.joined()
     }
 
+    func validate(duration: TimeInterval) throws {
+        let timestampLimit = Double(Int.max / 1_000 - 1)
+        guard duration.isFinite, duration > 0, duration <= timestampLimit,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 300,
+              !author.isEmpty, author.count <= 300, language == "uk",
+              createdAt.timeIntervalSince1970.isFinite, createdAt >= .distantPast, createdAt <= .distantFuture,
+              description.map({ $0.count <= 600 && $0 == Self.plainText($0) }) ?? true,
+              subtitles.count <= 100_000,
+              subtitles.reduce(0, { $0 + $1.text.count }) <= 2_000_000,
+              subtitles.allSatisfy({
+                  $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.start < $0.end
+                      && $0.end <= duration && $0.end <= timestampLimit
+                      && ($0.end * 1_000).rounded() > ($0.start * 1_000).rounded()
+                      && !$0.text.isEmpty && $0.text.count <= 1_200 && $0.text == Self.plainText($0.text)
+              }),
+              zip(subtitles, subtitles.dropFirst()).allSatisfy({ $0.0.start <= $0.1.start }) else {
+            throw RecordingJobStoreError.invalidExport
+        }
+    }
+
     func apply(to session: AVAssetExportSession) {
         var values: [(AVMetadataIdentifier, String)] = [
             (.quickTimeMetadataTitle, title), (.quickTimeMetadataAuthor, author),
@@ -182,7 +202,9 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
     }
 
     static func plainText(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        text.split(whereSeparator: {
+            $0.isWhitespace || $0.isNewline || ($0.asciiValue.map { $0 < 32 || $0 == 127 } ?? false)
+        }).joined(separator: " ")
     }
 }
 

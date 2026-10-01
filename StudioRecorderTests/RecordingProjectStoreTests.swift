@@ -349,6 +349,42 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertThrowsError(try jobStore.saveTranscription(wrongFile, for: job, in: project))
     }
 
+    func testJobStoreRejectsMalformedPersistedSubtitleTimesAndReadsLegacyRecipes() throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Привіт!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let recipe = ProjectExportRecipe(
+            projectID: project.id, sourceURL: project.rootURL.appending(path: "program.mov"),
+            destinationURL: destination.appending(path: "export.mov"), timeline: timeline,
+            presentation: .default, programSources: nil,
+            metadata: ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        )
+        let job = RecordingJob(projectID: project.id, kind: .export)
+        let jobs = RecordingJobStore()
+        try jobs.saveExport(recipe, for: job, in: project)
+        let url = project.rootURL.appending(path: "jobs/export-\(job.id.uuidString).json")
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        for (start, end) in [(1e30, 1e30 + 1e25), (-1.0, 0.5), (0.5, 0.2), (1.9, 2.5), (0.2001, 0.2002)] {
+            var json = original
+            var metadata = try XCTUnwrap(json["metadata"] as? [String: Any])
+            metadata["subtitles"] = [["start": start, "end": end, "text": "Привіт!"]]
+            json["metadata"] = metadata
+            try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+            XCTAssertThrowsError(try jobs.loadExport(for: job, in: project), "Invalid subtitle interval: \(start)..<\(end)")
+        }
+        var legacy = original
+        legacy.removeValue(forKey: "metadata")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: url, options: .atomic)
+        XCTAssertNil(try jobs.loadExport(for: job, in: project).metadata)
+    }
+
     func testInterruptedExportResumesItsCapturedEditRevision() async throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }

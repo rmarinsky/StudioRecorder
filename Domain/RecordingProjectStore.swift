@@ -317,6 +317,7 @@ final class RecordingJobStore {
               !recipe.destinationURL.pathComponents.contains(where: { $0.hasSuffix(".recordingproject") }),
               !destination.hasPrefix(root + "/"),
               destination != root else { throw RecordingJobStoreError.invalidExport }
+        try recipe.metadata?.validate(duration: recipe.timeline.duration)
     }
 
     func retry(jobID: UUID, in project: RecordingProject) throws -> RecordingJob {

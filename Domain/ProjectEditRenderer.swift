@@ -64,6 +64,7 @@ final class ProjectEditRenderer {
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, for: sourceURL)
+        try metadata?.validate(duration: timeline.duration)
         try metadata?.validateSubtitleDestination(for: destinationURL)
         let composition = try await makeComposition(from: sourceURL, timeline: timeline)
         guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {

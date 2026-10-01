@@ -156,6 +156,7 @@ final class ProjectProgramRenderer {
         progress: @escaping (Double) -> Void = { _ in }
     ) async throws {
         try validateDestination(destinationURL, sources: sources)
+        try metadata?.validate(duration: timeline.duration)
         try metadata?.validateSubtitleDestination(for: destinationURL)
         let rendered = try await makeComposition(
             sources: sources,
