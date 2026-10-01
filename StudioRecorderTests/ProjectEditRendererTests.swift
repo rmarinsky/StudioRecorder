@@ -60,11 +60,10 @@ final class ProjectEditRendererTests: XCTestCase {
             language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
             words: [.init(text: "Hello", sourceStart: 0.1, sourceEnd: 0.3, timingStatus: .aligned)]
         ), in: root)
-        let updates = AppUpdateController(model: StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot()), bundle: Bundle(for: Self.self))
         let host = NSHostingView(rootView: ProjectDetailView(
             project: project, onClose: {}, queueExport: { _ in }, jobs: [],
             queueTranscription: { _ in XCTFail("A saved transcript must not be queued again") }
-        ).environmentObject(updates))
+        ))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1000),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
