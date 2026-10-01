@@ -61,3 +61,14 @@
 4. **Рендер композиції.** Уже на одному worker профілювати декодування, Core Image, cursor/shadow та encoding. Не знижувати якість, fps і не прибирати потрібні ефекти без окремого продуктового рішення.
 
 Застосунки не закривалися, задачі не скасовувалися, записи не видалялися. UI cleanup не змінює швидкість цього рендера. Виправлення ownership і оптимізація експорту потребують окремої реалізації та тестів.
+
+## Додаткові кандидати після перевірки коду
+
+1. **Кеш cursor sprite.** `ProgramFrameCompositor.cursorImage` створює CGContext, path і CGImage для кожного кадру. Кешувати лише статичне зображення за validated scale і click highlight state, потім змінювати позицію transform. Кеш має бути обмеженим і безпечним для паралельних render requests. Заміри без cursor показують вартість усього cursor path, а не очікуваний виграш саме цього кешу; числової обіцянки прискорення немає.
+2. **Статичні маски та тіні.** Поточна тінь будується з alpha поточного frame й Gaussian blur. Для гарантовано непрозорого rectangle/rounded rectangle можна дослідити кеш геометричної маски за shape/placement/shadow/canvas. Transparent overlays, segmentation і dynamic geometry потребують старого коректного шляху. Потрібен візуальний pixel comparison, а не лише таймінг.
+3. **Готовий program для незмінного export.** Якщо існує перевірений program movie з відповідним recipe, копіювання/remux прибирає повторний compositor. Для cuts окремо перевірити passthrough і точність boundaries; за audio/privacy/scene змінами fast path вимикається. Для поточного recovered пакета готового program немає.
+4. **Спочатку профіль, потім encoder rewrite.** Custom compositor запитує BGRA для source й output; дослідити фактичну вартість conversion/copy та зайнятість hardware encoder. AVAssetExportSession сам собою не є доказом software encoding. Перехід на explicit VideoToolbox/AVAssetWriter до цих вимірів передчасний; HEVC не гарантує швидший export.
+
+`CIContext` уже створений один раз на compositor, а `.cacheIntermediates: false` відповідає рекомендації Apple для мінливих video frames. Не слід просто вмикати глобальний intermediate cache. Apple: [Optimize the Core Image pipeline for your video app](https://developer.apple.com/videos/play/wwdc2020/10008/), [Passthrough preset](https://developer.apple.com/documentation/avfoundation/avassetexportpresetpassthrough).
+
+Рекомендована наступна реалізація: міжпроцесне ownership, потім cursor sprite cache. Для cache порівняти full-composition median на кількох репрезентативних фрагментах за одного worker, peak memory, кінцеві кадри/click states і синхронізацію audio. Не переносити результат 10-секундного probe на гарантований час повного запису.

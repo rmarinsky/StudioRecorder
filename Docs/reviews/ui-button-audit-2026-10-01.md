@@ -242,3 +242,11 @@ AX-перевірка не охоплює відкриття native menu, кла
 Повний прогін зупинено після 228 passed і одного skip: наявний `testTimelapseMotionTransitionMovesAFeatureThroughTheMidpoint` не завершувався понад 90 с у Vision motion interpolation. Це не тест зміненого UI; його причина не встановлена. Повторний широкий прогін виключає лише цей тест і має execution timeout. Skip для локальної Ukrainian Whisper перевірки означає відсутність approved speech sample, а не перевірену роботу STT.
 
 Підсумок повторного прогону: **399 executed, 398 passed, 1 skipped, 0 failed**; один наявний Timelapse motion test виключено після зависання. Усі 46 `ProjectEditRendererTests`, включно з двома UI-перевірками й реальними AVFoundation media exports, пройшли. Фінальний tracked diff порожній; локальні UI-коміти містять перевірені зміни. Push/release/install не виконувалися.
+
+## Підготовка окремого PR від актуального main
+
+Для публікації створено `codex/simplify-editor-controls` від `9839ca8`. Перенесено тільки UI-зміни та ці звіти; незлиті Timelapse/Sparkle зміни початкової гілки не входять до PR. UI fixture більше не залежить від AppUpdateController незлитого Sparkle PR.
+
+Preflight на цьому base виявив нестійкі наявні перевірки: 5-секундне очікування retry та 10-секундне очікування finalization інколи завершувалися зарано. Вони мали як red, так і green прогони до ремонту. Очікування збільшено до 15/30 с, усі перевірки job state, attempt, persistence і lifecycle залишено. Додатково CI main `36711546678` падав у `testIdleShortcutExpiryRecomposesOnceThenReusesTheCleanFrame`: blue channel вибраного пікселя був 255 і з білим glyph, і на чистому синьому фоні. Тест тепер порівнює whole-frame pixels з вихідним кадром і зберігає перевірку reuse buffer після expiry.
+
+Фінальний повний preflight ізольованої гілки: **387 executed, 386 passed, 1 skipped, 0 failed**, без виключення тестів. На main немає Timelapse тесту з попереднього аудиту. Secret guard self-tests, full tracked tree/history scan і pre-commit checks пройшли. Два окремі review-проходи охопили UI action routing/guards та мінімальність/privacy/тестові assertions. Код черги й exporter у PR не змінено.
