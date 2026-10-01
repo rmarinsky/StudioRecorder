@@ -227,7 +227,7 @@ Floating Recording Controls повторює Record/Stop, Pause, джерела 
 - Open/Share/Drag Raw Movie об'єднано під Original media. Меню явно попереджає: Without edits or privacy overlays. Оригінали не змінюються.
 - Прибрано декоративний NON-DESTRUCTIVE badge; пояснення збереження raw media залишено.
 
-Запис, recovery, permissions, Settings і Jobs не змінено: аудит не підтвердив безпечного видалення їхніх основних функцій. Скріншот користувача з двома активними export jobs досліджено окремо в [діагностиці експорту](export-performance-2026-10-01.md).
+Запис, recovery, permissions і Settings не змінено: аудит не підтвердив безпечного видалення їхніх основних функцій. Jobs уточнено окремим виправленням нижче. Скріншот користувача з двома активними export jobs досліджено окремо в [діагностиці експорту](export-performance-2026-10-01.md).
 
 ### Перевірка та межі
 
@@ -254,3 +254,16 @@ Preflight на цьому base виявив нестійкі наявні пер
 ### Ремонт CI UI seam
 
 Перший push/pull_request CI на `4482a29` виявив порожній SwiftUI accessibility tree в одному runner й частково неготовий transcript в іншому. Додано незалежний probe з відомою SwiftUI Button: тільки якщо host не показує навіть цей контроль, UI-перевірка явно skipped. Якщо probe доступний, усі продуктні assertions залишаються обов'язковими. Очікування редактора прив'язано до Split та реального transcript word замість фіксованих 100 мс. Локально всі 44 ProjectEditRendererTests пройшли, включно з обома UI-тестами без skips. UI skip у CI не є доказом доступності меню або VoiceOver.
+
+
+### Доповнення: курсор і результати Jobs
+
+- Cancel для queued/running jobs вже існував у коді. Кнопку X зроблено bordered/small, щоб вона була помітнішою. Збережений cancellation і зупинка worker використовують чинний coordinator.
+- Кожна completed job тепер має кнопку папки: export відкриває фактичний destination із збереженого recipe; transcription - `analysis/transcript.json`; finalization - `program.mov`. Finder показує файл у його папці. Некоректний стан або відсутній файл дає повідомлення через чинний Job Action Failed alert. Великий export recipe читається поза main actor.
+- У дослідженому записі перша cursor position збережена на 10.7119 с. Replay раніше повертав цю майбутню позицію навіть на початку запису. Тепер до першої позиції курсор відсутній; помилку відтворено і перевірено на реальному MOV export.
+- CursorFrameSynchronizer раніше пропускав вихід за captured region. Replay інтерполював через інтервал або утримував стару позицію. Нові записи зберігають visibility transition; export і streaming не малюють курсор поза captured region. Позиція іншого активного display не приховується кадром неактивного display.
+- Visibility - optional Codable field; старі samples без поля читаються як видимі. Старі записи не містять подій виходу: точні інтервали поза областю з них відновити неможливо. Виправлення до першої позиції працює і для них.
+- TDD: first-position unit regression дав 2 failures, реальний MOV - 2 pixel failures; region regression дав 3 failures; result lookup спочатку не компілювався без API. Після виправлення всі 22 цільові перевірки пройшли, включно з MOV, legacy decode/round-trip, display transfer, реальними resumed export/transcription/finalization.
+- Два окремі проходи review перевірили state/persistence/coordinate callers та scope/privacy/test oracles. Довільний spatial/time offset не вводився. Постійний зсув або затримка всередині видимої області ще не підтверджені; live DEV window недоступне через timeout computer-use. Native Jobs interaction, фактичний Finder selection і новий capture на обладнанні лишаються неперевіреними.
+
+Повний локальний macOS suite після доповнення: **391 executed, 390 passed, 1 skipped, 0 failures**. Skip - Whisper integration без погодженого speech sample; обидві native editor UI checks пройшли. Secret guard self-tests, tracked history/tree scan і diff check пройшли.
