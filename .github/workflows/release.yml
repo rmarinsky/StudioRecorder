@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version for the validation artifact
-        required: true
-        default: 0.1.0
+        description: Version (leave empty to increment the latest patch version)
+        required: false
+        default: ""
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   push:
     tags:
       - "v*"
@@ -14,8 +18,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: studio-recorder-releases
+  cancel-in-progress: false
+
 jobs:
   signed-release:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: macos-26
     timeout-minutes: 60
     env:
@@ -23,6 +37,9 @@ jobs:
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
@@ -56,17 +73,13 @@ jobs:
           MANUAL_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          git fetch --tags origin
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$MANUAL_VERSION"
+            MANUAL_VERSION="${GITHUB_REF_NAME#v}"
           fi
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Version must use semantic version form, for example 0.1.0." >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "asset=Studio-Recorder-$VERSION-macOS-arm64.zip" >> "$GITHUB_OUTPUT"
+          python3 scripts/prepare-release.py \
+            --version "$MANUAL_VERSION" \
+            --output-dir "$RUNNER_TEMP/release-plan" >> "$GITHUB_OUTPUT"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -182,18 +195,30 @@ jobs:
             ${{ runner.temp }}/release/${{ steps.version.outputs.asset }}.sha256
           if-no-files-found: error
 
-      - name: Publish GitHub release for tag
-        if: github.ref_type == 'tag'
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET_NAME: ${{ steps.version.outputs.asset }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          "$RELEASE_DIR/$ASSET_NAME"
-          "$RELEASE_DIR/$ASSET_NAME.sha256"
-          --verify-tag
-          --generate-notes
-          --title "Studio Recorder $GITHUB_REF_NAME"
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_SHA: ${{ steps.version.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if DRAFT="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [[ "$DRAFT" == "true" ]]; then
+              echo "An unfinished draft exists for $RELEASE_TAG; complete it before rerunning." >&2
+              exit 1
+            fi
+            echo "Release $RELEASE_TAG already exists; leaving its assets unchanged."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RELEASE_DIR/$ASSET_NAME" \
+            "$RELEASE_DIR/$ASSET_NAME.sha256" \
+            --target "$RELEASE_SHA" \
+            --notes-file "$RUNNER_TEMP/release-plan/notes.md" \
+            --title "Studio Recorder $RELEASE_TAG"
 
       - name: Remove temporary signing material
         if: always()
