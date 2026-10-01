@@ -66,6 +66,39 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
         }.joined()
     }
 
+    func apply(to session: AVAssetExportSession) {
+        var values: [(AVMetadataIdentifier, String)] = [
+            (.quickTimeMetadataTitle, title), (.quickTimeMetadataAuthor, author),
+            (.quickTimeMetadataCreationDate, ISO8601DateFormatter().string(from: createdAt)),
+            (.quickTimeMetadataSoftware, "Studio Recorder")
+        ]
+        if let description, !description.isEmpty {
+            values.append((.quickTimeMetadataDescription, description))
+        }
+        session.metadata = values.map { identifier, value in
+            let item = AVMutableMetadataItem()
+            item.identifier = identifier
+            item.value = value as NSString
+            item.extendedLanguageTag = language
+            return item.copy() as! AVMetadataItem
+        }
+    }
+
+    func writeLanguage(to movieURL: URL) throws {
+        // Export sessions reset track languages. Update only the header, without re-encoding media.
+        let movie = try AVMutableMovie(url: movieURL, options: nil)
+        for track in movie.tracks {
+            track.languageCode = "ukr"
+            track.extendedLanguageTag = language
+        }
+        try movie.writeHeader(to: movieURL, fileType: .mov, options: .addMovieHeaderToDestination)
+    }
+
+    func writeSubtitles(for movieURL: URL) throws {
+        guard !subtitles.isEmpty else { return }
+        try Data(subtitleSRT.utf8).write(to: Self.subtitleURL(for: movieURL), options: .atomic)
+    }
+
     static func subtitleURL(for movieURL: URL) -> URL {
         movieURL.deletingPathExtension().appendingPathExtension("uk.srt")
     }

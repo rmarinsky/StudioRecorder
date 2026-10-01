@@ -1817,6 +1817,58 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
     }
 
+    func testBothMovieRenderersWriteReadableMetadataAndUkrainianSubtitles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Вітаю!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        var metadata = ProjectExportMetadata(title: "Тестове відео", createdAt: Date(timeIntervalSince1970: 0),
+                                             transcript: transcript, timeline: timeline)
+        metadata.description = "Короткий опис відео."
+        for program in [false, true] {
+            let output = directory.appending(path: program ? "program.mov" : "edited.mov")
+            if program {
+                try await ProjectProgramRenderer().exportMovie(
+                    sources: .init(screenURL: source, cameraURL: nil), timeline: timeline, presentation: .default,
+                    metadata: metadata, to: output
+                )
+            } else {
+                try await ProjectEditRenderer().exportMovie(from: source, timeline: timeline, metadata: metadata, to: output)
+            }
+            let asset = AVURLAsset(url: output)
+            let items = try await asset.load(.metadata)
+            for (identifier, expected) in [
+                (AVMetadataIdentifier.quickTimeMetadataAuthor, "Роман Марінський"),
+                (.quickTimeMetadataTitle, "Тестове відео"),
+                (.quickTimeMetadataDescription, "Короткий опис відео."),
+                (.quickTimeMetadataCreationDate, "1970-01-01T00:00:00Z"),
+                (.quickTimeMetadataSoftware, "Studio Recorder")
+            ] {
+                let item = try XCTUnwrap(items.first { $0.identifier == identifier })
+                let value = try await item.load(.stringValue)
+                XCTAssertEqual(value, expected)
+            }
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            let video = try XCTUnwrap(tracks.first)
+            let language = try await video.load(.languageCode)
+            XCTAssertEqual(language, "ukr")
+            let frame = directory.appending(path: program ? "program.png" : "edited.png")
+            try await ProjectMediaExporter().exportScreenshot(from: output, at: 0.1, to: frame)
+            let color = try averageColor(in: frame)
+            XCTAssertGreaterThan(color.red, 100, "Header updates must preserve self-contained media")
+            XCTAssertGreaterThan(color.red, color.blue + 50)
+            let srt = try String(contentsOf: ProjectExportMetadata.subtitleURL(for: output), encoding: .utf8)
+            XCTAssertEqual(srt, "1\n00:00:00,200 --> 00:00:00,800\nВітаю!\n\n")
+        }
+    }
+
     func testRendererExportsOnlyTheOrderedSegmentsInTheEditTimeline() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

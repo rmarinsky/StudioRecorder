@@ -60,6 +60,7 @@ final class ProjectEditRenderer {
         timeline: ProjectEditTimeline,
         audioAdjustment: ProjectAudioAdjustment = .unchanged,
         segmentAudioAdjustments: [ProjectSegmentAudioAdjustment] = [],
+        metadata: ProjectExportMetadata? = nil,
         to destinationURL: URL
     ) async throws {
         try validateDestination(destinationURL, for: sourceURL)
@@ -73,6 +74,7 @@ final class ProjectEditRenderer {
             timeline: timeline,
             segmentAdjustments: segmentAudioAdjustments
         )
+        metadata?.apply(to: session)
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
@@ -84,11 +86,14 @@ final class ProjectEditRenderer {
             cancellation.cancel()
         }
         try Task.checkCancellation()
+        try metadata?.writeLanguage(to: temporaryURL)
+        try Task.checkCancellation()
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         }
+        try metadata?.writeSubtitles(for: destinationURL)
     }
 
     private func validateDestination(_ destinationURL: URL, for sourceURL: URL) throws {
