@@ -95,6 +95,38 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertFalse(labels.contains("Save Frame"))
     }
 
+    func testExportOptionsShowsMetadataAndExplicitCloudGenerationDisclosure() async throws {
+        try await requireNativeAccessibility()
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Привіт!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let host = NSHostingView(rootView: ProjectExportOptionsView(
+            metadata: metadata, projectID: transcript.projectID, assistantProvider: .openRouter,
+            assistantModel: "fixture", onCancel: {}, onExport: { _ in }
+        ))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 550, height: 650),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Generate via OpenRouter") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Роман Марінський"))
+        XCTAssertTrue(labels.contains("Ukrainian (uk)"))
+        XCTAssertTrue(labels.contains("Generate via OpenRouter"))
+        XCTAssertTrue(labels.contains("Sends only the edited transcript to OpenRouter and the selected model provider when you click Generate."))
+        XCTAssertTrue(labels.contains("Export"))
+        XCTAssertTrue(labels.contains("Cancel"))
+    }
+
     private func requireNativeAccessibility() async throws {
         _ = NSApplication.shared
         let host = NSHostingView(rootView: Button("Native accessibility probe") {})

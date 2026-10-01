@@ -11,6 +11,12 @@ enum TranscriptAutoQueuePolicy {
 }
 
 struct ProjectDetailView: View {
+    private struct ExportDraft: Identifiable {
+        let id = UUID()
+        let recipe: ProjectExportRecipe
+        let metadata: ProjectExportMetadata
+    }
+
     private struct AssistantMessage: Identifiable {
         let id = UUID()
         let role: String
@@ -30,6 +36,7 @@ struct ProjectDetailView: View {
     @State private var selectedTrackID: String?
     @State private var programScreenTrackID: String?
     @StateObject private var editSession: ProjectEditSession
+    @State private var exportDraft: ExportDraft?
     @State private var isExporting = false
     @State private var exportMessage: String?
     @State private var exportError: String?
@@ -176,6 +183,22 @@ struct ProjectDetailView: View {
             editSession.stop()
             cancelGIFPreparation()
             cleanupGIFSource()
+        }
+        .sheet(item: $exportDraft) { draft in
+            ProjectExportOptionsView(
+                metadata: draft.metadata, projectID: draft.recipe.projectID,
+                assistantProvider: assistantProvider,
+                assistantModel: assistantProvider == .ollama ? localAssistantModel : assistantModel,
+                requiresSubtitleReplacement: !draft.metadata.subtitles.isEmpty
+                    && FileManager.default.fileExists(atPath: ProjectExportMetadata.subtitleURL(for: draft.recipe.destinationURL).path),
+                onCancel: { exportDraft = nil },
+                onExport: { metadata in
+                    var recipe = draft.recipe
+                    recipe.metadata = metadata
+                    exportDraft = nil
+                    performExport(success: "Export queued in Jobs") { try await queueExport(recipe) }
+                }
+            )
         }
         .sheet(item: $gifMakerSource, onDismiss: cleanupGIFSource) { source in
             GIFMakerView(source: source) { gifMakerSource = nil }
@@ -1645,9 +1668,18 @@ struct ProjectDetailView: View {
 
     private func exportEditedMovie() {
         guard let destinationURL = saveURL(type: .quickTimeMovie, suggestedName: "Recording edited.mov") else { return }
-        performExport(success: "Export queued in Jobs") {
+        do {
             let recipe = try editSession.makeExportRecipe(to: destinationURL)
-            try await queueExport(recipe)
+            let metadata = ProjectExportMetadata(
+                title: project.recordingName ?? destinationURL.deletingPathExtension().lastPathComponent,
+                createdAt: project.createdAt, transcript: transcript, timeline: recipe.timeline
+            )
+            if metadata.subtitles.isEmpty {
+                try metadata.validateSubtitleDestination(for: destinationURL)
+            }
+            exportDraft = ExportDraft(recipe: recipe, metadata: metadata)
+        } catch {
+            exportError = error.localizedDescription
         }
     }
 

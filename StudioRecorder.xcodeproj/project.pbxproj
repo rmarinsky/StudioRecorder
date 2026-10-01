@@ -31,6 +31,7 @@
 		3A56ED466E730BD7E33F3A98 /* GoogleYouTubeOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = F52AC98728C12BDEF73205EF /* GoogleYouTubeOAuth.swift */; };
 		3BFFB667DCDB38B9F09C9BC1 /* GIFMakerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */; };
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
+		4B2CDA3FA95B2172CC8D275C /* ProjectExportOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9FAB3D97089CD055576B265 /* ProjectExportOptionsView.swift */; };
 		52EACC473103D020DC165C02 /* RecordingAudioStemWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D0224672BDE9D69ED2DF56 /* RecordingAudioStemWriter.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
@@ -149,6 +150,7 @@
 		A0793E0F7510D6169865639B /* ProgramFrameCompositor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramFrameCompositor.swift; sourceTree = "<group>"; };
 		A0FE99528B91B6B4165AEE25 /* LiveSourceRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSourceRecovery.swift; sourceTree = "<group>"; };
 		A4D0224672BDE9D69ED2DF56 /* RecordingAudioStemWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingAudioStemWriter.swift; sourceTree = "<group>"; };
+		A9FAB3D97089CD055576B265 /* ProjectExportOptionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectExportOptionsView.swift; sourceTree = "<group>"; };
 		AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePresentationTests.swift; sourceTree = "<group>"; };
 		ADFE8A95E62F46884D456041 /* ProjectMediaExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMediaExporter.swift; sourceTree = "<group>"; };
 		AFC0C6B8CEFCFC6873D21AE8 /* SafeShortcutTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeShortcutTimelineTests.swift; sourceTree = "<group>"; };
@@ -197,6 +199,7 @@
 			children = (
 				F46A3C25B20C9C5E2B86528F /* GIFMakerView.swift */,
 				96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */,
+				A9FAB3D97089CD055576B265 /* ProjectExportOptionsView.swift */,
 				43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */,
 				4C835330D010EC7464891D7A /* StudioRecorderRootView.swift */,
 				BBEFC6A40571CF75663E18D6 /* YouTubeAuthorizationDisclosureView.swift */,
@@ -511,6 +514,7 @@
 				C22396E8FE55E5F5A72A7587 /* ProjectEditStore.swift in Sources */,
 				196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */,
 				C299DB58382666E5117E56ED /* ProjectExportMetadata.swift in Sources */,
+				4B2CDA3FA95B2172CC8D275C /* ProjectExportOptionsView.swift in Sources */,
 				E9E0C0A0A54C9D2CC336B3DA /* ProjectMediaExporter.swift in Sources */,
 				28BD5D9F6F1FDC3069E77ADB /* ProjectPresentationEditorView.swift in Sources */,
 				B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */,
