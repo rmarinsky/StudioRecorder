@@ -255,7 +255,7 @@ struct ProjectQuickEditorView: View {
     private var silenceEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button("Find Silences", systemImage: "waveform.badge.magnifyingglass") {
+                Button("Find pauses", systemImage: "waveform.badge.magnifyingglass") {
                     session.detectSilence()
                 }
                 .disabled(session.isDetectingSilence || session.isWorking)
