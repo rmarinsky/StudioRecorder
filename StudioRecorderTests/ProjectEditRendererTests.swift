@@ -1360,6 +1360,41 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertLessThan(center.green, 80)
     }
 
+    func testProgramExportDoesNotInventACursorBeforeItsFirstRecordedPosition() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let screen = root.appending(path: "screen.mov")
+        let output = root.appending(path: "output.mov")
+        try await writeReadableMovie(to: screen, colors: Array(repeating: 0xFF0000FF, count: 5))
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 640, height: 360)
+        presentation.camera.isVisible = false
+        presentation.screen = SourcePlacementSnapshot(centerX: 0.5, centerY: 0.5, width: 1, height: 1, shape: .rectangle)
+        presentation.cursor = CursorTreatmentSnapshot(scale: 2, highlightsClicks: true)
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screen, cameraURL: nil, screenDisplayID: 3,
+                cursorTimeline: CursorSceneTimeline(samples: [
+                    CursorSceneSample(time: 1, displayID: 3, normalizedX: 0.5,
+                                      normalizedY: 0.5, isPrimaryButtonDown: true)
+                ]), screenWasCapturedAsFixedRegion: true, rendersCursor: true
+            ),
+            timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
+            presentation: presentation, to: output
+        )
+        let before = root.appending(path: "before.png")
+        let after = root.appending(path: "after.png")
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 0.5, to: before)
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.5, to: after)
+        let absent = try color(in: before, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        let visible = try color(in: after, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        XCTAssertGreaterThan(absent.blue, 180)
+        XCTAssertLessThan(absent.red, 80)
+        XCTAssertGreaterThan(visible.red, 180)
+        XCTAssertLessThan(visible.blue, 120)
+    }
+
     func testFollowCursorSceneReplaysRecordedCursorMovement() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -132,6 +132,16 @@ final class CursorViewportPlannerTests: XCTestCase {
         XCTAssertEqual(sample.normalizedX, 0.5, accuracy: 0.001)
     }
 
+    func testRecordedCursorDoesNotAppearBeforeTheFirstCapturedPosition() {
+        let timeline = CursorSceneTimeline(samples: [
+            CursorSceneSample(time: 10.7, displayID: 3, normalizedX: 0.02,
+                              normalizedY: 0.17, isPrimaryButtonDown: false)
+        ])
+        XCTAssertNil(timeline.sample(at: 0, for: nil))
+        XCTAssertNil(timeline.sample(at: 10.69, for: 3))
+        XCTAssertNotNil(timeline.sample(at: 10.7, for: 3))
+    }
+
     func testRecordedCursorTimelineReturnsTheScenePositionAtPlaybackTime() throws {
         let timeline = CursorSceneTimeline(samples: [
             CursorSceneSample(time: 0, displayID: 7, normalizedX: 0.15, normalizedY: 0.4, isPrimaryButtonDown: false),

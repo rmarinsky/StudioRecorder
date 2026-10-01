@@ -187,7 +187,7 @@ struct CursorSceneTimeline: Codable, Equatable, Sendable {
                 upper = middle
             }
         }
-        guard lower > 0 else { return candidates[0] }
+        guard lower > 0 else { return nil }
         let previous = candidates[lower - 1]
         guard lower < candidates.count else { return previous }
         let next = candidates[lower]
