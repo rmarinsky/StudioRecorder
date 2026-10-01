@@ -5,6 +5,27 @@ import XCTest
 import SwiftUI
 @testable import StudioRecorder
 
+// A real-file race fixture: another writer changes the SRT after preflight.
+private final class SubtitleRaceFileManager: FileManager, @unchecked Sendable {
+    let subtitleURL: URL
+    let replacement: Data
+    private var hasChanged = false
+
+    init(subtitleURL: URL, replacement: Data) {
+        self.subtitleURL = subtitleURL
+        self.replacement = replacement
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        if path == subtitleURL.path, !hasChanged {
+            hasChanged = true
+            try? replacement.write(to: subtitleURL, options: .atomic)
+        }
+        return super.fileExists(atPath: path)
+    }
+}
+
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
     func testTimelineKeepsFrequentActionsWithoutDuplicateExportOrSecondaryButtons() async throws {
@@ -1847,6 +1868,31 @@ final class ProjectEditRendererTests: XCTestCase {
         }
 
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
+    }
+
+    func testSubtitleChangeBetweenPreflightAndPublicationStillRequiresApproval() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appending(path: "output.mov")
+        let temporaryMovie = directory.appending(path: "new.mov")
+        let previousMovie = Data("previous movie".utf8)
+        try previousMovie.write(to: output)
+        try Data("new movie".utf8).write(to: temporaryMovie)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        try Data(metadata.subtitleSRT.utf8).write(to: subtitles)
+        let otherWriter = Data("changed by another writer".utf8)
+        let manager = SubtitleRaceFileManager(subtitleURL: subtitles, replacement: otherWriter)
+        XCTAssertThrowsError(try metadata.publishMovie(from: temporaryMovie, to: output, fileManager: manager))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertEqual(try Data(contentsOf: subtitles), otherWriter)
     }
 
     func testFailedMoviePublicationRestoresPreviousSubtitles() throws {

@@ -129,8 +129,8 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
         }
     }
 
-    func publishMovie(from temporaryMovie: URL, to destination: URL) throws {
-        let manager = FileManager.default
+    func publishMovie(from temporaryMovie: URL, to destination: URL, fileManager: FileManager = .default) throws {
+        let manager = fileManager
         let subtitleURL = Self.subtitleURL(for: destination)
         let temporarySubtitle = destination.deletingLastPathComponent()
             .appending(path: ".StudioRecorder-subtitles-\(UUID().uuidString).srt")
@@ -152,6 +152,10 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
             if !subtitles.isEmpty {
                 if manager.fileExists(atPath: subtitleURL.path) {
                     if try Data(contentsOf: subtitleURL) != data {
+                        guard allowsSubtitleReplacement else {
+                            throw NSError(domain: "StudioRecorder.Export", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                                "The subtitle file changed after validation. Confirm replacement or choose a different export name."])
+                        }
                         _ = try manager.replaceItemAt(subtitleURL, withItemAt: temporarySubtitle,
                                                       backupItemName: backupName, options: .withoutDeletingBackupItem)
                         backedUpSubtitles = true
