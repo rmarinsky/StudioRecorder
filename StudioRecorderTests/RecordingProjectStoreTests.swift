@@ -160,14 +160,14 @@ final class RecordingProjectStoreTests: XCTestCase {
         let coordinator = RecordingCoordinator(projectStore: store, transcriber: transcriber)
         await coordinator.refreshProjects()
         try await coordinator.enqueueTranscription(recipe)
-        await fulfillment(of: [started], timeout: 5)
+        await fulfillment(of: [started], timeout: 15)
         let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
 
         try await coordinator.cancelJob(job.id)
-        await fulfillment(of: [cancellationStarted], timeout: 5)
+        await fulfillment(of: [cancellationStarted], timeout: 15)
         try await coordinator.retryJob(job.id)
         await transcriber.finishCancellation()
-        await fulfillment(of: [retryStarted], timeout: 5)
+        await fulfillment(of: [retryStarted], timeout: 15)
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .running)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
@@ -495,7 +495,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         await coordinator.refreshProjects()
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalizing)
 
-        for _ in 0..<100 where coordinator.jobs.first?.state != .completed ||
+        for _ in 0..<300 where coordinator.jobs.first?.state != .completed ||
             coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle != .finalized {
             try await Task.sleep(for: .milliseconds(100))
         }

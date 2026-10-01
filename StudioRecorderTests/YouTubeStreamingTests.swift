@@ -718,18 +718,31 @@ final class YouTubeStreamingTests: XCTestCase {
             at: 0
         )
 
+        let originalSample = await sink.latestVideo()
+        let originalBuffer = try XCTUnwrap(originalSample?.value.imageBuffer)
+        func renderedPixels(_ buffer: CVPixelBuffer) -> [UInt8] {
+            let image = CIImage(cvPixelBuffer: buffer)
+            let bounds = image.extent.integral
+            let rowBytes = Int(bounds.width) * 4
+            var pixels = [UInt8](repeating: 0, count: rowBytes * Int(bounds.height))
+            pixels.withUnsafeMutableBytes { bytes in
+                CIContext().render(image, toBitmap: bytes.baseAddress!, rowBytes: rowBytes,
+                                   bounds: bounds, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+            }
+            return pixels
+        }
+        let originalPixels = renderedPixels(originalBuffer)
         await pipeline.showShortcut("⌘K", duration: 0.2)
         try await Task.sleep(for: .milliseconds(80))
         let shortcutSample = await sink.latestVideo()
         let shortcutBuffer = try XCTUnwrap(shortcutSample?.value.imageBuffer)
-        let shortcutPixel = try pixel(in: CIImage(cvPixelBuffer: shortcutBuffer), x: 302, y: 39)
+        XCTAssertFalse(renderedPixels(shortcutBuffer) == originalPixels, "Shortcut must change the composed frame")
 
         try await Task.sleep(for: .milliseconds(180))
         let cleanSample = await sink.latestVideo()
         let cleanBuffer = try XCTUnwrap(cleanSample?.value.imageBuffer)
-        let cleanPixel = try pixel(in: CIImage(cvPixelBuffer: cleanBuffer), x: 302, y: 39)
         XCTAssertFalse(cleanBuffer === shortcutBuffer)
-        XCTAssertGreaterThan(cleanPixel.blue, shortcutPixel.blue)
+        XCTAssertTrue(renderedPixels(cleanBuffer) == originalPixels, "Expiry must restore the original composed frame")
 
         try await Task.sleep(for: .milliseconds(80))
         await pipeline.endSourceFallback()
