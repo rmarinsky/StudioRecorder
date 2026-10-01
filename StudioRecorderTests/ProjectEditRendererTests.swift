@@ -7,7 +7,7 @@ import SwiftUI
 
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
-    func testTimelineKeepsEditingControlsWithoutASecondExportButton() async throws {
+    func testTimelineKeepsFrequentActionsWithoutDuplicateExportOrSecondaryButtons() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -32,6 +32,13 @@ final class ProjectEditRendererTests: XCTestCase {
         let labels = accessibilityLabels(in: host)
         XCTAssertTrue(labels.contains("Split"), "The actual timeline must be rendered: \(labels)")
         XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
+        XCTAssertTrue(labels.contains("Play selection"))
+        XCTAssertTrue(labels.contains("Delete Selection"))
+        XCTAssertTrue(labels.contains("Undo timeline edit"))
+        XCTAssertTrue(labels.contains("Redo timeline edit"))
+        for secondaryAction in ["Trim Before", "Trim After", "Delete Segment", "Reset", "Audition"] {
+            XCTAssertFalse(labels.contains(secondaryAction), "\(secondaryAction) must not compete with frequent timeline actions")
+        }
     }
 
     func testEditorKeepsOptionalPanelsAndOriginalMediaOutOfThePrimaryControls() async throws {
