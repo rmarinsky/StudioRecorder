@@ -371,6 +371,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         try jobStore.saveExport(recipe, for: job, in: project)
         job.state = .running
         try jobStore.save(job, in: project)
+        XCTAssertThrowsError(try jobStore.completedExportDestination(jobID: job.id, in: project))
         try await ProjectEditStore().save(
             ProjectEditDocument(
                 projectID: project.id,
@@ -386,6 +387,8 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let revealURL = try await coordinator.completedExportDestination(for: job.id)
+        XCTAssertEqual(revealURL, exportedURL)
         let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
     }
