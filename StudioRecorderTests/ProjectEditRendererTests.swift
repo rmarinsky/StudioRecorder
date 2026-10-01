@@ -1817,6 +1817,42 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
     }
 
+    func testExportPreservesExistingMovieAndSubtitlesWithoutSubtitleReplacementApproval() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        try await writeReadableMovie(to: source)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        for program in [false, true] {
+            let output = directory.appending(path: program ? "program.mov" : "edited.mov")
+            let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+            let existingMovie = Data("existing movie".utf8)
+            let existingSubtitles = Data("existing subtitles".utf8)
+            try existingMovie.write(to: output)
+            try existingSubtitles.write(to: subtitles)
+            do {
+                if program {
+                    try await ProjectProgramRenderer().exportMovie(
+                        sources: .init(screenURL: source, cameraURL: nil), timeline: timeline,
+                        presentation: .default, metadata: metadata, to: output
+                    )
+                } else {
+                    try await ProjectEditRenderer().exportMovie(from: source, timeline: timeline, metadata: metadata, to: output)
+                }
+                XCTFail("Replacing subtitle files requires separate approval")
+            } catch {}
+            XCTAssertEqual(try Data(contentsOf: output), existingMovie)
+            XCTAssertEqual(try Data(contentsOf: subtitles), existingSubtitles)
+        }
+    }
+
     func testBothMovieRenderersWriteReadableMetadataAndUkrainianSubtitles() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

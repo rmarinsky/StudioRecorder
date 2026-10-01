@@ -15,6 +15,7 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
     let createdAt: Date
     var description: String?
     let subtitles: [Subtitle]
+    var allowsSubtitleReplacement = false
 
     init(title: String, createdAt: Date, transcript: TimedTranscript?, timeline: ProjectEditTimeline) {
         self.title = title
@@ -94,9 +95,30 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
         try movie.writeHeader(to: movieURL, fileType: .mov, options: .addMovieHeaderToDestination)
     }
 
+    func validateSubtitleDestination(for movieURL: URL) throws {
+        let url = Self.subtitleURL(for: movieURL)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard !subtitles.isEmpty else {
+            throw NSError(domain: "StudioRecorder.Export", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "An existing subtitle file would no longer match this movie. Choose a different export name."])
+        }
+        if !allowsSubtitleReplacement, try Data(contentsOf: url) != Data(subtitleSRT.utf8) {
+            throw NSError(domain: "StudioRecorder.Export", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                "A subtitle file already exists. Confirm its replacement or choose a different export name."])
+        }
+    }
+
     func writeSubtitles(for movieURL: URL) throws {
+        try validateSubtitleDestination(for: movieURL)
         guard !subtitles.isEmpty else { return }
-        try Data(subtitleSRT.utf8).write(to: Self.subtitleURL(for: movieURL), options: .atomic)
+        let url = Self.subtitleURL(for: movieURL)
+        let data = Data(subtitleSRT.utf8)
+        if FileManager.default.fileExists(atPath: url.path) {
+            if try Data(contentsOf: url) == data { return }
+            try data.write(to: url, options: .atomic)
+        } else {
+            try data.write(to: url, options: .withoutOverwriting)
+        }
     }
 
     static func subtitleURL(for movieURL: URL) -> URL {
