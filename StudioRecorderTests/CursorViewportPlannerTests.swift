@@ -137,8 +137,23 @@ final class CursorViewportPlannerTests: XCTestCase {
         _ = synchronizer.alignFrame(streamID: secondStreamID, hostTime: 200)
         XCTAssertNil(synchronizer.alignFrame(streamID: firstStreamID, hostTime: 200))
         let active = try XCTUnwrap(CursorSceneTimeline(samples: synchronizer.timelineSamples()).sample(at: 1, for: nil))
+        XCTAssertNil(CursorSceneTimeline(samples: synchronizer.timelineSamples()).sample(at: 1, for: 1))
         XCTAssertEqual(active.displayID, 2)
         XCTAssertEqual(active.normalizedX, 0.5, accuracy: 0.001)
+        synchronizer.record(CursorHostSample(hostTime: 300,
+            location: CGPoint(x: 2_500, y: 400), isPrimaryButtonDown: false))
+        _ = synchronizer.alignFrame(streamID: firstStreamID, hostTime: 300)
+        _ = synchronizer.alignFrame(streamID: secondStreamID, hostTime: 300)
+        let outside = CursorSceneTimeline(samples: synchronizer.timelineSamples())
+        XCTAssertNil(outside.sample(at: 1, for: nil))
+        XCTAssertNil(outside.sample(at: 1, for: 1))
+        XCTAssertNil(outside.sample(at: 1, for: 2))
+        synchronizer.record(CursorHostSample(hostTime: 400,
+            location: CGPoint(x: 500, y: 400), isPrimaryButtonDown: false))
+        _ = synchronizer.alignFrame(streamID: firstStreamID, hostTime: 400)
+        _ = synchronizer.alignFrame(streamID: secondStreamID, hostTime: 400)
+        XCTAssertEqual(CursorSceneTimeline(samples: synchronizer.timelineSamples()).sample(at: 1, for: nil)?.displayID, 1)
+
     }
 
     func testCursorLeavingCapturedRegionDisappearsUntilItReturns() throws {

@@ -25,6 +25,7 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
         var spaces: [ObjectIdentifier: CursorCaptureSpace] = [:]
         var firstFrameHostTimes: [ObjectIdentifier: UInt64] = [:]
         var alignedSamples: [CursorSceneSample] = []
+        var recordedVisibilityByDisplay: [UInt32: Bool] = [:]
     }
 
     private let lock = NSLock()
@@ -91,10 +92,10 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
                 isVisible: isVisible ? nil : false
             ).validated()
             if recordsTimeline {
-                if isVisible || (state.alignedSamples.last?.displayID == space.displayID &&
-                    state.alignedSamples.last?.isVisible != false) {
+                if isVisible || state.recordedVisibilityByDisplay[space.displayID] == true {
                     state.alignedSamples.append(sample)
                 }
+                state.recordedVisibilityByDisplay[space.displayID] = isVisible
             }
             return isVisible ? sample : nil
         }
@@ -207,8 +208,16 @@ struct CursorSceneTimeline: Codable, Equatable, Sendable {
             }
         }
         guard lower > 0 else { return nil }
-        let previous = candidates[lower - 1]
-        guard previous.isVisible != false else { return nil }
+        var previousIndex = lower - 1
+        var hiddenDisplayIDs: Set<UInt32> = []
+        // An inactive display's exit must not hide the active display's cursor.
+        while candidates[previousIndex].isVisible == false {
+            hiddenDisplayIDs.insert(candidates[previousIndex].displayID)
+            guard previousIndex > 0 else { return nil }
+            previousIndex -= 1
+        }
+        let previous = candidates[previousIndex]
+        guard !hiddenDisplayIDs.contains(previous.displayID) else { return nil }
         guard lower < candidates.count else { return previous }
         let next = candidates[lower]
         guard next.isVisible != false, next.displayID == previous.displayID, next.time > previous.time else {
