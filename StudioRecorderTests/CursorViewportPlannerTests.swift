@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreMedia
 import XCTest
 @testable import StudioRecorder
 
@@ -130,6 +131,45 @@ final class CursorViewportPlannerTests: XCTestCase {
         let sample = try XCTUnwrap(samples.first)
         XCTAssertEqual(sample.displayID, 1)
         XCTAssertEqual(sample.normalizedX, 0.5, accuracy: 0.001)
+
+        synchronizer.record(CursorHostSample(hostTime: 200,
+            location: CGPoint(x: 1_500, y: 400), isPrimaryButtonDown: false))
+        _ = synchronizer.alignFrame(streamID: secondStreamID, hostTime: 200)
+        XCTAssertNil(synchronizer.alignFrame(streamID: firstStreamID, hostTime: 200))
+        let active = try XCTUnwrap(CursorSceneTimeline(samples: synchronizer.timelineSamples()).sample(at: 1, for: nil))
+        XCTAssertEqual(active.displayID, 2)
+        XCTAssertEqual(active.normalizedX, 0.5, accuracy: 0.001)
+    }
+
+    func testCursorLeavingCapturedRegionDisappearsUntilItReturns() throws {
+        let synchronizer = CursorFrameSynchronizer()
+        let stream = NSObject()
+        let streamID = ObjectIdentifier(stream)
+        synchronizer.register(streamID: streamID, space: CursorCaptureSpace(
+            displayID: 7, visibleFrame: CGRect(x: 1_000, y: 200, width: 800, height: 600)
+        ))
+        for (seconds, x) in [(10.0, 1_200.0), (10.5, 1_900.0), (11.0, 1_300.0)] {
+            let hostTime = CMClockConvertHostTimeToSystemUnits(CMTime(seconds: seconds, preferredTimescale: 600))
+            synchronizer.record(CursorHostSample(hostTime: hostTime,
+                location: CGPoint(x: x, y: 500), isPrimaryButtonDown: false))
+            let sample = synchronizer.alignFrame(streamID: streamID, hostTime: hostTime)
+            if seconds == 10.5 { XCTAssertNil(sample) }
+        }
+        let timeline = CursorSceneTimeline(samples: synchronizer.timelineSamples())
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 0.25, for: nil)).normalizedX, 0.25, accuracy: 0.001)
+        XCTAssertNil(timeline.sample(at: 0.75, for: nil))
+        XCTAssertEqual(try XCTUnwrap(timeline.sample(at: 1, for: nil)).normalizedX, 0.375, accuracy: 0.001)
+    }
+
+    func testCursorTimelineReadsLegacyPositionsAndPersistsInvisibleIntervals() throws {
+        let legacy = Data(#"{"schemaVersion":1,"samples":[{"time":0,"displayID":7,"normalizedX":0.25,"normalizedY":0.5,"isPrimaryButtonDown":false}]}"#.utf8)
+        let timeline = try JSONDecoder().decode(CursorSceneTimeline.self, from: legacy)
+        XCTAssertNotNil(timeline.sample(at: 0, for: nil))
+        let hidden = CursorSceneTimeline(samples: [CursorSceneSample(time: 0, displayID: 7,
+            normalizedX: 0.25, normalizedY: 0.5, isPrimaryButtonDown: false, isVisible: false)])
+        let restored = try JSONDecoder().decode(CursorSceneTimeline.self, from: JSONEncoder().encode(hidden))
+        XCTAssertEqual(restored, hidden)
+        XCTAssertNil(restored.sample(at: 1, for: nil))
     }
 
     func testRecordedCursorDoesNotAppearBeforeTheFirstCapturedPosition() {

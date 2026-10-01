@@ -81,17 +81,22 @@ final class CursorFrameSynchronizer: @unchecked Sendable {
             }
             let firstHostTime = state.firstFrameHostTimes[streamID] ?? hostTime
             state.firstFrameHostTimes[streamID] = firstHostTime
+            let isVisible = space.visibleFrame.contains(hostSample.location)
             let sample = CursorSceneSample(
                 time: Self.seconds(from: firstHostTime, to: hostTime),
                 displayID: space.displayID,
                 normalizedX: (hostSample.location.x - space.visibleFrame.minX) / space.visibleFrame.width,
                 normalizedY: (hostSample.location.y - space.visibleFrame.minY) / space.visibleFrame.height,
-                isPrimaryButtonDown: hostSample.isPrimaryButtonDown
+                isPrimaryButtonDown: hostSample.isPrimaryButtonDown,
+                isVisible: isVisible ? nil : false
             ).validated()
-            if recordsTimeline, space.visibleFrame.contains(hostSample.location) {
-                state.alignedSamples.append(sample)
+            if recordsTimeline {
+                if isVisible || (state.alignedSamples.last?.displayID == space.displayID &&
+                    state.alignedSamples.last?.isVisible != false) {
+                    state.alignedSamples.append(sample)
+                }
             }
-            return sample
+            return isVisible ? sample : nil
         }
     }
 
@@ -151,13 +156,27 @@ struct CursorSceneSample: Codable, Equatable, Sendable {
     let normalizedY: CGFloat
     let isPrimaryButtonDown: Bool
 
+    // Older recordings omit visibility; those samples remain visible.
+    let isVisible: Bool?
+
+    init(time: TimeInterval, displayID: UInt32, normalizedX: CGFloat, normalizedY: CGFloat,
+         isPrimaryButtonDown: Bool, isVisible: Bool? = nil) {
+        self.time = time
+        self.displayID = displayID
+        self.normalizedX = normalizedX
+        self.normalizedY = normalizedY
+        self.isPrimaryButtonDown = isPrimaryButtonDown
+        self.isVisible = isVisible
+    }
+
     func validated() -> CursorSceneSample {
         CursorSceneSample(
             time: max(time.isFinite ? time : 0, 0),
             displayID: displayID,
             normalizedX: min(max(normalizedX.isFinite ? normalizedX : 0.5, 0), 1),
             normalizedY: min(max(normalizedY.isFinite ? normalizedY : 0.5, 0), 1),
-            isPrimaryButtonDown: isPrimaryButtonDown
+            isPrimaryButtonDown: isPrimaryButtonDown,
+            isVisible: isVisible
         )
     }
 }
@@ -189,9 +208,10 @@ struct CursorSceneTimeline: Codable, Equatable, Sendable {
         }
         guard lower > 0 else { return nil }
         let previous = candidates[lower - 1]
+        guard previous.isVisible != false else { return nil }
         guard lower < candidates.count else { return previous }
         let next = candidates[lower]
-        guard next.displayID == previous.displayID, next.time > previous.time else {
+        guard next.isVisible != false, next.displayID == previous.displayID, next.time > previous.time else {
             return previous
         }
         let progress = CGFloat((target - previous.time) / (next.time - previous.time))

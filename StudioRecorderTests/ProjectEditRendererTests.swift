@@ -1377,7 +1377,9 @@ final class ProjectEditRendererTests: XCTestCase {
                 screenURL: screen, cameraURL: nil, screenDisplayID: 3,
                 cursorTimeline: CursorSceneTimeline(samples: [
                     CursorSceneSample(time: 1, displayID: 3, normalizedX: 0.5,
-                                      normalizedY: 0.5, isPrimaryButtonDown: true)
+                                      normalizedY: 0.5, isPrimaryButtonDown: true),
+                    CursorSceneSample(time: 1.25, displayID: 3, normalizedX: 0.5,
+                                      normalizedY: 0.5, isPrimaryButtonDown: false, isVisible: false)
                 ]), screenWasCapturedAsFixedRegion: true, rendersCursor: true
             ),
             timeline: try ProjectEditTimeline(trackID: "screen-3", sourceDuration: 2),
@@ -1385,8 +1387,13 @@ final class ProjectEditRendererTests: XCTestCase {
         )
         let before = root.appending(path: "before.png")
         let after = root.appending(path: "after.png")
+        let outside = root.appending(path: "outside.png")
         try await ProjectMediaExporter().exportScreenshot(from: output, at: 0.5, to: before)
-        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.5, to: after)
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.1, to: after)
+        try await ProjectMediaExporter().exportScreenshot(from: output, at: 1.5, to: outside)
+        let hidden = try color(in: outside, normalizedX: 300.0 / 640, normalizedY: 0.5)
+        XCTAssertGreaterThan(hidden.blue, 180)
+        XCTAssertLessThan(hidden.red, 80)
         let absent = try color(in: before, normalizedX: 300.0 / 640, normalizedY: 0.5)
         let visible = try color(in: after, normalizedX: 300.0 / 640, normalizedY: 0.5)
         XCTAssertGreaterThan(absent.blue, 180)
