@@ -34,9 +34,58 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
     }
 
+    func testEditorKeepsOptionalPanelsAndOriginalMediaOutOfThePrimaryControls() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await writeReadableMovie(to: root.appending(path: "program.mov"))
+        let sourceDuration = try await AVURLAsset(url: root.appending(path: "program.mov")).load(.duration).seconds
+        let projectID = UUID()
+        let project = RecordingProjectSnapshot(
+            identity: .init(packageURL: root, manifestID: projectID),
+            createdAt: Date(), stoppedAt: Date(), lifecycle: .finalized,
+            captureProfile: "fixture", sources: [], tracks: [.program],
+            recoveryReport: .init(tracks: [.init(descriptor: .program, state: .finalized, fileSize: nil)], diagnostics: []),
+            presentation: .default, primaryAudioDisplayID: nil
+        )
+        try TimedTranscriptStore().save(TimedTranscript(
+            projectID: projectID, sourceTrackID: "program", sourceDuration: sourceDuration,
+            language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Hello", sourceStart: 0.1, sourceEnd: 0.3, timingStatus: .aligned)]
+        ), in: root)
+        let updates = AppUpdateController(model: StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot()), bundle: Bundle(for: Self.self))
+        let host = NSHostingView(rootView: ProjectDetailView(
+            project: project, onClose: {}, queueExport: { _ in }, jobs: [],
+            queueTranscription: { _ in XCTFail("A saved transcript must not be queued again") }
+        ).environmentObject(updates))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1000),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<50 {
+            host.layoutSubtreeIfNeeded()
+            let loadedLabels = accessibilityLabels(in: host)
+            if loadedLabels.contains("Split"), loadedLabels.contains("Search transcript") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let labels = accessibilityLabels(in: host)
+        XCTAssertTrue(labels.contains("Split"), "Editor must finish loading: \(labels)")
+        XCTAssertTrue(labels.contains("Show Assistant"))
+        XCTAssertFalse(labels.contains("Hide Assistant"))
+        XCTAssertTrue(labels.contains("Find pauses"))
+        XCTAssertFalse(labels.contains("Find Silences"))
+        XCTAssertFalse(labels.contains("Find"), "Transcript must reuse the timeline pause finder")
+        XCTAssertTrue(labels.contains("Search transcript"))
+        XCTAssertTrue(labels.contains("Select phrase: Hello"))
+        XCTAssertFalse(labels.contains("Open Raw Movie"))
+        XCTAssertFalse(labels.contains("Share Raw Movie"))
+        XCTAssertFalse(labels.contains("Save Frame"))
+    }
+
     private func accessibilityLabels(in element: Any) -> [String] {
         guard let object = element as? NSObject else { return [] }
-        let labels = ["accessibilityLabel", "accessibilityTitle"].compactMap { name -> String? in
+        let labels = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].compactMap { name -> String? in
             let selector = NSSelectorFromString(name)
             guard object.responds(to: selector) else { return nil }
             return object.perform(selector)?.takeUnretainedValue() as? String

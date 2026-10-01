@@ -38,7 +38,7 @@ struct ProjectDetailView: View {
     @State private var gifPreparationTask: Task<Void, Never>?
     @State private var gifPreparationID = UUID()
     @State private var isPreparingGIF = false
-    @State private var isAssistantVisible = true
+    @State private var isAssistantVisible = false
     @State private var isTranscriptVisible = true
     @State private var isShowingDetails = false
     @State private var selectedRange: Range<TimeInterval>?
@@ -312,8 +312,6 @@ struct ProjectDetailView: View {
                     .buttonStyle(.borderless)
                     HStack {
                         Button("Refine") { assistantPrompt = "Refine the proposed cuts: " }
-                        Button("Undo") { Task { await editSession.undo() } }
-                            .disabled(!editSession.canUndo)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -344,8 +342,6 @@ struct ProjectDetailView: View {
                     .buttonStyle(.borderless)
                     HStack {
                         Button("Refine") { assistantPrompt = "Refine the proposed scene: " }
-                        Button("Undo") { Task { await editSession.undo() } }
-                            .disabled(!editSession.canUndo)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -378,8 +374,6 @@ struct ProjectDetailView: View {
                     .buttonStyle(.borderless)
                     HStack {
                         Button("Refine") { assistantPrompt = "Refine the proposed phrase order: " }
-                        Button("Undo") { Task { await editSession.undo() } }
-                            .disabled(!editSession.canUndo)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -396,18 +390,6 @@ struct ProjectDetailView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                HStack {
-                    Button("Find pauses") { editSession.detectSilence() }
-                        .disabled(editSession.isDetectingSilence || editSession.timeline == nil)
-                    if editSession.isDetectingSilence {
-                        ProgressView().controlSize(.small)
-                    } else if !editSession.silenceCandidates.isEmpty {
-                        Text("\(editSession.silenceCandidates.count) detected")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .font(.caption)
-                .buttonStyle(.borderless)
                 if assistantScope == .selection, selectedRange == nil {
                     Text("Select a range on the timeline first.")
                         .font(.caption2)
@@ -809,23 +791,16 @@ struct ProjectDetailView: View {
                 }
                 let selectedWords = selectedTranscriptWords(in: visibleWords)
                 TextField("Search transcript", text: $transcriptSearch)
+                    .accessibilityLabel("Search transcript")
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Pauses")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button(editSession.isDetectingSilence ? "Finding…" : "Find") {
-                                editSession.detectSilence()
-                            }
-                            .disabled(editSession.isDetectingSilence || editSession.isWorking)
-                            .buttonStyle(.borderless)
-                        }
-                        .padding(.horizontal, 10)
+                        Text("Pauses")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
                         if let silenceError = editSession.silenceError {
                             Text(silenceError).font(.caption).foregroundStyle(.orange).padding(.horizontal, 10)
                         }
@@ -1394,39 +1369,36 @@ struct ProjectDetailView: View {
 
     private func shareActions(for trackURL: URL) -> some View {
         HStack(spacing: 10) {
-            Button("Save Frame", systemImage: "photo") { exportScreenshot() }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-
-            Button("Make GIF…", systemImage: "sparkles.rectangle.stack") { openGIFMaker() }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-                .disabled(isPreparingGIF)
+            Menu("Export options", systemImage: "square.and.arrow.up") {
+                Button("Save Frame", systemImage: "photo") { exportScreenshot() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("Make GIF…", systemImage: "sparkles.rectangle.stack") { openGIFMaker() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .disabled(isPreparingGIF)
+            }
+            .accessibilityLabel("Export options")
 
             if isPreparingGIF {
-                ProgressView().controlSize(.small).padding(.leading, 2)
+                ProgressView().controlSize(.small)
                 Button("Cancel", role: .cancel) { cancelGIFPreparation() }
             }
-
             if isExporting {
-                ProgressView().controlSize(.small).padding(.leading, 2)
+                ProgressView().controlSize(.small)
             }
-
-            Label("Drag Raw Movie", systemImage: "arrow.up.right.square")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .draggable(trackURL)
-                .help("Drag the unchanged source movie without Quick Edit changes")
-
             Spacer()
 
-            Button("Open Raw Movie", systemImage: "arrow.up.forward.app") {
-                NSWorkspace.shared.open(trackURL)
+            Menu("Original media", systemImage: "film.stack") {
+                Text("Without edits or privacy overlays")
+                Button("Open Raw Movie", systemImage: "arrow.up.forward.app") {
+                    NSWorkspace.shared.open(trackURL)
+                }
+                ShareLink(item: trackURL) {
+                    Label("Share Raw Movie", systemImage: "square.and.arrow.up")
+                }
             }
-            .help("Open the unchanged source movie without Quick Edit changes")
-
-            ShareLink(item: trackURL) {
-                Label("Share Raw Movie", systemImage: "square.and.arrow.up")
-            }
-            .help("Share the unchanged source movie without Quick Edit changes")
+            .accessibilityLabel("Original media")
+            .draggable(trackURL)
+            .help("Open, share, or drag the unchanged source movie without edits or privacy overlays")
         }
         .buttonStyle(.bordered)
         .disabled(isExporting)
