@@ -732,15 +732,30 @@ final class YouTubeStreamingTests: XCTestCase {
             return pixels
         }
         let originalPixels = renderedPixels(originalBuffer)
-        await pipeline.showShortcut("⌘K", duration: 0.2)
-        try await Task.sleep(for: .milliseconds(80))
-        let shortcutSample = await sink.latestVideo()
-        let shortcutBuffer = try XCTUnwrap(shortcutSample?.value.imageBuffer)
+        // Observe rendered states instead of racing a 200 ms expiry on a cold CI renderer.
+        await pipeline.showShortcut("⌘K", duration: 2)
+        var visibleShortcutBuffer: CVPixelBuffer?
+        for _ in 0..<60 {
+            let sample = await sink.latestVideo()
+            if let buffer = sample?.value.imageBuffer, renderedPixels(buffer) != originalPixels {
+                visibleShortcutBuffer = buffer
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let shortcutBuffer = try XCTUnwrap(visibleShortcutBuffer, "Shortcut must change the composed frame")
         XCTAssertFalse(renderedPixels(shortcutBuffer) == originalPixels, "Shortcut must change the composed frame")
 
-        try await Task.sleep(for: .milliseconds(180))
-        let cleanSample = await sink.latestVideo()
-        let cleanBuffer = try XCTUnwrap(cleanSample?.value.imageBuffer)
+        var restoredBuffer: CVPixelBuffer?
+        for _ in 0..<100 {
+            let sample = await sink.latestVideo()
+            if let buffer = sample?.value.imageBuffer, renderedPixels(buffer) == originalPixels {
+                restoredBuffer = buffer
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let cleanBuffer = try XCTUnwrap(restoredBuffer, "Expiry must restore the original composed frame")
         XCTAssertFalse(cleanBuffer === shortcutBuffer)
         XCTAssertTrue(renderedPixels(cleanBuffer) == originalPixels, "Expiry must restore the original composed frame")
 
