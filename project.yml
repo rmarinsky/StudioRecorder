@@ -8,6 +8,9 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
   HaishinKit:
     url: https://github.com/HaishinKit/HaishinKit.swift
     exactVersion: 2.2.5
@@ -32,6 +35,13 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        StudioRecorderUpdatesEnabled: $(STUDIO_UPDATES_ENABLED)
+        SUFeedURL: https://github.com/rmarinsky/StudioRecorder/releases/latest/download/appcast.xml
+        SUPublicEDKey: $(SPARKLE_PUBLIC_KEY)
+        SURequireSignedFeed: true
+        SUVerifyUpdateBeforeExtraction: true
+        SUAutomaticallyUpdate: false
+        SUSendProfileInfo: false
         NSCameraUsageDescription: Studio Recorder will use your camera for an optional camera track.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -48,7 +58,14 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: StudioRecorder/Resources/StudioRecorder.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+        STUDIO_UPDATES_ENABLED: NO
+        SPARKLE_PUBLIC_KEY: ""
+      configs:
+        Release:
+          STUDIO_UPDATES_ENABLED: YES
     dependencies:
+      - package: Sparkle
+        product: Sparkle
       - package: HaishinKit
         product: HaishinKit
       - package: HaishinKit

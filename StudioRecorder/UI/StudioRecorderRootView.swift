@@ -89,6 +89,8 @@ private enum SidebarDestination: Hashable {
 }
 
 struct StudioRecorderRootView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
     @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: StudioRecorderModel
@@ -478,6 +480,12 @@ struct StudioRecorderRootView: View {
 
     private var lifecycleRoot: some View {
         presentedRoot
+        .onAppear {
+            updates.registerActivity(updateActivityID) {
+                streaming.state.isActive || streamArchive.state.isActive || isPreparingProgram
+                    || recoveryOperationID != nil || isCapturingSnapshot
+            }
+        }
         .task {
             guard ProcessInfo.processInfo.environment["STUDIO_RECORDER_TEST_MODE"] != "1" else { return }
             await model.launch()
@@ -489,6 +497,7 @@ struct StudioRecorderRootView: View {
             await updateLiveScene(for: snapshot.route)
         }
         .onDisappear {
+            updates.unregisterActivity(updateActivityID)
             removeExternalPointerMonitor()
             shortcutMonitor.stop()
         }

@@ -20,6 +20,7 @@
 		13B8ECF226E15196B0B70E26 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43CAE4260A98A0A1F829C7D4 /* SettingsView.swift */; };
 		196FF4638BDC807C8566CBFB /* ProjectEditTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF467C02CEF1C0CEB9A3DEA6 /* ProjectEditTimeline.swift */; };
 		1A2584EBACF37EB6EF0538F8 /* SegmentRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0A91ECDA873BE9ABE40CE7 /* SegmentRecoveryPlannerTests.swift */; };
+		1E1D0E3B980274E648C760AA /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */; };
 		208374A0E16995A13E987F1C /* LiveProgramPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0041FA738C933779085A4D /* LiveProgramPipeline.swift */; };
 		20C17E0BFE64D70D666A93FD /* LocalWhisperTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FCA6E4448CB9D3CDFFF0C7E /* LocalWhisperTranscriber.swift */; };
 		2809BF3A553F8C0CCA242A40 /* OpenRouterAssistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76EB29E72ABF5E9DB50C41E6 /* OpenRouterAssistant.swift */; };
@@ -33,6 +34,7 @@
 		4A96E1124B032527CF1EDBAC /* YouTubeStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7126807F0F98EB846E410145 /* YouTubeStreaming.swift */; };
 		52EACC473103D020DC165C02 /* RecordingAudioStemWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D0224672BDE9D69ED2DF56 /* RecordingAudioStemWriter.swift */; };
 		5A1AA71EF5B4051EBAFF0B27 /* LiveSceneCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17E0DE8AA2298975D8B89FB4 /* LiveSceneCoordinator.swift */; };
+		5CEAFDE84BF5D8D65DD96CE9 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
 		6407FF729697CBABA2421762 /* PreferencesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */; };
 		752BC4475696E6F70E745485 /* YouTubeManagedStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B73ABFB9A06A02B1D70EE6D /* YouTubeManagedStreamingTests.swift */; };
 		7A3FC4B989264F481E7C3616 /* ProjectAudioWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AEB84D5875ABFF7914F90A4 /* ProjectAudioWaveform.swift */; };
@@ -42,7 +44,7 @@
 		8297859DF0D5F66FFE439544 /* LiveSceneSnapshotExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D5E73691513847F85EDBC3 /* LiveSceneSnapshotExporterTests.swift */; };
 		845F62C05DD68B0B367282D0 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED698D08173FC315E1CD8D /* ProjectDetailView.swift */; };
 		87A11B815C0786F85A80ED50 /* YouTubeManagedSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E4506FB56B1915ABE6670E0 /* YouTubeManagedSessionCoordinator.swift */; };
-		8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 20760362B2E4B0080237C2D6 /* RTMPHaishinKit */; };
+		8D068381CAA6590CB8859700 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
 		8F1D72903453CB425A8CB5A0 /* LiveProgramArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D186F94CE3B34BB52DB31A3A /* LiveProgramArchive.swift */; };
 		8F36E99F36BFB7FA1099A091 /* RecordingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B1FE173E9872A8B56DBDAA /* RecordingCoordinator.swift */; };
 		9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */; };
@@ -53,7 +55,7 @@
 		AB25A5EAFCE815654825E0C5 /* StudioSceneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB9AC39052582D728AB12C9 /* StudioSceneTests.swift */; };
 		ACD7EF0A9E898F71E4289452 /* YouTubeStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891DF2173EEF7B52375DC5D1 /* YouTubeStreamingTests.swift */; };
 		B0E27A3D93D70E74BFA6BADB /* CursorViewportPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A6C307E26B7DA41A362D92 /* CursorViewportPlanner.swift */; };
-		B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 48264C86C007CE4D5C35A458 /* HaishinKit */; };
+		B46A023909CBD36987C33FE0 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 9A734F92563C7390931598A4 /* Sparkle */; };
 		B521E86B930809AD5DF38476 /* ProjectProgramRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442FEB1D0E1A4D959C1E84BF /* ProjectProgramRenderer.swift */; };
 		B6506577198A699DDE3C47B3 /* StreamPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1115B8BE6C8C9D764FE83D18 /* StreamPreflight.swift */; };
 		BD135B56D8540BDA0B299432 /* StreamPreflightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43189D89C72F98BB2574771F /* StreamPreflightTests.swift */; };
@@ -69,6 +71,7 @@
 		D64F325CE3AACEC26F6A315F /* ProjectEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF06D65D7BBCD8B359710577 /* ProjectEditSession.swift */; };
 		DC7A244AEDECAF2CF1B6B7D1 /* StudioRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */; };
 		DD78C0DCA93A3484735A1343 /* ProjectEditRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF51449BD3F0CFEE239624AC /* ProjectEditRendererTests.swift */; };
+		DE8B00F61FAA0F0D3A3568F5 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */; };
 		DF9DC8D6FF74179A58B7328F /* StudioScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA14ECDD4691EE280281A86 /* StudioScene.swift */; };
 		E2519B8F9A2801A244417FBF /* StudioRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */; };
 		E6102E345B72130B25AFBD3A /* YouTubeStreamSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90EAFC3F660F639A5E4C7AF /* YouTubeStreamSink.swift */; };
@@ -131,8 +134,10 @@
 		4F62D97C0064FA704277B507 /* RecordingProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProjectStoreTests.swift; sourceTree = "<group>"; };
 		51E0E7A05E266687DFE45F5A /* PreferencesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesStoreTests.swift; sourceTree = "<group>"; };
 		567C7B2048F0280A1B184E8C /* OpenRouterAssistantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAssistantTests.swift; sourceTree = "<group>"; };
+		586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
 		5A11DDF9D81A956435CD8B2D /* LiveSourceRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSourceRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		5CB50032F9DF80C7B972223E /* CameraBackgroundProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraBackgroundProcessor.swift; sourceTree = "<group>"; };
+		6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateTests.swift; sourceTree = "<group>"; };
 		6F8286A5033B63337E4DD342 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6FE27C7C08A80AB23D56F3A4 /* ProjectAudioWaveformTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAudioWaveformTests.swift; sourceTree = "<group>"; };
 		6FFFDCE006ACC241BCF332B2 /* SafeShortcutMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeShortcutMonitor.swift; sourceTree = "<group>"; };
@@ -182,8 +187,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B46A023909CBD36987C33FE0 /* HaishinKit in Frameworks */,
-				8D068381CAA6590CB8859700 /* RTMPHaishinKit in Frameworks */,
+				B46A023909CBD36987C33FE0 /* Sparkle in Frameworks */,
+				8D068381CAA6590CB8859700 /* HaishinKit in Frameworks */,
+				5CEAFDE84BF5D8D65DD96CE9 /* RTMPHaishinKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -266,6 +272,7 @@
 		AEB60D501EAC087B4F803C04 /* StudioRecorderTests */ = {
 			isa = PBXGroup;
 			children = (
+				6BEAEEAA498BA77C46A265D5 /* AppUpdateTests.swift */,
 				AD5653D43BBC77733712D743 /* CapturePresentationTests.swift */,
 				D564BFBD03767F61040E4D62 /* CursorViewportPlannerTests.swift */,
 				078C4B126BD4E344E707E508 /* LiveProgramArchiveTests.swift */,
@@ -347,6 +354,7 @@
 		CBA642BF5C7EBB2A6DD26436 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				586ED0F34DF06035DB8E2747 /* AppUpdateController.swift */,
 				FFC372AEE33AFB69922CACED /* StudioRecorderApp.swift */,
 				EA1D16FCE7208DF989206B4C /* StudioRecorderModel.swift */,
 			);
@@ -382,6 +390,7 @@
 			);
 			name = StudioRecorder;
 			packageProductDependencies = (
+				9A734F92563C7390931598A4 /* Sparkle */,
 				48264C86C007CE4D5C35A458 /* HaishinKit */,
 				20760362B2E4B0080237C2D6 /* RTMPHaishinKit */,
 			);
@@ -429,6 +438,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */,
+				387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 330971FAA4ECDBCD9C3F2F9F /* Products */;
@@ -457,6 +467,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1E1D0E3B980274E648C760AA /* AppUpdateTests.swift in Sources */,
 				C6AE9691FECE9C24D2FEE9C8 /* CapturePresentationTests.swift in Sources */,
 				9A9291D7AA94A3C373F8DF99 /* CursorViewportPlannerTests.swift in Sources */,
 				02D3830F1B29DE67E63E7ACB /* LiveProgramArchiveTests.swift in Sources */,
@@ -485,6 +496,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE8B00F61FAA0F0D3A3568F5 /* AppUpdateController.swift in Sources */,
 				0F3C5FC0DB845064C64E7F85 /* CameraBackgroundProcessor.swift in Sources */,
 				BD395C6D00598088ACD4AC23 /* CameraTrackRecorder.swift in Sources */,
 				376EB69488DDB2130F1D2389 /* CapturePresentation.swift in Sources */,
@@ -562,6 +574,8 @@
 				PRODUCT_MODULE_NAME = StudioRecorder;
 				PRODUCT_NAME = "Studio Recorder";
 				SDKROOT = macosx;
+				SPARKLE_PUBLIC_KEY = "";
+				STUDIO_UPDATES_ENABLED = NO;
 			};
 			name = Debug;
 		};
@@ -677,6 +691,8 @@
 				PRODUCT_MODULE_NAME = StudioRecorder;
 				PRODUCT_NAME = "Studio Recorder";
 				SDKROOT = macosx;
+				SPARKLE_PUBLIC_KEY = "";
+				STUDIO_UPDATES_ENABLED = YES;
 			};
 			name = Release;
 		};
@@ -786,6 +802,14 @@
 				version = 2.2.5;
 			};
 		};
+		387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -798,6 +822,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0C2B5C46F7E20D6D351DC81D /* XCRemoteSwiftPackageReference "HaishinKit.swift" */;
 			productName = HaishinKit;
+		};
+		9A734F92563C7390931598A4 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 387529EB20AC2263E7C24D32 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

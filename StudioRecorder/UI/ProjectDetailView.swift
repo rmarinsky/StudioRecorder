@@ -11,6 +11,8 @@ enum TranscriptAutoQueuePolicy {
 }
 
 struct ProjectDetailView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
     private struct AssistantMessage: Identifiable {
         let id = UUID()
         let role: String
@@ -134,6 +136,17 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle("Recording")
+        .onAppear {
+            updates.registerActivity(
+                updateActivityID,
+                isBusy: {
+                    editSession.isWorking || editSession.hasPendingPersistence
+                        || isPreparingGIF || isExporting
+                },
+                persistenceFailure: { editSession.persistenceFailureMessage },
+                retryPersistence: { editSession.retryPendingPersistence() }
+            )
+        }
         .onChange(of: exportRequest) { _, _ in
             if !isExporting, !editSession.isWorking, editSession.timeline != nil { exportEditedMovie() }
         }
@@ -176,6 +189,7 @@ struct ProjectDetailView: View {
             editSession.stop()
             cancelGIFPreparation()
             cleanupGIFSource()
+            updates.unregisterActivity(updateActivityID)
         }
         .sheet(item: $gifMakerSource, onDismiss: cleanupGIFSource) { source in
             GIFMakerView(source: source) { gifMakerSource = nil }

@@ -38,6 +38,9 @@ jobs:
           xcodebuild
           -project StudioRecorder.xcodeproj
           -scheme StudioRecorder
+          -derivedDataPath '${{ runner.temp }}/StudioRecorderBuild'
           -destination 'platform=macOS,arch=arm64'
           test
           CODE_SIGNING_ALLOWED=NO
+      - name: Check Sparkle release preparation
+        run: ./scripts/prepare-sparkle-release.test.sh '${{ runner.temp }}/StudioRecorderBuild/SourcePackages/artifacts/sparkle/Sparkle/bin'

@@ -24,6 +24,7 @@ enum SettingsTab: String, CaseIterable, Hashable {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject private var updates: AppUpdateController
     @ObservedObject var model: StudioRecorderModel
     @ObservedObject var preferencesStore: PreferencesStore
     @ObservedObject var streamingSettings: YouTubeStreamingSettingsStore
@@ -163,6 +164,27 @@ struct SettingsView: View {
                 Text("Applies immediately to the Studio Recorder interface.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Updates") {
+                if let reason = updates.unavailableReason {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Toggle("Automatically check for updates", isOn: Binding(
+                        get: { updates.automaticallyChecksForUpdates },
+                        set: { updates.setAutomaticallyChecksForUpdates($0) }
+                    ))
+                    Button("Check for Updates…") { updates.checkForUpdates() }
+                        .disabled(!updates.canCheckForUpdates || updates.isWaitingForIdle)
+                    if let failure = updates.blockedSaveMessage {
+                        Text("An editor change could not be saved: \(failure)")
+                            .foregroundStyle(.red)
+                        Button("Retry Saving Edits") { updates.retryBlockedSaves() }
+                    }
+                    Text(updates.isWaitingForIdle
+                         ? "The update will restart the app after recording, streaming, and media processing finish. If an edit cannot be saved, retry it here."
+                         : "Updates are signed. Restart waits until your media work finishes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
