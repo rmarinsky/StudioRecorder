@@ -8,7 +8,7 @@ import SwiftUI
 @MainActor
 final class ProjectEditRendererTests: XCTestCase {
     func testTimelineKeepsFrequentActionsWithoutDuplicateExportOrSecondaryButtons() async throws {
-        _ = NSApplication.shared
+        try await requireNativeAccessibility()
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -28,7 +28,11 @@ final class ProjectEditRendererTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Split") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
         let labels = accessibilityLabels(in: host)
         XCTAssertTrue(labels.contains("Split"), "The actual timeline must be rendered: \(labels)")
         XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
@@ -42,6 +46,7 @@ final class ProjectEditRendererTests: XCTestCase {
     }
 
     func testEditorKeepsOptionalPanelsAndOriginalMediaOutOfThePrimaryControls() async throws {
+        try await requireNativeAccessibility()
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -69,10 +74,11 @@ final class ProjectEditRendererTests: XCTestCase {
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
-        for _ in 0..<50 {
+        for _ in 0..<300 {
             host.layoutSubtreeIfNeeded()
             let loadedLabels = accessibilityLabels(in: host)
-            if loadedLabels.contains("Split"), loadedLabels.contains("Search transcript") { break }
+            if loadedLabels.contains("Split"), loadedLabels.contains("Search transcript"),
+               loadedLabels.contains("Select phrase: Hello") { break }
             try await Task.sleep(for: .milliseconds(50))
         }
         let labels = accessibilityLabels(in: host)
@@ -87,6 +93,22 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertFalse(labels.contains("Open Raw Movie"))
         XCTAssertFalse(labels.contains("Share Raw Movie"))
         XCTAssertFalse(labels.contains("Save Frame"))
+    }
+
+    private func requireNativeAccessibility() async throws {
+        _ = NSApplication.shared
+        let host = NSHostingView(rootView: Button("Native accessibility probe") {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<40 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Native accessibility probe") { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw XCTSkip("This host does not expose a known SwiftUI button through native accessibility; UI assertions require a desktop accessibility session")
     }
 
     private func accessibilityLabels(in element: Any) -> [String] {
