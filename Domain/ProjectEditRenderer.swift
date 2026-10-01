@@ -89,12 +89,13 @@ final class ProjectEditRenderer {
         try Task.checkCancellation()
         try metadata?.writeLanguage(to: temporaryURL)
         try Task.checkCancellation()
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
+        if let metadata {
+            try metadata.publishMovie(from: temporaryURL, to: destinationURL)
+        } else if FileManager.default.fileExists(atPath: destinationURL.path) {
             _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         }
-        try metadata?.writeSubtitles(for: destinationURL)
     }
 
     private func validateDestination(_ destinationURL: URL, for sourceURL: URL) throws {

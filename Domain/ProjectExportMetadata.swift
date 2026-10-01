@@ -109,16 +109,65 @@ struct ProjectExportMetadata: Codable, Equatable, Sendable {
         }
     }
 
-    func writeSubtitles(for movieURL: URL) throws {
-        try validateSubtitleDestination(for: movieURL)
-        guard !subtitles.isEmpty else { return }
-        let url = Self.subtitleURL(for: movieURL)
+    func publishMovie(from temporaryMovie: URL, to destination: URL) throws {
+        let manager = FileManager.default
+        let subtitleURL = Self.subtitleURL(for: destination)
+        let temporarySubtitle = destination.deletingLastPathComponent()
+            .appending(path: ".StudioRecorder-subtitles-\(UUID().uuidString).srt")
+        let backupName = ".StudioRecorder-subtitle-backup-\(UUID().uuidString).srt"
+        let backupURL = subtitleURL.deletingLastPathComponent().appending(path: backupName)
+        var changedSubtitles = false
+        var backedUpSubtitles = false
+        var preserveBackup = false
+        defer {
+            try? manager.removeItem(at: temporarySubtitle)
+            if !preserveBackup { try? manager.removeItem(at: backupURL) }
+        }
         let data = Data(subtitleSRT.utf8)
-        if FileManager.default.fileExists(atPath: url.path) {
-            if try Data(contentsOf: url) == data { return }
-            try data.write(to: url, options: .atomic)
-        } else {
-            try data.write(to: url, options: .withoutOverwriting)
+        if !subtitles.isEmpty { try data.write(to: temporarySubtitle, options: .atomic) }
+        // Rendering can take minutes: check again before changing either final output.
+        try validateSubtitleDestination(for: destination)
+        do {
+            try Task.checkCancellation()
+            if !subtitles.isEmpty {
+                if manager.fileExists(atPath: subtitleURL.path) {
+                    if try Data(contentsOf: subtitleURL) != data {
+                        _ = try manager.replaceItemAt(subtitleURL, withItemAt: temporarySubtitle,
+                                                      backupItemName: backupName, options: .withoutDeletingBackupItem)
+                        backedUpSubtitles = true
+                        changedSubtitles = true
+                    }
+                } else {
+                    // Publish a complete sidecar without overwriting a file created by another process.
+                    try manager.linkItem(at: temporarySubtitle, to: subtitleURL)
+                    changedSubtitles = true
+                }
+            }
+            try Task.checkCancellation()
+            if manager.fileExists(atPath: destination.path) {
+                _ = try manager.replaceItemAt(destination, withItemAt: temporaryMovie)
+            } else {
+                try manager.moveItem(at: temporaryMovie, to: destination)
+            }
+        } catch {
+            let publicationError = error
+            if changedSubtitles {
+                do {
+                    guard try Data(contentsOf: subtitleURL) == data else {
+                        throw RecordingJobStoreError.invalidExport
+                    }
+                    if backedUpSubtitles {
+                        _ = try manager.replaceItemAt(subtitleURL, withItemAt: backupURL)
+                    } else {
+                        try manager.removeItem(at: subtitleURL)
+                    }
+                } catch {
+                    preserveBackup = backedUpSubtitles
+                    throw NSError(domain: "StudioRecorder.Export", code: 4, userInfo: [NSLocalizedDescriptionKey:
+                        "The export failed and subtitles could not be restored. Previous subtitles, if any, are at \(backupURL.path). \(publicationError.localizedDescription)"])
+                }
+            }
+            throw publicationError
         }
     }
 

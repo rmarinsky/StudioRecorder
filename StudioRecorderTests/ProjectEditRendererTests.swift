@@ -1849,6 +1849,67 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalBytes)
     }
 
+    func testFailedMoviePublicationRestoresPreviousSubtitles() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appending(path: "output.mov")
+        let previousMovie = Data("previous movie".utf8)
+        try previousMovie.write(to: output)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        var metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        metadata.allowsSubtitleReplacement = true
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        let previousSubtitles = Data("previous subtitles".utf8)
+        try previousSubtitles.write(to: subtitles)
+        XCTAssertThrowsError(try metadata.publishMovie(from: directory.appending(path: "missing.mov"), to: output))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertEqual(try Data(contentsOf: subtitles), previousSubtitles)
+        try FileManager.default.removeItem(at: subtitles)
+        XCTAssertThrowsError(try metadata.publishMovie(from: directory.appending(path: "missing.mov"), to: output))
+        XCTAssertEqual(try Data(contentsOf: output), previousMovie)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: subtitles.path))
+    }
+
+    func testSubtitleConflictDuringRenderingPreservesThePreviousMovie() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appending(path: "source.mov")
+        let output = directory.appending(path: "edited.mov")
+        try await writeReadableMovie(to: source)
+        let original = Data("previous movie".utf8)
+        try original.write(to: output)
+        let timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 2)
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 2, language: "uk",
+            recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [.init(text: "Новий текст.", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
+        )
+        let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
+        let subtitles = ProjectExportMetadata.subtitleURL(for: output)
+        let unrelatedSubtitles = Data("created during rendering".utf8)
+        do {
+            try await ProjectProgramRenderer().exportMovie(
+                sources: .init(screenURL: source, cameraURL: nil), timeline: timeline,
+                presentation: .default, metadata: metadata, to: output,
+                progress: { fraction in
+                    if fraction == 0 { try? unrelatedSubtitles.write(to: subtitles) }
+                }
+            )
+            XCTFail("A late subtitle conflict must fail without replacing the old movie")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("subtitle file"))
+        }
+        XCTAssertEqual(try Data(contentsOf: output), original)
+        XCTAssertEqual(try Data(contentsOf: subtitles), unrelatedSubtitles)
+    }
+
     func testExportPreservesExistingMovieAndSubtitlesWithoutSubtitleReplacementApproval() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1910,6 +1971,8 @@ final class ProjectEditRendererTests: XCTestCase {
             } else {
                 try await ProjectEditRenderer().exportMovie(from: source, timeline: timeline, metadata: metadata, to: output)
             }
+            let hiddenSource = directory.appending(path: "hidden-source.mov")
+            try FileManager.default.moveItem(at: source, to: hiddenSource)
             let asset = AVURLAsset(url: output)
             let items = try await asset.load(.metadata)
             for (identifier, expected) in [
@@ -1934,6 +1997,7 @@ final class ProjectEditRendererTests: XCTestCase {
             XCTAssertGreaterThan(color.red, color.blue + 50)
             let srt = try String(contentsOf: ProjectExportMetadata.subtitleURL(for: output), encoding: .utf8)
             XCTAssertEqual(srt, "1\n00:00:00,200 --> 00:00:00,800\nВітаю!\n\n")
+            try FileManager.default.moveItem(at: hiddenSource, to: source)
         }
     }
 
