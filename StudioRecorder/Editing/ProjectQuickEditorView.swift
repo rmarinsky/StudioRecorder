@@ -83,12 +83,6 @@ struct ProjectQuickEditorView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("Timeline").font(.headline)
-                Text("NON-DESTRUCTIVE")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
                 Spacer()
                 Text("\(timeline.segments.count) segment\(timeline.segments.count == 1 ? "" : "s") · \(format(timeline.duration))")
                     .font(.caption.monospacedDigit())
@@ -129,7 +123,7 @@ struct ProjectQuickEditorView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Audition", systemImage: "play.rectangle") {
+                Button("Play selection", systemImage: "play.rectangle") {
                     guard let selectedRange else { return }
                     auditionTask?.cancel()
                     auditionTask = Task {
@@ -167,53 +161,54 @@ struct ProjectQuickEditorView: View {
             .buttonStyle(.bordered)
 
             HStack(spacing: 8) {
-                Button("Trim Before", systemImage: "rectangle.leadingthird.inset.filled") {
-                    Task { await session.trimStartAtPlayhead() }
-                }
-                .disabled(session.isWorking || session.playhead <= 0.03 || session.playhead >= timeline.duration)
-                .help("Remove everything before the current playhead")
-
                 Button("Split", systemImage: "scissors") {
                     Task { await session.splitAtPlayhead() }
                 }
                 .disabled(session.isWorking || session.playhead <= 0.03 || session.playhead >= timeline.duration - 0.03)
                 .help("Split the selected movie at the current playhead")
 
-                Button("Trim After", systemImage: "rectangle.trailingthird.inset.filled") {
-                    Task { await session.trimEndAtPlayhead() }
+                Button("Find pauses", systemImage: "waveform.badge.magnifyingglass") {
+                    session.detectSilence()
                 }
-                .disabled(session.isWorking || session.playhead <= 0.03 || session.playhead >= timeline.duration)
-                .help("Remove everything after the current playhead")
-
-                Button("Delete Segment", systemImage: "trash") {
-                    Task { await session.deleteSelectedSegment() }
-                }
-                .disabled(!session.canDeleteSelectedSegment)
-                .help("Delete the selected segment from the edit")
-
-                if timeline.segments.count > 1,
-                   let selectedSegmentID = session.selectedSegmentID,
-                   let index = timeline.segments.firstIndex(where: { $0.id == selectedSegmentID }) {
-                    Button("Move Earlier", systemImage: "arrow.left") {
-                        Task { await session.moveSelectedSegment(by: -1) }
+                .disabled(session.isDetectingSilence || session.isWorking)
+                Menu("Tools", systemImage: "ellipsis.circle") {
+                    Button("Trim Before", systemImage: "rectangle.leadingthird.inset.filled") {
+                        Task { await session.trimStartAtPlayhead() }
                     }
-                    .disabled(session.isWorking || index == 0)
-                    Button("Move Later", systemImage: "arrow.right") {
-                        Task { await session.moveSelectedSegment(by: 1) }
+                    .disabled(session.isWorking || session.playhead <= 0.03 || session.playhead >= timeline.duration)
+                    .help("Remove everything before the current playhead")
+
+                    Button("Trim After", systemImage: "rectangle.trailingthird.inset.filled") {
+                        Task { await session.trimEndAtPlayhead() }
                     }
-                    .disabled(session.isWorking || index == timeline.segments.count - 1)
+                    .disabled(session.isWorking || session.playhead <= 0.03 || session.playhead >= timeline.duration)
+                    .help("Remove everything after the current playhead")
+
+                    Button("Delete Segment", systemImage: "trash") {
+                        Task { await session.deleteSelectedSegment() }
+                    }
+                    .disabled(!session.canDeleteSelectedSegment)
+                    .help("Delete the selected segment from the edit")
+
+                    if timeline.segments.count > 1,
+                       let selectedSegmentID = session.selectedSegmentID,
+                       let index = timeline.segments.firstIndex(where: { $0.id == selectedSegmentID }) {
+                        Button("Move Earlier", systemImage: "arrow.left") {
+                            Task { await session.moveSelectedSegment(by: -1) }
+                        }
+                        .disabled(session.isWorking || index == 0)
+                        Button("Move Later", systemImage: "arrow.right") {
+                            Task { await session.moveSelectedSegment(by: 1) }
+                        }
+                        .disabled(session.isWorking || index == timeline.segments.count - 1)
+                    }
+                    Button("Reset", systemImage: "arrow.counterclockwise") {
+                        Task { await session.reset() }
+                    }
+                    .disabled(session.isWorking || !session.isEdited)
                 }
-            }
-            .buttonStyle(.bordered)
-
-            audioEditor(timeline)
-            silenceEditor
-            zoomEditor(timeline)
-            privacyEditor(timeline)
-
-            HStack(spacing: 8) {
+                .accessibilityLabel("Timeline tools")
                 Spacer()
-
                 Button("Undo", systemImage: "arrow.uturn.backward") {
                     Task { await session.undo() }
                 }
@@ -229,13 +224,13 @@ struct ProjectQuickEditorView: View {
                 .disabled(!session.canRedo)
                 .help("Redo the last timeline trim, split, or deletion")
                 .accessibilityLabel("Redo timeline edit")
-
-                Button("Reset", systemImage: "arrow.counterclockwise") {
-                    Task { await session.reset() }
-                }
-                .disabled(session.isWorking || !session.isEdited)
             }
             .buttonStyle(.bordered)
+
+            audioEditor(timeline)
+            silenceEditor
+            zoomEditor(timeline)
+            privacyEditor(timeline)
 
             HStack(spacing: 6) {
                 Image(systemName: "lock.shield")
@@ -255,10 +250,6 @@ struct ProjectQuickEditorView: View {
     private var silenceEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button("Find pauses", systemImage: "waveform.badge.magnifyingglass") {
-                    session.detectSilence()
-                }
-                .disabled(session.isDetectingSilence || session.isWorking)
                 if session.isDetectingSilence {
                     ProgressView().controlSize(.small)
                     Text("Analyzing audio locally…").font(.caption).foregroundStyle(.secondary)
