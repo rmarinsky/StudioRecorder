@@ -15,7 +15,6 @@ struct ProjectTimelineFocusRequest: Equatable {
 
 struct ProjectQuickEditorView: View {
     @ObservedObject var session: ProjectEditSession
-    let onExportMovie: () -> Void
     let commandsOnly: Bool
     let proposedRanges: [Range<TimeInterval>]
     let proposedMove: OpenRouterReviewedMove?
@@ -32,7 +31,6 @@ struct ProjectQuickEditorView: View {
 
     init(
         session: ProjectEditSession,
-        onExportMovie: @escaping () -> Void,
         selectedRange: Binding<Range<TimeInterval>?> = .constant(nil),
         proposedRanges: [Range<TimeInterval>] = [],
         proposedMove: OpenRouterReviewedMove? = nil,
@@ -41,7 +39,6 @@ struct ProjectQuickEditorView: View {
         commandsOnly: Bool = false
     ) {
         self.session = session
-        self.onExportMovie = onExportMovie
         _selectedRange = selectedRange
         self.proposedRanges = proposedRanges
         self.proposedMove = proposedMove
@@ -237,12 +234,6 @@ struct ProjectQuickEditorView: View {
                     Task { await session.reset() }
                 }
                 .disabled(session.isWorking || !session.isEdited)
-
-                Button("Export Edited MOV", systemImage: "square.and.arrow.up") {
-                    onExportMovie()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(session.isWorking)
             }
             .buttonStyle(.bordered)
 

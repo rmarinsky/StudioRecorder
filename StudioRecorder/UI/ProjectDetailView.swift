@@ -452,7 +452,7 @@ struct ProjectDetailView: View {
             .padding(12)
             Divider()
             DisclosureGroup("Local edit tools") {
-                ProjectQuickEditorView(session: editSession, onExportMovie: {}, commandsOnly: true)
+                ProjectQuickEditorView(session: editSession, commandsOnly: true)
             }
             .font(.caption)
             .padding(12)
@@ -1247,7 +1247,6 @@ struct ProjectDetailView: View {
             ScrollView {
                 ProjectQuickEditorView(
                     session: editSession,
-                    onExportMovie: exportEditedMovie,
                     selectedRange: $selectedRange,
                     proposedRanges: pendingAssistantCuts?.ranges ?? [],
                     proposedMove: pendingAssistantMove,
