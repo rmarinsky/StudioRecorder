@@ -161,12 +161,17 @@ final class ProjectEditTimelineTests: XCTestCase {
                 outputBaseURL: root.appending(path: "words")
             )
         }
+        defer { operation.cancel() }
         let pidURL = root.appending(path: "pid")
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while !FileManager.default.fileExists(atPath: pidURL.path), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let pid = try XCTUnwrap(Int32(String(contentsOf: pidURL, encoding: .utf8)))
+        var startedPID: Int32?
+        repeat {
+            if let contents = try? String(contentsOf: pidURL, encoding: .utf8) {
+                startedPID = Int32(contents)
+            }
+            if startedPID == nil { try await Task.sleep(for: .milliseconds(20)) }
+        } while startedPID == nil && ContinuousClock.now < deadline
+        let pid = try XCTUnwrap(startedPID, "The recognizer must publish its PID before cancellation")
 
         operation.cancel()
         do {
