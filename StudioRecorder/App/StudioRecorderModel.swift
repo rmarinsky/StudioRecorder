@@ -459,6 +459,8 @@ private extension PermissionAccessState {
 final class StudioRecorderModel: ObservableObject {
     @Published private(set) var snapshot: StudioRecorderSnapshot
 
+    var hasActiveBackgroundWork: Bool { coordinator?.hasActiveBackgroundWork ?? false }
+
     private let coordinator: RecordingCoordinator?
     private let permissionCenter: PermissionCenter?
     private let preferencesStore: PreferencesStore

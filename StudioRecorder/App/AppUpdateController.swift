@@ -125,6 +125,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
 
     private var isBusy: Bool {
         model.snapshot.areRecordingSettingsLocked || model.snapshot.isCaptureCommandInFlight
+            || model.hasActiveBackgroundWork
             || model.snapshot.jobs.contains { $0.state == .queued || $0.state == .running }
             || activities.values.contains { $0.isBusy() }
     }

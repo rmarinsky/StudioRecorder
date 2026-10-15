@@ -851,7 +851,19 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         finalizationProgress = nil
     }
 
+    var hasActiveBackgroundWork: Bool {
+        activeFinalizationJobID != nil || activeExportJobID != nil || activeTranscriptionJobID != nil
+    }
+
+    private func activeJobTask(for jobID: UUID) -> Task<Void, Never>? {
+        if activeFinalizationJobID == jobID { return activeFinalizationTask }
+        if activeExportJobID == jobID { return activeExportTask }
+        if activeTranscriptionJobID == jobID { return activeTranscriptionTask }
+        return nil
+    }
+
     func retryJob(_ jobID: UUID) async throws {
+        await activeJobTask(for: jobID)?.value
         guard let job = jobs.first(where: { $0.id == jobID }),
               let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
             throw RecordingJobStoreError.jobNotFound
@@ -872,9 +884,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         if let index = jobs.firstIndex(where: { $0.id == jobID }) {
             jobs[index] = cancelled
         }
-        if activeFinalizationJobID == jobID { activeFinalizationTask?.cancel() }
-        if activeExportJobID == jobID { activeExportTask?.cancel() }
-        if activeTranscriptionJobID == jobID { activeTranscriptionTask?.cancel() }
+        let task = activeJobTask(for: jobID)
+        task?.cancel()
+        await task?.value
         await refreshProjects()
     }
 

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreVideo
 import ScreenCaptureKit
+import Sparkle
 import Foundation
 import XCTest
 @testable import StudioRecorder
@@ -209,9 +210,21 @@ final class RecordingProjectStoreTests: XCTestCase {
         }
     }
 
+    private actor CancellationCleanup {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var finished = false
+        func wait() async {
+            if finished { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func finish() { finished = true; continuation?.resume(); continuation = nil }
+    }
+
     private struct WaitingTranscriber: ProjectTranscribing {
         let started: XCTestExpectation
         let stopped: XCTestExpectation
+        var cleanupStarted: XCTestExpectation? = nil
+        var cleanup: CancellationCleanup? = nil
 
         func transcribe(
             _ recipe: ProjectTranscriptionRecipe,
@@ -221,11 +234,64 @@ final class RecordingProjectStoreTests: XCTestCase {
             do {
                 try await Task.sleep(for: .seconds(30))
             } catch is CancellationError {
+                cleanupStarted?.fulfill()
+                await cleanup?.wait()
                 stopped.fulfill()
                 throw CancellationError()
             }
             throw CancellationError()
         }
+    }
+
+    func testRetryWaitsForCancelledTranscriptionCleanupBeforeStartingAnotherAttempt() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
+            audioURL: sourceURL
+        )
+        let started = expectation(description: "transcription started")
+        let stopped = expectation(description: "transcription stopped")
+        let cleanupStarted = expectation(description: "transcription cleanup started")
+        started.assertForOverFulfill = false
+        stopped.assertForOverFulfill = false
+        cleanupStarted.assertForOverFulfill = false
+        let cleanup = CancellationCleanup()
+        let coordinator = RecordingCoordinator(
+            projectStore: store, transcriber: WaitingTranscriber(
+                started: started, stopped: stopped, cleanupStarted: cleanupStarted, cleanup: cleanup
+            )
+        )
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueTranscription(recipe)
+        await fulfillment(of: [started], timeout: 10)
+
+        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
+        let cancelling = Task { try await coordinator.cancelJob(job.id) }
+        await fulfillment(of: [cleanupStarted], timeout: 10)
+        let retryEntered = expectation(description: "retry requested")
+        let retrying = Task {
+            retryEntered.fulfill()
+            try await coordinator.retryJob(job.id)
+        }
+        await fulfillment(of: [retryEntered], timeout: 10)
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 1,
+                       "Retry must not replace the attempt while its worker is cleaning up")
+        await cleanup.finish()
+        try await cancelling.value
+        await fulfillment(of: [stopped], timeout: 10)
+        try await retrying.value
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 2)
+        try await coordinator.cancelJob(job.id)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
     }
 
     func testCancellingRunningTranscriptionStopsWorkAndDoesNotResumeAfterRestart() async throws {
@@ -245,15 +311,32 @@ final class RecordingProjectStoreTests: XCTestCase {
         )
         let started = expectation(description: "transcription started")
         let stopped = expectation(description: "transcription stopped")
+        let cleanupStarted = expectation(description: "transcription cleanup started")
+        let cleanup = CancellationCleanup()
         let coordinator = RecordingCoordinator(
-            projectStore: store, transcriber: WaitingTranscriber(started: started, stopped: stopped)
+            projectStore: store, transcriber: WaitingTranscriber(
+                started: started, stopped: stopped, cleanupStarted: cleanupStarted, cleanup: cleanup
+            )
         )
         await coordinator.refreshProjects()
         try await coordinator.enqueueTranscription(recipe)
         await fulfillment(of: [started], timeout: 10)
 
         let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
-        try await coordinator.cancelJob(job.id)
+        let cancelling = Task { try await coordinator.cancelJob(job.id) }
+        await fulfillment(of: [cleanupStarted], timeout: 10)
+        var idleSnapshot = StudioRecorderSnapshot()
+        idleSnapshot.captureState = .ready
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: idleSnapshot)
+        let updates = AppUpdateController(model: model, bundle: Bundle(for: Self.self))
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { _ in },
+                      "Update installation must wait for cancelled work to finish cleanup")
+        await cleanup.finish()
+        try await cancelling.value
         await fulfillment(of: [stopped], timeout: 10)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
         XCTAssertEqual(try RecordingJobStore().load(in: project).first(where: { $0.id == job.id })?.state, .cancelled)
