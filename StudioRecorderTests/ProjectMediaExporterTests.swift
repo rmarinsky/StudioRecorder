@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import ImageIO
+import Vision
 import XCTest
 @testable import StudioRecorder
 
@@ -105,6 +106,27 @@ final class ProjectMediaExporterTests: XCTestCase {
 
         let motionRed = try await redPixel(in: outputURL, at: 0.1, x: 28, y: 32)
         let dissolveRed = try await redPixel(in: dissolveURL, at: 0.1, x: 28, y: 32)
+        // Probe the native service independently so unavailable VM hardware does not
+        // masquerade as a renderer regression, or hide one on a capable Mac.
+        let context = CIContext()
+        let first = CIImage(cvPixelBuffer: try movingFeatureFrame(x: 16))
+        let second = CIImage(cvPixelBuffer: try movingFeatureFrame(x: 32))
+        let firstCG = try XCTUnwrap(context.createCGImage(first, from: first.extent))
+        let secondCG = try XCTUnwrap(context.createCGImage(second, from: second.extent))
+        let probe = VNGenerateOpticalFlowRequest(targetedCGImage: secondCG)
+        probe.computationAccuracy = .high
+        probe.outputPixelFormat = kCVPixelFormatType_TwoComponent32Float
+        do {
+            try VNImageRequestHandler(cgImage: firstCG, options: [:]).perform([probe])
+            XCTAssertNotNil(probe.results?.first)
+        } catch {
+            XCTAssertEqual(report.motionFallbackTransitions, 1)
+            XCTAssertEqual(report.blendedMotionTransitions, 0)
+            XCTAssertEqual(Int(motionRed), Int(dissolveRed), accuracy: 3)
+            let duration = try await AVURLAsset(url: outputURL).load(.duration).seconds
+            XCTAssertEqual(duration, 0.4, accuracy: 0.02)
+            throw XCTSkip("Native optical flow unavailable: \(error). Dissolve fallback verified.")
+        }
         XCTAssertGreaterThan(Int(motionRed), Int(dissolveRed) + 30,
                              "Motion interpolation should move the feature more clearly than a dissolve")
         XCTAssertGreaterThan(report.blendedMotionTransitions, 0)

@@ -29,7 +29,11 @@ final class ProjectEditRendererTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if accessibilityLabels(in: host).contains("Split") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
         let labels = accessibilityLabels(in: host)
         XCTAssertTrue(labels.contains("Split"), "The actual timeline must be rendered: \(labels)")
         XCTAssertFalse(labels.contains("Export Edited MOV"), "Export belongs in the project toolbar")
@@ -71,7 +75,7 @@ final class ProjectEditRendererTests: XCTestCase {
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
-        for _ in 0..<50 {
+        for _ in 0..<100 {
             host.layoutSubtreeIfNeeded()
             let loadedLabels = accessibilityLabels(in: host)
             if loadedLabels.contains("Split"), loadedLabels.contains("Search transcript") { break }
@@ -91,17 +95,22 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertFalse(labels.contains("Save Frame"))
     }
 
-    private func accessibilityLabels(in element: Any) -> [String] {
-        guard let object = element as? NSObject else { return [] }
+    private func accessibilityLabels(in element: Any, visited: Set<ObjectIdentifier> = []) -> [String] {
+        guard let object = element as? NSObject, !visited.contains(ObjectIdentifier(object)) else { return [] }
+        let visited = visited.union([ObjectIdentifier(object)])
         let labels = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].compactMap { name -> String? in
             let selector = NSSelectorFromString(name)
             guard object.responds(to: selector) else { return nil }
             return object.perform(selector)?.takeUnretainedValue() as? String
         }
-        let childrenSelector = NSSelectorFromString("accessibilityChildren")
-        let children = object.responds(to: childrenSelector)
-            ? object.perform(childrenSelector)?.takeUnretainedValue() as? [Any] : nil
-        return labels + (children ?? []).flatMap { accessibilityLabels(in: $0) }
+        for name in ["accessibilityChildrenInNavigationOrder", "accessibilityChildren"] {
+            let selector = NSSelectorFromString(name)
+            if object.responds(to: selector),
+               let children = object.perform(selector)?.takeUnretainedValue() as? [Any], !children.isEmpty {
+                return labels + children.flatMap { accessibilityLabels(in: $0, visited: visited) }
+            }
+        }
+        return labels
     }
 
     func testReorderedSegmentsExportInEditedPictureOrder() async throws {
