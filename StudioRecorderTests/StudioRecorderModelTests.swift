@@ -245,7 +245,10 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .stopping))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .projects, captureState: .recording))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .settings, captureState: .recording))
-        XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording))
+        XCTAssertFalse(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording),
+                       "Live scene changes must preserve the session writing the camera movie")
+        XCTAssertFalse(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .paused))
+        XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .ready))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .paused))
         XCTAssertFalse(LiveScenePolicy.shouldPreserveCameraSession(captureState: .ready))

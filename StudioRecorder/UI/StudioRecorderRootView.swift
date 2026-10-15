@@ -1651,11 +1651,11 @@ struct StudioRecorderRootView: View {
         liveScene.selectCameraFrameRate(snapshot.studioDraft?.frameRate ?? 30)
 
         if LiveScenePolicy.shouldRunDraftCamera(route: route, captureState: snapshot.captureState),
-           snapshot.capturesCamera,
+           (snapshot.studioDraft?.armsCamera ?? snapshot.capturesCamera),
            snapshot.permissionSnapshot.camera.isGranted {
             liveScene.selectCamera(snapshot.studioDraft?.cameraDeviceID)
             liveScene.startCameraPreview()
-        } else {
+        } else if !LiveScenePolicy.shouldPreserveCameraSession(captureState: snapshot.captureState) {
             await liveScene.stopCameraPreview()
         }
     }
@@ -2384,6 +2384,8 @@ struct StudioRecorderRootView: View {
     private func startDelivery() async {
         guard snapshot.route == .studio else { return }
         armActiveProfileSources()
+        // Prepare every armed camera before handing its shared session to the recorder.
+        await updateLiveScene(for: .studio)
         guard let draft = snapshot.studioDraft else { return }
         if deliveryMode.includesStreaming {
             guard await prepareAndStartStream(

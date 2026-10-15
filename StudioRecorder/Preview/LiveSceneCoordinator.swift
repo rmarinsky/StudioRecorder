@@ -18,6 +18,7 @@ enum LiveScenePolicy {
 
     static func shouldRunDraftCamera(route: MainRoute, captureState: RecordingState) -> Bool {
         shouldRun(route: route, captureState: captureState)
+            && !shouldPreserveCameraSession(captureState: captureState)
     }
 
     static func shouldPreserveCameraSession(captureState: RecordingState) -> Bool {
