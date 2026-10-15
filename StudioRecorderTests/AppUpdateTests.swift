@@ -4,6 +4,20 @@ import Sparkle
 
 final class AppUpdateTests: XCTestCase {
     @MainActor
+    func testUpdateCanInstallBeforeTheStudioHasBeenInitialized() {
+        let snapshot = StudioRecorderSnapshot()
+        XCTAssertEqual(snapshot.captureState, .preparing)
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        XCTAssertFalse(updates.postponeTerminationIfNeeded { _ in XCTFail("There is no recording work to await") })
+    }
+
+    @MainActor
     func testDepartingBusyOwnerRemainsProtectedUntilItsWorkFinishes() async {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .ready
@@ -58,7 +72,9 @@ final class AppUpdateTests: XCTestCase {
         let sparkle = SPUStandardUpdaterController(
             startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
         ).updater
-        var snapshots: [StudioRecorderSnapshot] = []
+        var preparing = StudioRecorderSnapshot()
+        preparing.beginCaptureCommand(.start)
+        var snapshots: [StudioRecorderSnapshot] = [preparing]
         for state: RecordingState in [.recording, .paused, .stopping] {
             var snapshot = StudioRecorderSnapshot()
             snapshot.captureState = state
