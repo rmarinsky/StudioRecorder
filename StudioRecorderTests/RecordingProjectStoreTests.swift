@@ -130,7 +130,9 @@ final class RecordingProjectStoreTests: XCTestCase {
         let settings = TimelapseSettings(captureInterval: 1, frameDuration: 0.2)
         let request = archiveCaptureRequest(destination: root, timelapse: settings, presentation: presentation)
         let store = RecordingProjectStore(baseDirectory: root)
-        let coordinator = RecordingCoordinator(projectStore: store, isReadyForTesting: true)
+        let coordinator = RecordingCoordinator(
+            projectStore: store, isReadyForTesting: true, availableStorageCapacity: { _ in 20_000_000_000 }
+        )
         var pixelBuffer: CVPixelBuffer?
         XCTAssertEqual(
             CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &pixelBuffer),

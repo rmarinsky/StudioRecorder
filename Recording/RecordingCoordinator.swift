@@ -217,6 +217,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private let projectEditStore = ProjectEditStore()
     private let jobStore = RecordingJobStore()
     private let transcriber: any ProjectTranscribing
+    private let availableStorageCapacity: (URL) -> Int64?
     private let retentionFinalizer = RecordingRetentionFinalizer()
     private var activeFinalizationJobID: UUID?
     private var activeExportJobID: UUID?
@@ -268,16 +269,19 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     override init() {
         projectStore = RecordingProjectStore()
         transcriber = WhisperProjectTranscriber()
+        availableStorageCapacity = RecordingStoragePolicy.availableCapacity
         super.init()
     }
 
     init(
         projectStore: RecordingProjectStore,
         transcriber: any ProjectTranscribing = WhisperProjectTranscriber(),
-        isReadyForTesting: Bool = false
+        isReadyForTesting: Bool = false,
+        availableStorageCapacity: @escaping (URL) -> Int64? = RecordingStoragePolicy.availableCapacity
     ) {
         self.projectStore = projectStore
         self.transcriber = transcriber
+        self.availableStorageCapacity = availableStorageCapacity
         state = isReadyForTesting ? .ready : .preparing
         super.init()
     }
@@ -443,7 +447,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 frameRate: request.timelapse == nil ? request.profile.frameRate : 1,
                 capturesCamera: request.camera != nil && request.timelapse == nil
             )
-            if let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+            if let availableCapacity = availableStorageCapacity(destinationURL),
                !RecordingStoragePolicy.canStart(
                     availableCapacity: availableCapacity,
                     requiredCapacity: requiredCapacity
@@ -664,7 +668,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 frameProvider: { [weak self] in
                     guard let self, let startedAt = recordingStartedAt else { throw CancellationError() }
                     if let destination = request.storage.destinationURL,
-                       let capacity = RecordingStoragePolicy.availableCapacity(at: destination),
+                       let capacity = availableStorageCapacity(destination),
                        RecordingStoragePolicy.shouldStop(availableCapacity: capacity) {
                         throw TimelapseError.writerFailed("Not enough free disk space.")
                     }
@@ -1288,7 +1292,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 if now - lastStorageCheckAt >= 5 {
                     lastStorageCheckAt = now
                     if let destinationURL = activeCaptureRequest?.storage.destinationURL,
-                       let availableCapacity = RecordingStoragePolicy.availableCapacity(at: destinationURL),
+                       let availableCapacity = availableStorageCapacity(destinationURL),
                        RecordingStoragePolicy.shouldStop(availableCapacity: availableCapacity) {
                         await beginInterruptedTeardown(
                             reason: "Recording stopped before macOS ran out of disk space."
