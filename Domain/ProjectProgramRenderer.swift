@@ -46,6 +46,7 @@ struct ProjectProgramSources: Codable, Sendable {
     let sceneTimeline: StudioSceneTimeline?
     let screenWasCapturedAsFixedRegion: Bool
     let cameraTimeOffset: TimeInterval
+    let audioTimeOffset: TimeInterval?
     let rendersCursor: Bool
     let frameRate: Int
 
@@ -62,6 +63,7 @@ struct ProjectProgramSources: Codable, Sendable {
         sceneTimeline: StudioSceneTimeline? = nil,
         screenWasCapturedAsFixedRegion: Bool = false,
         cameraTimeOffset: TimeInterval = 0,
+        audioTimeOffset: TimeInterval? = nil,
         rendersCursor: Bool = false,
         frameRate: Int = 30
     ) {
@@ -80,6 +82,7 @@ struct ProjectProgramSources: Codable, Sendable {
         self.shortcutTimeline = shortcutTimeline
         self.sceneTimeline = sceneTimeline
         self.screenWasCapturedAsFixedRegion = screenWasCapturedAsFixedRegion
+        self.audioTimeOffset = audioTimeOffset
         self.cameraTimeOffset = cameraTimeOffset
         self.rendersCursor = rendersCursor
         self.frameRate = CaptureDefaults.supportedFrameRates.contains(frameRate) ? frameRate : 30
@@ -99,6 +102,7 @@ struct ProjectProgramSources: Codable, Sendable {
             sceneTimeline: sceneTimeline,
             screenWasCapturedAsFixedRegion: screenWasCapturedAsFixedRegion,
             cameraTimeOffset: cameraTimeOffset,
+            audioTimeOffset: audioTimeOffset,
             rendersCursor: rendersCursor,
             frameRate: frameRate
         )
@@ -267,7 +271,7 @@ final class ProjectProgramRenderer {
                     preferredTrackID: kCMPersistentTrackID_Invalid
                 ) else { continue }
                 do {
-                    try await insertAudio(timeline: timeline, from: sourceAudioTrack, into: audioTrack)
+                    try await insertAudio(timeline: timeline, from: sourceAudioTrack, into: audioTrack, screenTimeOffset: sources.audioTimeOffset ?? 0)
                     let source = hasIndexedAudioSources
                         ? sources.audioSourceTrackIDs[sourceAudioTrack.trackID]
                         : (sources.audioSourceOrder.indices.contains(index) ? sources.audioSourceOrder[index] : nil)
@@ -407,11 +411,12 @@ final class ProjectProgramRenderer {
     private func insertAudio(
         timeline: ProjectEditTimeline,
         from source: AVAssetTrack,
-        into destination: AVMutableCompositionTrack
+        into destination: AVMutableCompositionTrack,
+        screenTimeOffset: TimeInterval
     ) async throws {
         let sourceRange = try await source.load(.timeRange)
-        let sourceStart = sourceRange.start.seconds
-        let sourceEnd = sourceRange.end.seconds
+        let sourceStart = sourceRange.start.seconds + screenTimeOffset
+        let sourceEnd = sourceRange.end.seconds + screenTimeOffset
         guard sourceStart.isFinite,
               sourceEnd.isFinite,
               sourceEnd > sourceStart else { return }
@@ -427,7 +432,7 @@ final class ProjectProgramRenderer {
                     preferredTimescale: 600
                 )
                 let range = CMTimeRange(
-                    start: CMTime(seconds: overlapStart, preferredTimescale: 600),
+                    start: CMTime(seconds: overlapStart - screenTimeOffset, preferredTimescale: 48_000),
                     duration: CMTime(seconds: overlapEnd - overlapStart, preferredTimescale: 600)
                 )
                 try destination.insertTimeRange(range, of: source, at: destinationStart)

@@ -952,6 +952,57 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
     }
 
+    func testSavedProgramAlignsAudioThatStartedBeforeScreenRecording() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let audioURL = directory.appending(path: "audio.caf")
+        let outputURL = directory.appending(path: "program.mov")
+        try await writeReadableMovie(to: screenURL)
+        try writeAudioFile(to: audioURL, duration: 3, toneStart: 1.5)
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL, cameraURL: nil, audioURL: audioURL, audioTimeOffset: -1
+            ),
+            timeline: timeline, presentation: presentation, to: outputURL
+        )
+        let asset = AVURLAsset(url: outputURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var onset: Double?
+        while let sample = output.copyNextSampleBuffer() {
+            let block = try XCTUnwrap(sample.dataBuffer)
+            let size = CMBlockBufferGetDataLength(block)
+            var values = [Float](repeating: 0, count: size / MemoryLayout<Float>.size)
+            let status = values.withUnsafeMutableBytes {
+                CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: size, destination: $0.baseAddress!)
+            }
+            XCTAssertEqual(status, noErr)
+            if onset == nil, let index = values.firstIndex(where: { abs($0) > 0.03 }) {
+                let format = try XCTUnwrap(sample.formatDescription)
+                let description = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format))
+                onset = sample.presentationTimeStamp.seconds
+                    + Double(index) / Double(description.pointee.mChannelsPerFrame) / description.pointee.mSampleRate
+            }
+        }
+        XCTAssertEqual(reader.status, .completed)
+        XCTAssertEqual(try XCTUnwrap(onset), 0.5, accuracy: 0.04)
+    }
+
     func testProgramPreviewUsesTheSameSelectedSegmentAudioBoundary() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1935,14 +1986,14 @@ final class ProjectEditRendererTests: XCTestCase {
         }
     }
 
-    private func writeAudioFile(to url: URL) throws {
+    private func writeAudioFile(to url: URL, duration: Double = 0.1, toneStart: Double = 0) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
-        buffer.frameLength = 4_800
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(duration * 48_000)))
+        buffer.frameLength = buffer.frameCapacity
         let samples = try XCTUnwrap(buffer.floatChannelData?[0])
         for index in 0..<Int(buffer.frameLength) {
-            samples[index] = sin(Float(index) * 0.02) * 0.2
+            samples[index] = Double(index) / 48_000 < toneStart ? 0 : sin(Float(index) * 0.02) * 0.2
         }
         try file.write(from: buffer)
     }
