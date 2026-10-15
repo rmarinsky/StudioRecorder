@@ -180,11 +180,13 @@ final class YouTubeStreamingTests: XCTestCase {
         let missingSecret = YouTubeStreamingSettingsStore(
             defaults: defaults,
             credentials: MemoryStreamCredentials(),
-            bundledOAuthClientID: "studio-recorder.apps.googleusercontent.com"
+            bundledOAuthClientID: "studio-recorder.apps.googleusercontent.com",
+            bundledOAuthClientSecret: ""
         )
         let missingClientID = YouTubeStreamingSettingsStore(
             defaults: defaults,
             credentials: MemoryStreamCredentials(),
+            bundledOAuthClientID: "",
             bundledOAuthClientSecret: "injected-client-secret"
         )
 
