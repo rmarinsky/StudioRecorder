@@ -38,6 +38,7 @@ final class LiveProgramArchiveTests: XCTestCase {
 
         let result = try await writer.finish()
 
+        XCTAssertEqual(result.sourceStartTime.seconds, 10, accuracy: 0.000001)
         XCTAssertEqual(result.outputURL, outputURL)
         XCTAssertEqual(result.sampleCounts[.systemAudio], 1)
         XCTAssertEqual(result.sampleCounts[.microphone], 1)

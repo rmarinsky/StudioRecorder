@@ -128,6 +128,9 @@ final class RecordingRetentionFinalizer {
                         ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
                             + request.profile.resolvedCameraSyncOffset
                     } ?? 0,
+                    audioTimeOffset: audioStem.flatMap {
+                        ProjectTrackTiming.mediaOffset(from: screen.id, to: $0.id, in: events)
+                    },
                     rendersCursor: request.profile.includeCursor
                         && request.profile.resolvedCursorRendering == .composited,
                     frameRate: request.profile.frameRate

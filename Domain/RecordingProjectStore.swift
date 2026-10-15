@@ -588,10 +588,12 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
 struct ProjectJournalEventDetail: Codable, Equatable, Sendable {
     let message: String?
     let captureProfile: String?
+    let mediaStartHostTime: TimeInterval?
 
-    init(message: String? = nil, captureProfile: String? = nil) {
+    init(message: String? = nil, captureProfile: String? = nil, mediaStartHostTime: TimeInterval? = nil) {
         self.message = message
         self.captureProfile = captureProfile
+        self.mediaStartHostTime = mediaStartHostTime
     }
 }
 
@@ -658,11 +660,27 @@ struct ProjectJournalEvent: Codable, Equatable, Sendable {
 }
 
 enum ProjectTrackTiming {
+    static func mediaOffset(
+        from referenceTrackID: String, to trackID: String, in events: [ProjectJournalEvent]
+    ) -> TimeInterval? {
+        guard let reference = events.first(where: {
+            $0.kind == .trackStarted && $0.trackID == referenceTrackID
+        })?.detail?.mediaStartHostTime,
+        let start = events.first(where: {
+            $0.kind == .trackStarted && $0.trackID == trackID
+        })?.detail?.mediaStartHostTime,
+        reference.isFinite, start.isFinite else { return nil }
+        return start - reference
+    }
+
     static func offset(
         from referenceTrackID: String,
         to trackID: String,
         in events: [ProjectJournalEvent]
     ) -> TimeInterval {
+        if let mediaOffset = mediaOffset(from: referenceTrackID, to: trackID, in: events) {
+            return mediaOffset
+        }
         let referenceStart = events.first {
             $0.kind == .trackStarted && $0.trackID == referenceTrackID
         }?.timestamp
@@ -887,8 +905,8 @@ final class RecordingProjectStore {
         try append(.init(kind: .trackPrepared, trackID: trackID), to: project)
     }
 
-    func markStarted(trackID: String?, in project: RecordingProject, timestamp: Date = Date()) throws {
-        try append(.init(kind: .trackStarted, trackID: trackID, timestamp: timestamp), to: project)
+    func markStarted(trackID: String?, in project: RecordingProject, timestamp: Date = Date(), mediaStartHostTime: TimeInterval? = nil) throws {
+        try append(.init(kind: .trackStarted, trackID: trackID, detail: mediaStartHostTime.map { .init(mediaStartHostTime: $0) }, timestamp: timestamp), to: project)
     }
 
     func markFinished(trackID: String?, in project: RecordingProject) throws {

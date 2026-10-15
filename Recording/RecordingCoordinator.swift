@@ -1595,7 +1595,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 )
             }.sorted { $0.source.rawValue < $1.source.rawValue }
             try projectStore.writeAudioStemIndex(ProjectAudioStemIndex(tracks: identities), in: project)
-            try projectStore.markStarted(trackID: trackID, in: project)
+            try projectStore.markStarted(
+                trackID: trackID, in: project, mediaStartHostTime: result.sourceStartTime.seconds
+            )
             try projectStore.markFinished(trackID: trackID, in: project)
         } catch {
             try? projectStore.markFailure(trackID: trackID, detail: error.localizedDescription, in: project)
@@ -1746,9 +1748,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
 
 extension RecordingCoordinator: SCRecordingOutputDelegate {
     nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        let outputStartedAt = ProcessInfo.processInfo.systemUptime
-        let outputStartedHostTime = Self.currentHostTime
-        let outputStartedAtWallClock = Date()
+        // Subtract media already written before the delegate notification. Both
+        // this clock and ScreenCaptureKit sample PTS use the host time clock.
+        let elapsed = recordingOutput.recordedDuration
+        let recordedSeconds = elapsed.isNumeric && elapsed.seconds >= 0 ? elapsed.seconds : 0
+        let mediaStartTime = CMClockGetTime(CMClockGetHostTimeClock())
+            - CMTime(seconds: recordedSeconds, preferredTimescale: 1_000_000_000)
+        let outputStartedAt = ProcessInfo.processInfo.systemUptime - recordedSeconds
+        let outputStartedHostTime = CMClockConvertHostTimeToSystemUnits(mediaStartTime)
+        let outputStartedAtWallClock = Date().addingTimeInterval(-recordedSeconds)
         Task { @MainActor [weak self] in
             guard let self, let capture = self.capture(for: recordingOutput), let project = self.activeProject else { return }
             self.recordingStartedAtByDisplayID[capture.displayID] = outputStartedAt
@@ -1762,9 +1770,10 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
                 )
             }
             try? self.projectStore.markStarted(
-                displayID: capture.displayID,
+                trackID: project.trackID(for: capture.displayID),
                 in: project,
-                timestamp: outputStartedAtWallClock
+                timestamp: outputStartedAtWallClock,
+                mediaStartHostTime: mediaStartTime.seconds
             )
         }
     }

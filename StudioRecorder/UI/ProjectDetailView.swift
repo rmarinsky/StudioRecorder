@@ -1548,6 +1548,9 @@ struct ProjectDetailView: View {
                     in: projectJournalEvents
                 ) + project.cameraSyncOffset
             } ?? 0,
+            audioTimeOffset: audioStemTrack.flatMap {
+                ProjectTrackTiming.mediaOffset(from: screen.id, to: $0.id, in: projectJournalEvents)
+            },
             rendersCursor: project.includesCursor && project.usesCompositedCursor,
             frameRate: project.frameRate
         )

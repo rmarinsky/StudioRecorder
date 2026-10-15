@@ -668,6 +668,20 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(recovered.recoveryReport.tracks.single?.state, .partialReadable)
     }
 
+    func testRecordingClockOffsetsSurviveJournalPersistenceWithoutWallClockRounding() throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingProjectStore(baseDirectory: root)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: root))
+        let screen = try XCTUnwrap(project.trackID(for: 9))
+        let audio = try XCTUnwrap(project.trackID(for: .audio))
+        let wallTime = Date(timeIntervalSince1970: 1_000)
+        try store.markStarted(trackID: screen, in: project, timestamp: wallTime, mediaStartHostTime: 12.75)
+        try store.markStarted(trackID: audio, in: project, timestamp: wallTime, mediaStartHostTime: 10)
+        let events = store.journalEvents(for: project)
+        XCTAssertEqual(ProjectTrackTiming.offset(from: screen, to: audio, in: events), -2.75, accuracy: 0.0001)
+    }
+
     func testProjectTrackTimingUsesRecordedTrackStartEvents() {
         let screenStart = Date(timeIntervalSince1970: 1_000)
         let cameraStart = Date(timeIntervalSince1970: 1_002.25)

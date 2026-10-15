@@ -13,6 +13,7 @@ struct RecordingAudioStemWriterConfiguration: Sendable {
 }
 
 struct RecordingAudioStemWriterResult: Sendable {
+    let sourceStartTime: CMTime
     let outputURL: URL
     let sampleCounts: [RecordingAudioStemSource: Int]
     let persistentTrackIDs: [RecordingAudioStemSource: CMPersistentTrackID]
@@ -231,6 +232,7 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
             throw RecordingAudioStemWriterError.unreadableMovie
         }
         return RecordingAudioStemWriterResult(
+            sourceStartTime: lock.withLock { startedAt! },
             outputURL: outputURL,
             sampleCounts: counts,
             persistentTrackIDs: persistentTrackIDs
