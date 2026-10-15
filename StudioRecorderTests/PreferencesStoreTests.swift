@@ -295,6 +295,26 @@ final class PreferencesStoreTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(CaptureRequest.self, from: data), request)
     }
 
+    func testTimelapseFreezesItsSettingsWithoutRequestingOrRecordingAudio() throws {
+        let displays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
+        var draft = makeStore().makeStudioDraft(displays: displays, microphones: [])
+        draft.timelapse = TimelapseSettings(captureInterval: 5, frameDuration: 0.3, transition: .motion)
+
+        let request = try draft.freeze(
+            displays: displays, microphones: [],
+            permissions: PermissionSnapshot(screenRecording: .granted, microphone: .denied)
+        )
+
+        XCTAssertEqual(request.timelapse?.captureInterval, 5)
+        XCTAssertEqual(request.timelapse?.frameDuration, 0.3)
+        XCTAssertEqual(request.timelapse?.transition, .motion)
+        XCTAssertFalse(request.audio.capturesSystemAudio)
+        XCTAssertFalse(request.audio.capturesMicrophone)
+        XCTAssertNil(request.audio.microphone)
+        XCTAssertTrue(draft.capturesMicrophone, "Returning to normal recording must retain the audio choice")
+        XCTAssertEqual(try JSONDecoder().decode(CaptureRequest.self, from: JSONEncoder().encode(request)), request)
+    }
+
     func testCameraDraftRequiresPermissionAndAnAvailableSelectedDevice() {
         let displays = [AvailableDisplay(id: 1, title: "Display", pixelSize: CGSize(width: 1_920, height: 1_080))]
         let cameras = [AvailableCamera(id: "camera-1", name: "FaceTime HD Camera")]

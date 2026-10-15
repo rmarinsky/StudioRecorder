@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class LiveProgramArchiveTests: XCTestCase {
+    func testAudioClockIsPublishedOnceBeforeFinalizationForCrashRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = expectation(description: "Persistable audio clock before finalization")
+        started.assertForOverFulfill = true
+        let clock = AudioClockRecorder()
+        let writer = try RecordingAudioStemWriter(
+            configuration: .init(outputURL: directory.appending(path: "audio.mov"),
+                                 capturesSystemAudio: true, capturesMicrophone: false),
+            onTimelineStarted: { time in
+                Task {
+                    await clock.record(time.seconds)
+                    started.fulfill()
+                }
+            }
+        )
+        defer { writer.abort() }
+        XCTAssertTrue(try writer.establishTimeline(at: CMTime(seconds: 10.25, preferredTimescale: 48_000)))
+        XCTAssertFalse(try writer.establishTimeline(at: CMTime(seconds: 12, preferredTimescale: 48_000)))
+        await fulfillment(of: [started], timeout: 1)
+        let starts = await clock.starts
+        XCTAssertEqual(starts, [10.25])
+    }
+
     func testRecordingAudioStemWriterKeepsTwoSourcesOnTheScreenTimeline() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(
             path: "RecordingAudioStemWriterTests-\(UUID().uuidString)",
@@ -38,6 +63,7 @@ final class LiveProgramArchiveTests: XCTestCase {
 
         let result = try await writer.finish()
 
+        XCTAssertEqual(result.sourceStartTime.seconds, 10, accuracy: 0.000001)
         XCTAssertEqual(result.outputURL, outputURL)
         XCTAssertEqual(result.sampleCounts[.systemAudio], 1)
         XCTAssertEqual(result.sampleCounts[.microphone], 1)
@@ -572,4 +598,9 @@ private final class ArchiveCompletionRecorder {
         case .failure(let failure): failures.append(failure.message)
         }
     }
+}
+
+private actor AudioClockRecorder {
+    var starts: [Double] = []
+    func record(_ time: Double) { starts.append(time) }
 }

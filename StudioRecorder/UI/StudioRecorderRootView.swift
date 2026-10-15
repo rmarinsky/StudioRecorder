@@ -89,6 +89,8 @@ private enum SidebarDestination: Hashable {
 }
 
 struct StudioRecorderRootView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
     @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: StudioRecorderModel
@@ -494,8 +496,17 @@ struct StudioRecorderRootView: View {
 
     private var lifecycleRoot: some View {
         presentedRoot
+        .onAppear {
+            updates.registerActivity(updateActivityID) {
+                streaming.state.isActive || streamArchive.state.isActive || isPreparingProgram
+                    || recoveryOperationID != nil || isCapturingSnapshot
+            }
+        }
         .task {
             guard ProcessInfo.processInfo.environment["STUDIO_RECORDER_TEST_MODE"] != "1" else { return }
+            model.useTimelapseFrameProvider { [liveScene] context in
+                try await liveScene.captureProgramFrame(context: context)
+            }
             await model.launch()
             await managedYouTube.reconcile(clientID: streamingSettings.oauthClientID)
             if managedYouTube.isAuthorized, managedYouTube.pendingSession == nil {
@@ -505,6 +516,7 @@ struct StudioRecorderRootView: View {
             await updateLiveScene(for: snapshot.route)
         }
         .onDisappear {
+            updates.unregisterActivity(updateActivityID)
             removeExternalPointerMonitor()
             shortcutMonitor.stop()
         }
@@ -597,6 +609,9 @@ struct StudioRecorderRootView: View {
             } else {
                 persistActiveProfileConfiguration(from: draft)
             }
+        }
+        .onChange(of: snapshot.studioDraft?.timelapse != nil) { _, isTimelapse in
+            if isTimelapse { deliveryMode = .record }
         }
         .onChange(of: deliveryMode) { _, _ in invalidateStreamPreflight() }
         .onChange(of: streamingSettings.serverURL) { _, _ in invalidateStreamPreflight() }
@@ -964,14 +979,25 @@ struct StudioRecorderRootView: View {
     private var projectsView: some View {
         Group {
             if let selectedProject = snapshot.projects.first(where: { $0.id == snapshot.selectedProjectID }) {
-                ProjectDetailView(
-                    project: selectedProject,
-                    onClose: { model.send(.closeProject) },
-                    exportRequest: editorExportRequest,
-                    queueExport: { try await model.enqueueExport($0) },
-                    jobs: snapshot.jobs,
-                    queueTranscription: { try await model.enqueueTranscription($0) }
-                )
+                Group {
+                    if selectedProject.timelapse != nil {
+                        TimelapseProjectView(
+                            project: selectedProject,
+                            jobs: snapshot.jobs,
+                            onClose: { model.send(.closeProject) },
+                            enqueueRender: { try await model.enqueueTimelapseRender(projectID: $0, settings: $1) }
+                        )
+                    } else {
+                        ProjectDetailView(
+                            project: selectedProject,
+                            onClose: { model.send(.closeProject) },
+                            exportRequest: editorExportRequest,
+                            queueExport: { try await model.enqueueExport($0) },
+                            jobs: snapshot.jobs,
+                            queueTranscription: { try await model.enqueueTranscription($0) }
+                        )
+                    }
+                }
                 .id(selectedProject.id)
             } else if snapshot.projects.isEmpty {
                 VStack(spacing: 20) {
@@ -1415,7 +1441,12 @@ struct StudioRecorderRootView: View {
                     onRequestShortcutMonitoringAccess: shortcutMonitor.requestGlobalAccess,
                     isLocked: snapshot.areRecordingSettingsLocked || streaming.state.isActive
                         || isPreparingProgram,
-                    isPresentationLocked: isPresentationEditingLocked
+                    isPresentationLocked: isPresentationEditingLocked,
+                    timelapse: Binding(
+                        get: { snapshot.studioDraft?.timelapse },
+                        set: { model.send(.setDraftTimelapse($0)) }
+                    ),
+                    deliveryMode: $deliveryMode
                 )
                 .frame(width: 280)
                 .background(shellPanel)
@@ -1432,7 +1463,8 @@ struct StudioRecorderRootView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 286)
-                    .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram)
+                    .disabled(isLocalRecordingActive || streaming.state.isActive || isPreparingProgram
+                              || snapshot.studioDraft?.timelapse != nil)
                     if deliveryMode.includesStreaming, !streaming.state.isActive {
                         streamDestinationControls
                     }
@@ -1557,10 +1589,17 @@ struct StudioRecorderRootView: View {
                     .disabled(snapshot.isCaptureCommandInFlight)
                     .help("Pause or resume local recording (⇧⌘P)")
 
-                    Text(formattedRecordedDuration)
-                        .font(.body.monospacedDigit().weight(.medium))
-                        .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
-                        .accessibilityLabel("Recorded duration \(formattedRecordedDuration)")
+                    if snapshot.activeCaptureRequest?.timelapse != nil {
+                        Label("\(snapshot.timelapseFrameCount) frames", systemImage: "timelapse")
+                            .font(.body.monospacedDigit().weight(.medium))
+                            .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
+                            .accessibilityLabel("\(snapshot.timelapseFrameCount) selected timelapse frames")
+                    } else {
+                        Text(formattedRecordedDuration)
+                            .font(.body.monospacedDigit().weight(.medium))
+                            .foregroundStyle(snapshot.captureState == .paused ? Color.orange : Color.secondary)
+                            .accessibilityLabel("Recorded duration \(formattedRecordedDuration)")
+                    }
                 }
                 Button(action: toggleDelivery) {
                     Label(deliveryButtonTitle, systemImage: isDeliveryActive ? "stop.fill" : "record.circle.fill")
@@ -1628,11 +1667,11 @@ struct StudioRecorderRootView: View {
         liveScene.selectCameraFrameRate(snapshot.studioDraft?.frameRate ?? 30)
 
         if LiveScenePolicy.shouldRunDraftCamera(route: route, captureState: snapshot.captureState),
-           snapshot.capturesCamera,
+           (snapshot.studioDraft?.armsCamera ?? snapshot.capturesCamera),
            snapshot.permissionSnapshot.camera.isGranted {
             liveScene.selectCamera(snapshot.studioDraft?.cameraDeviceID)
             liveScene.startCameraPreview()
-        } else {
+        } else if !LiveScenePolicy.shouldPreserveCameraSession(captureState: snapshot.captureState) {
             await liveScene.stopCameraPreview()
         }
     }
@@ -1858,6 +1897,7 @@ struct StudioRecorderRootView: View {
         case .camera: "Camera"
         case .audio: "System & microphone stems"
         case .program: "Program movie"
+        case .timelapse: "Selected timelapse frames"
         }
     }
 
@@ -1867,6 +1907,7 @@ struct StudioRecorderRootView: View {
         case .camera: "video"
         case .audio: "waveform"
         case .program: "rectangle.inset.filled.and.person.filled"
+        case .timelapse: "timelapse"
         }
     }
 
@@ -2018,7 +2059,7 @@ struct StudioRecorderRootView: View {
     }
 
     private var canUseManualZoom: Bool {
-        manualZoomBaseFraming?.mode != .fixedRegion && primarySelectedDisplayID != nil
+        primarySelectedDisplayID != nil
     }
 
     private func toggleManualZoom() {
@@ -2359,6 +2400,8 @@ struct StudioRecorderRootView: View {
     private func startDelivery() async {
         guard snapshot.route == .studio else { return }
         armActiveProfileSources()
+        // Prepare every armed camera before handing its shared session to the recorder.
+        await updateLiveScene(for: .studio)
         guard let draft = snapshot.studioDraft else { return }
         if deliveryMode.includesStreaming {
             guard await prepareAndStartStream(
@@ -2573,8 +2616,7 @@ struct StudioRecorderRootView: View {
             return StudioSceneLiveContract(
                 initialPresentation: request.presentation,
                 capturesCamera: request.camera != nil,
-                recordsCursorTelemetry: request.includesCursor
-                    || request.presentation.framing.mode == .followCursor
+                recordsCursorTelemetry: !request.displaySources.isEmpty
             )
         }
         return streamingSceneContract
@@ -3065,6 +3107,7 @@ private struct ProjectRow: View {
             case .finalization: "Finalization"
             case .export: "Export"
             case .transcription: "Transcription"
+            case .timelapseRender: "Timelapse"
             }
             return job.state == .failed ? "\(action) failed" : "\(action) \(job.state.rawValue)"
         }
@@ -3144,6 +3187,8 @@ private struct StudioInspector: View {
     let onRequestShortcutMonitoringAccess: () -> Void
     let isLocked: Bool
     let isPresentationLocked: Bool
+    @Binding var timelapse: TimelapseSettings?
+    @Binding var deliveryMode: StreamDeliveryMode
     @State private var activeSourceSettings: SourceSettings?
     @State private var activeQuickSettings: QuickSettings?
     @State private var overlayImportError: String?
@@ -3432,60 +3477,81 @@ private struct StudioInspector: View {
 
     @ViewBuilder
     private var captureControls: some View {
-        Picker("Frame rate", selection: $frameRate) {
-            ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
-                Text("\(frameRate) fps").tag(frameRate)
+        Toggle("Timelapse recording", isOn: Binding(
+            get: { timelapse != nil },
+            set: { enabled in
+                timelapse = enabled ? (timelapse ?? TimelapseSettings()) : nil
+                if enabled { deliveryMode = .record }
             }
-        }
-        .pickerStyle(.menu)
+        ))
         .disabled(isLocked)
         .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-        Picker("Codec", selection: $codecPolicy) {
-            Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
-            Text("H.264").tag(RecordingCodecPolicy.h264)
-        }
-        .disabled(isLocked)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-        Toggle("Include cursor", isOn: $includeCursor)
-            .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        if includeCursor {
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle("Highlight clicks", isOn: cursorClickBinding)
-                Text("The normal-size cursor and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(isLocked)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
-        }
-        Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
-            .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        if presentation.cursor.resolvedShowsShortcutKeys {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if !hasShortcutMonitoringAccess {
-                    Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(isLocked)
+        .padding(.vertical, 8)
+        if let _ = timelapse {
+            TimelapseSettingsControls(
+                settings: Binding(
+                    get: { timelapse ?? TimelapseSettings() },
+                    set: { timelapse = $0.validated() }
+                ),
+                captureIntervalEditable: true,
+                isDisabled: isLocked
+            )
+        } else {
+            Picker("Frame rate", selection: $frameRate) {
+                ForEach(CaptureDefaults.supportedFrameRates(for: presentation.canvas), id: \.self) { frameRate in
+                    Text("\(frameRate) fps").tag(frameRate)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
-        }
-        Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+            .pickerStyle(.menu)
             .disabled(isLocked)
-            .padding(.horizontal, 14).padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            Picker("Codec", selection: $codecPolicy) {
+                Text("Automatic (HEVC → H.264)").tag(RecordingCodecPolicy.automatic)
+                Text("H.264").tag(RecordingCodecPolicy.h264)
+            }
+            .disabled(isLocked)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            Toggle("Include cursor", isOn: $includeCursor)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            if includeCursor {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Highlight clicks", isOn: cursorClickBinding)
+                    Text("The normal-size cursor and click rings render into playback, program recordings, exports, and streams. The editable raw screen track stays clean.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(isLocked)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            }
+            Toggle("Show shortcut keys", isOn: shortcutDisplayBinding)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            if presentation.cursor.resolvedShowsShortcutKeys {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Shows modifier shortcuts, navigation, editing controls, and function keys. Plain typing and Secure Input are never recorded.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if !hasShortcutMonitoringAccess {
+                        Label("Shortcuts in other apps need Input Monitoring access.", systemImage: "keyboard.badge.ellipsis")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Button("Allow Input Monitoring", action: onRequestShortcutMonitoringAccess)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isLocked)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            }
+            Toggle("Exclude Studio Recorder", isOn: $excludeStudioRecorder)
+                .disabled(isLocked)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+        }
     }
 
     private var resilienceControls: some View {
@@ -3672,22 +3738,28 @@ private struct StudioInspector: View {
                 }
 
             case .microphone:
-                Toggle("Use microphone", isOn: $capturesMicrophone)
-                    .disabled(isLocked)
-                if capturesMicrophone {
-                    Picker("Device", selection: $microphoneDeviceID) {
-                        ForEach(microphones) { microphone in
-                            Text(microphone.name).tag(Optional(microphone.id))
+                if timelapse != nil {
+                    Label("Audio is disabled in timelapse mode.", systemImage: "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Toggle("Use microphone", isOn: $capturesMicrophone)
+                        .disabled(isLocked)
+                    if capturesMicrophone {
+                        Picker("Device", selection: $microphoneDeviceID) {
+                            ForEach(microphones) { microphone in
+                                Text(microphone.name).tag(Optional(microphone.id))
+                            }
                         }
+                        .disabled(microphones.isEmpty || isLocked)
+                        microphoneAvailabilityMessage
                     }
-                    .disabled(microphones.isEmpty || isLocked)
-                    microphoneAvailabilityMessage
+                    Divider()
+                    Toggle("Capture system audio", isOn: $capturesSystemAudio)
+                        .disabled(isLocked)
+                    Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
+                        .disabled(isLocked)
                 }
-                Divider()
-                Toggle("Capture system audio", isOn: $capturesSystemAudio)
-                    .disabled(isLocked)
-                Toggle("Exclude Studio Recorder audio", isOn: $excludeStudioRecorderAudio)
-                    .disabled(isLocked)
             }
         }
     }
@@ -3726,14 +3798,15 @@ private struct StudioInspector: View {
     }
 
     private var microphoneSourceNeedsAttention: Bool {
-        guard capturesMicrophone else { return false }
+        guard timelapse == nil, capturesMicrophone else { return false }
         if microphones.isEmpty { return true }
         if case .savedDeviceMissing = microphoneFallback { return true }
         return false
     }
 
     private var audioSourceSummary: String {
-        switch (capturesMicrophone, capturesSystemAudio) {
+        if timelapse != nil { return "Disabled in timelapse" }
+        return switch (capturesMicrophone, capturesSystemAudio) {
         case (true, true): "\(selectedMicrophoneName) + system audio"
         case (true, false): selectedMicrophoneName
         case (false, true): "System audio"

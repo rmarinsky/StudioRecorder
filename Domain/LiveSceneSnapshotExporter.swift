@@ -26,7 +26,7 @@ enum LiveSceneSnapshotError: LocalizedError, Equatable {
 }
 
 struct LiveSceneSnapshotSources: @unchecked Sendable {
-    let screen: CGImage
+    let screen: CGImage?
     let camera: CVPixelBuffer?
 }
 
@@ -42,20 +42,14 @@ actor LiveSceneSnapshotExporter {
         shortcutLabel: String? = nil,
         to destinationURL: URL
     ) throws {
-        let presentation = presentation.validated()
-        guard let output = makeOutputBuffer(size: presentation.canvas.pixelSize) else {
-            throw LiveSceneSnapshotError.outputBufferUnavailable
-        }
-        compositor.render(
-            screen: CIImage(cgImage: sources.screen),
-            camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
-            presentation: presentation,
-            screenFraming: screenFraming,
-            cursor: cursor,
-            shortcutLabel: shortcutLabel,
-            to: output
-        )
-        let canvas = CGRect(origin: .zero, size: presentation.canvas.pixelSize)
+        let frame = try render(sources: sources, presentation: presentation, screenFraming: screenFraming,
+                               cursor: cursor, shortcutLabel: shortcutLabel)
+        try export(frame: frame, to: destinationURL)
+    }
+
+    func export(frame: TimelapseFrame, to destinationURL: URL) throws {
+        let output = frame.pixelBuffer
+        let canvas = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(output), height: CVPixelBufferGetHeight(output))
         guard let rendered = imageContext.createCGImage(CIImage(cvPixelBuffer: output), from: canvas) else {
             throw LiveSceneSnapshotError.renderedImageUnavailable
         }
@@ -78,6 +72,22 @@ actor LiveSceneSnapshotExporter {
         } catch {
             throw LiveSceneSnapshotError.destinationWriteFailed
         }
+    }
+
+    func render(
+        sources: LiveSceneSnapshotSources, presentation: CapturePresentationSnapshot,
+        screenFraming: ScreenFramingSnapshot?, cursor: ProgramCursorState?, shortcutLabel: String? = nil
+    ) throws -> TimelapseFrame {
+        let presentation = presentation.validated()
+        guard let output = makeOutputBuffer(size: presentation.canvas.pixelSize) else {
+            throw LiveSceneSnapshotError.outputBufferUnavailable
+        }
+        compositor.render(
+            screen: sources.screen.map(CIImage.init(cgImage:)), camera: sources.camera.map(CIImage.init(cvPixelBuffer:)),
+            presentation: presentation, screenFraming: screenFraming, cursor: cursor,
+            shortcutLabel: shortcutLabel, to: output
+        )
+        return TimelapseFrame(pixelBuffer: output)
     }
 
     private func makeOutputBuffer(size: CGSize) -> CVPixelBuffer? {

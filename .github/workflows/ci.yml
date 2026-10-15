@@ -16,6 +16,8 @@ jobs:
         run: brew bundle
       - name: Check secret guard behavior
         run: ./scripts/check-secrets.test.sh
+      - name: Check frozen release gate
+        run: python3 scripts/validate-release-provenance.test.py
       - name: Check repository for secrets
         run: ./scripts/check-secrets.sh ci
       - name: Validate workflows and release planning
@@ -42,6 +44,9 @@ jobs:
           xcodebuild
           -project StudioRecorder.xcodeproj
           -scheme StudioRecorder
+          -derivedDataPath '${{ runner.temp }}/StudioRecorderBuild'
           -destination 'platform=macOS,arch=arm64'
           test
           CODE_SIGNING_ALLOWED=NO
+      - name: Check Sparkle release preparation
+        run: ./scripts/prepare-sparkle-release.test.sh '${{ runner.temp }}/StudioRecorderBuild/SourcePackages/artifacts/sparkle/Sparkle/bin'

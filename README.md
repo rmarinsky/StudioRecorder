@@ -74,20 +74,8 @@ separate from a future release build.
 
 ## Releases
 
-CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The release workflow signs an arm64 app with Developer ID, submits it to Apple notarization, staples and validates it, then produces a ZIP and SHA-256 checksum. After successful push CI on `main`, the release workflow checks out that exact commit, increments the latest stable patch version (first release: 0.1.0), and publishes the signed ZIP and checksum in GitHub Releases. The short, informal notes use the real first-parent change/PR titles since the previous version. The version is stored in the app bundle and tag; build numbers use the release workflow run number. Release runs are serialized; rerunning a tagged commit reuses its version and preserves an existing release. Manual runs still upload an internal validation artifact, with an optional version override. A `v*` tag also publishes a release. Failed CI and PR/fork runs cannot trigger privileged automatic publishing. Apple signing/notarization configuration is required; missing values fail the release instead of silently publishing an unsigned build.
+CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. After successful main CI, the Release workflow accepts only the exact commit of a PR merged by rmarinsky and initiated by that account. It signs and notarizes the arm64 app, verifies nested helpers, and publishes the same signed ZIP, checksum, and Sparkle feed without rebuilding. No review approval is required. Manual runs create internal artifacts only. Production updates wait for active media work; DEV builds do not receive them. See [release procedures](Docs/releases/sparkle.md).
 
-Repository variables:
-
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `APPLE_TEAM_ID`
-
-Repository secrets:
-
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `DEVELOPER_ID_CERTIFICATE_P12_BASE64`
-- `DEVELOPER_ID_CERTIFICATE_PASSWORD`
-- `APP_STORE_CONNECT_API_KEY_P8_BASE64`
-- `APP_STORE_CONNECT_KEY_ID`
-- `APP_STORE_CONNECT_ISSUER_ID`
+See [the release setup and verification guide](Docs/releases/sparkle.md) for required Apple/Sparkle credentials, first-install bootstrap, and the signed upgrade rehearsal. Production signing and upgrade verification require those credentials and are not proved by local fixture tests.
 
 Rotate the Google OAuth client secret before the first public build. Product information, privacy terms, and release links are published at [rmarinsky.com.ua/studio-recorder](https://rmarinsky.com.ua/en/studio-recorder/).
