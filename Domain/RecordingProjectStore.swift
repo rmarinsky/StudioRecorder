@@ -492,6 +492,7 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     var frameRate = 30
     var jobHistoryError: String? = nil
     var timelapse: TimelapseSettings? = nil
+    var screenWasCapturedAsFixedRegion = false
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -511,6 +512,10 @@ struct RecordingProjectManifest: Codable, Equatable, Sendable {
     let appVersion: String?
     let appBuild: String?
     var tracks: [RecordingTrackDescriptor]?
+
+    var screenWasCapturedAsFixedRegion: Bool {
+        schemaVersion < 5 && captureRequest?.presentation.framing.mode == .fixedRegion
+    }
 
     init(
         schemaVersion: Int,
@@ -867,7 +872,7 @@ final class RecordingProjectStore {
 
         let displays = request.displaySources.map(\.id)
         let manifest = RecordingProjectManifest(
-            schemaVersion: request.timelapse == nil ? 3 : 4,
+            schemaVersion: request.timelapse == nil ? 5 : 4,
             id: projectID,
             createdAt: createdAt,
             stoppedAt: nil,
@@ -1192,7 +1197,7 @@ final class RecordingProjectStore {
         guard let manifest = try? makeDecoder().decode(RecordingProjectManifest.self, from: data) else {
             return unreadableSnapshot(at: rootURL, createdAt: fallbackDate, diagnostic: "Unreadable manifest.json")
         }
-        guard (1...4).contains(manifest.schemaVersion) else {
+        guard (1...5).contains(manifest.schemaVersion) else {
             return unreadableSnapshot(at: rootURL, createdAt: manifest.createdAt, manifestID: manifest.id, diagnostic: "Unsupported manifest schema \(manifest.schemaVersion)")
         }
 
@@ -1243,7 +1248,8 @@ final class RecordingProjectStore {
                 frameRate: manifest.captureRequest.map {
                     CaptureDefaults.supportedFrameRates.contains($0.profile.frameRate) ? $0.profile.frameRate : 30
                 } ?? 30,
-                timelapse: manifest.captureRequest?.timelapse
+                timelapse: manifest.captureRequest?.timelapse,
+                screenWasCapturedAsFixedRegion: manifest.screenWasCapturedAsFixedRegion
             )
         }
     }

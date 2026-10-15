@@ -64,6 +64,62 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.settings.frameDuration, 0.4)
     }
 
+    func testRawScreenGeometryDistinguishesNewProjectsFromLegacyCrops() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var presentation = CapturePresentationSnapshot.default
+        presentation.framing.mode = .fixedRegion
+        let store = RecordingProjectStore(baseDirectory: root)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: root, presentation: presentation))
+        XCTAssertFalse(project.manifest.screenWasCapturedAsFixedRegion)
+        let current = await store.discoverProjects()
+        XCTAssertEqual(current.first?.screenWasCapturedAsFixedRegion, false)
+        let manifestURL = project.rootURL.appending(path: "manifest.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        legacy["schemaVersion"] = 3
+        try JSONSerialization.data(withJSONObject: legacy).write(to: manifestURL)
+        let reopened = try store.openProject(at: project.rootURL, expectedID: project.id)
+        XCTAssertTrue(reopened.manifest.screenWasCapturedAsFixedRegion)
+        let old = await store.discoverProjects()
+        XCTAssertEqual(old.first?.screenWasCapturedAsFixedRegion, true)
+    }
+
+    func testLiveLayoutChangesThroughModelKeepOutputDimensionsAndPersistTheScene() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var initial = CapturePresentationSnapshot.default
+        initial.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+        initial.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.5)
+        initial.camera.isVisible = false
+        let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: initial)
+        let store = RecordingProjectStore(baseDirectory: root)
+        let coordinator = RecordingCoordinator(projectStore: store, isReadyForTesting: true)
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
+        await coordinator.startRecording(request, timelapseFrameProvider: { _ in frame })
+        XCTAssertEqual(coordinator.state, .recording)
+        let project = try XCTUnwrap(coordinator.activeProject)
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .recording
+        snapshot.activeCaptureRequest = request
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(displays: [], microphones: [])
+        snapshot.studioDraft?.presentation = initial
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: snapshot)
+        var changed = initial
+        changed.framing.mode = .fullDisplay
+        changed.screen.width = 0.7
+        let result = model.send(.setDraftPresentation(changed))
+        XCTAssertNotEqual(result, .ignored)
+        XCTAssertEqual(model.snapshot.studioDraft?.presentation.canvas.pixelSize, CGSize(width: 320, height: 320))
+        XCTAssertEqual(store.studioSceneTimeline(in: project)?.transitions.last?.presentation, changed.validated())
+        var resized = changed
+        resized.canvas = CaptureCanvasSnapshot(width: 640, height: 320)
+        XCTAssertEqual(model.send(.setDraftPresentation(resized)), .ignored)
+        XCTAssertEqual(coordinator.state, .recording)
+        await coordinator.stopRecording()
+    }
+
     func testTimelapseCoordinatorCapturesAndFinalizesASilentSelectedFrameProject() async throws {
         let root = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -866,7 +922,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         let snapshots = await store.discoverProjects()
         let manifest = try decodeManifest(at: project.rootURL)
 
-        XCTAssertEqual(manifest.schemaVersion, 3)
+        XCTAssertEqual(manifest.schemaVersion, 5)
         XCTAssertNotNil(manifest.captureRequest)
         XCTAssertEqual(manifest.captureRequest?.capturesMicrophone, false)
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-1.mov"])
@@ -944,7 +1000,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureRequest?.audio.capturesSystemAudio, false)
         XCTAssertEqual(manifest.captureRequest?.audio.excludesStudioRecorderAudio, false)
         XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "bookmark-9")
-        XCTAssertEqual(manifest.schemaVersion, 3)
+        XCTAssertEqual(manifest.schemaVersion, 5)
         XCTAssertEqual(manifest.tracks?.map(\.kind), [.screen, .camera, .audio])
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), [
             "raw-tracks/screen-9.mov",

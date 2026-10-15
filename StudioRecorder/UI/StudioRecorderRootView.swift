@@ -2043,7 +2043,7 @@ struct StudioRecorderRootView: View {
     }
 
     private var canUseManualZoom: Bool {
-        manualZoomBaseFraming?.mode != .fixedRegion && primarySelectedDisplayID != nil
+        primarySelectedDisplayID != nil
     }
 
     private func toggleManualZoom() {
@@ -2598,8 +2598,7 @@ struct StudioRecorderRootView: View {
             return StudioSceneLiveContract(
                 initialPresentation: request.presentation,
                 capturesCamera: request.camera != nil,
-                recordsCursorTelemetry: request.includesCursor
-                    || request.presentation.framing.mode == .followCursor
+                recordsCursorTelemetry: !request.displaySources.isEmpty
             )
         }
         return streamingSceneContract

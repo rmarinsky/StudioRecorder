@@ -729,23 +729,11 @@ enum CaptureGeometryPlanner {
         pointPixelScale: CGFloat,
         presentation: CapturePresentationSnapshot
     ) -> StreamGeometry {
-        let presentation = presentation.validated()
-        guard presentation.framing.mode == .fixedRegion else {
-            return StreamGeometry(
-                sourceRect: .zero,
-                outputSize: CGSize(
-                    width: displaySize.width * pointPixelScale,
-                    height: displaySize.height * pointPixelScale
-                )
-            )
-        }
-        return StreamGeometry(
-            sourceRect: sourceRect(
-                displaySize: displaySize,
-                canvasSize: presentation.canvas.pixelSize,
-                framing: presentation.framing
-            ),
-            outputSize: presentation.canvas.pixelSize
+        // Preserve raw pixels for live framing changes; composition applies the crop.
+        StreamGeometry(
+            sourceRect: .zero,
+            outputSize: CGSize(width: displaySize.width * pointPixelScale,
+                               height: displaySize.height * pointPixelScale)
         )
     }
 

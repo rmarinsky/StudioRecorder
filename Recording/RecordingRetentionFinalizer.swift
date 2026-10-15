@@ -123,7 +123,7 @@ final class RecordingRetentionFinalizer {
                     cursorTimeline: cursorTimeline,
                     shortcutTimeline: shortcutTimeline,
                     sceneTimeline: sceneTimeline,
-                    screenWasCapturedAsFixedRegion: request.presentation.framing.mode == .fixedRegion,
+                    screenWasCapturedAsFixedRegion: project.manifest.screenWasCapturedAsFixedRegion,
                     cameraTimeOffset: camera.map {
                         ProjectTrackTiming.offset(from: screen.id, to: $0.id, in: events)
                             + request.profile.resolvedCameraSyncOffset

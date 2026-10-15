@@ -1540,7 +1540,7 @@ struct ProjectDetailView: View {
             cursorTimeline: cursorTimeline,
             shortcutTimeline: shortcutTimeline,
             sceneTimeline: studioSceneTimeline?.hasSceneSwitches == true ? studioSceneTimeline : nil,
-            screenWasCapturedAsFixedRegion: project.presentation?.framing.mode == .fixedRegion,
+            screenWasCapturedAsFixedRegion: project.screenWasCapturedAsFixedRegion,
             cameraTimeOffset: camera.map {
                 ProjectTrackTiming.offset(
                     from: screen.id,

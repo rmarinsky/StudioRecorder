@@ -1416,32 +1416,12 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     private func needsCursorTelemetry(_ request: CaptureRequest) -> Bool {
-        request.presentation.framing.mode == .followCursor
-            || (request.profile.includeCursor && request.profile.resolvedCursorRendering == .composited)
+        // Live framing can enable follow-cursor even when the pointer is hidden.
+        !request.displaySources.isEmpty
     }
 
     private func cursorCaptureSpace(for display: SCDisplay, request: CaptureRequest) -> CursorCaptureSpace {
-        let displayFrame = display.frame
-        guard request.presentation.framing.mode == .fixedRegion else {
-            return CursorCaptureSpace(displayID: display.displayID, visibleFrame: displayFrame)
-        }
-        let sourceRect = CaptureGeometryPlanner.sourceRect(
-            displaySize: CGSize(width: display.width, height: display.height),
-            canvasSize: request.presentation.canvas.pixelSize,
-            framing: request.presentation.framing
-        )
-        guard display.width > 0, display.height > 0, !sourceRect.isEmpty else {
-            return CursorCaptureSpace(displayID: display.displayID, visibleFrame: displayFrame)
-        }
-        return CursorCaptureSpace(
-            displayID: display.displayID,
-            visibleFrame: CGRect(
-                x: displayFrame.minX + (sourceRect.minX / CGFloat(display.width)) * displayFrame.width,
-                y: displayFrame.minY + (sourceRect.minY / CGFloat(display.height)) * displayFrame.height,
-                width: (sourceRect.width / CGFloat(display.width)) * displayFrame.width,
-                height: (sourceRect.height / CGFloat(display.height)) * displayFrame.height
-            )
-        )
+        CursorCaptureSpace(displayID: display.displayID, visibleFrame: display.frame)
     }
 
     private func stopCursorTelemetry() {

@@ -1273,14 +1273,10 @@ struct StudioSceneLiveContract: Equatable, Sendable {
     ) -> StudioSceneLiveIncompatibility? {
         let initial = initialPresentation.validated()
         let candidate = candidate.validated()
-        guard candidate.canvas == initial.canvas else { return .canvasChanged }
+        guard candidate.canvas.pixelSize == initial.canvas.pixelSize else { return .canvasChanged }
         if candidate.camera.isVisible, !capturesCamera { return .cameraUnavailable }
         if candidate.framing.mode == .followCursor, !recordsCursorTelemetry {
             return .cursorTelemetryUnavailable
-        }
-        if initial.framing.mode == .fixedRegion,
-           candidate.framing != initial.framing {
-            return .captureRegionChanged
         }
         return nil
     }
