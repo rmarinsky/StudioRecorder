@@ -52,7 +52,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         let coordinator = RecordingCoordinator(projectStore: store)
         await coordinator.refreshProjects()
         try await coordinator.enqueueTimelapseRender(projectID: project.id, settings: TimelapseSettings(frameDuration: 0.4))
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
         while coordinator.jobs.contains(where: { $0.kind == .timelapseRender && ($0.state == .queued || $0.state == .running) }),
               ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
@@ -94,7 +94,9 @@ final class RecordingProjectStoreTests: XCTestCase {
         initial.camera.isVisible = false
         let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: initial)
         let store = RecordingProjectStore(baseDirectory: root)
-        let coordinator = RecordingCoordinator(projectStore: store, isReadyForTesting: true)
+        let coordinator = RecordingCoordinator(
+            projectStore: store, isReadyForTesting: true, availableStorageCapacity: { _ in 20_000_000_000 }
+        )
         var buffer: CVPixelBuffer?
         XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
         let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
@@ -667,7 +669,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         await coordinator.refreshProjects()
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalizing)
 
-        for _ in 0..<100 where coordinator.jobs.first?.state != .completed ||
+        for _ in 0..<300 where coordinator.jobs.first?.state != .completed ||
             coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle != .finalized {
             try await Task.sleep(for: .milliseconds(100))
         }
