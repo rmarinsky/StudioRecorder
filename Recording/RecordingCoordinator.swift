@@ -1773,8 +1773,8 @@ extension RecordingCoordinator: SCRecordingOutputDelegate {
 
     nonisolated func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            let displayID = self.capture(for: recordingOutput)?.displayID
+            guard let self, let capture = self.capture(for: recordingOutput) else { return }
+            let displayID = capture.displayID
             if let project = self.activeProject {
                 try? self.projectStore.markFailure(displayID: displayID, detail: error.localizedDescription, in: project)
             }

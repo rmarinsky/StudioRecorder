@@ -1,11 +1,27 @@
 import AVFoundation
 import CoreVideo
+import ScreenCaptureKit
 import Foundation
 import XCTest
 @testable import StudioRecorder
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testRetiredRecordingOutputFailureDoesNotInterruptCurrentSession() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = RecordingCoordinator(
+            projectStore: RecordingProjectStore(baseDirectory: root), isReadyForTesting: true
+        )
+        let configuration = SCRecordingOutputConfiguration()
+        configuration.outputURL = root.appending(path: "retired.mov")
+        let retiredOutput = SCRecordingOutput(configuration: configuration, delegate: coordinator)
+        coordinator.recordingOutput(retiredOutput, didFailWithError: NSError(domain: "retired", code: 1))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(coordinator.state, .ready)
+        XCTAssertNil(coordinator.finalizationWarning)
+    }
+
     func testTimelapseRetainsSelectedFramesAndRendersANewPaceThroughTheDurableJobQueue() async throws {
         let root = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: root) }
