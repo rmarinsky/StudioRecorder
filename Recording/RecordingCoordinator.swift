@@ -494,7 +494,16 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     outputURL: outputURL,
                     capturesSystemAudio: request.audio.capturesSystemAudio,
                     capturesMicrophone: request.audio.capturesMicrophone
-                ))
+                ), onTimelineStarted: { [weak self] time in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.activeProject?.id == project.id else { return }
+                        do {
+                            try self.persistAudioStart(time, trackID: trackID, in: project)
+                        } catch {
+                            self.finalizationWarning = "Audio is recording, but its recovery clock could not be saved. \(error.localizedDescription)"
+                        }
+                    }
+                })
                 audioStemSession.install(writer, projectID: project.id)
             }
             studioSceneTimeline = StudioSceneTimeline(
@@ -1556,6 +1565,13 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         )
     }
 
+    private func persistAudioStart(_ time: CMTime, trackID: String, in project: RecordingProject) throws {
+        guard !projectStore.journalEvents(for: project).contains(where: {
+            $0.kind == .trackStarted && $0.trackID == trackID && $0.detail?.mediaStartHostTime != nil
+        }) else { return }
+        try projectStore.markStarted(trackID: trackID, in: project, mediaStartHostTime: time.seconds)
+    }
+
     private func finishAudioStems() async {
         guard let project = activeProject else {
             audioStemSession.abortAndClear()
@@ -1580,9 +1596,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 )
             }.sorted { $0.source.rawValue < $1.source.rawValue }
             try projectStore.writeAudioStemIndex(ProjectAudioStemIndex(tracks: identities), in: project)
-            try projectStore.markStarted(
-                trackID: trackID, in: project, mediaStartHostTime: result.sourceStartTime.seconds
-            )
+            try persistAudioStart(result.sourceStartTime, trackID: trackID, in: project)
             try projectStore.markFinished(trackID: trackID, in: project)
         } catch {
             try? projectStore.markFailure(trackID: trackID, detail: error.localizedDescription, in: project)
