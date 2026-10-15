@@ -16,6 +16,8 @@ jobs:
         run: brew bundle
       - name: Check secret guard behavior
         run: ./scripts/check-secrets.test.sh
+      - name: Check frozen release gate
+        run: python3 scripts/validate-release-provenance.test.py
       - name: Check repository for secrets
         run: ./scripts/check-secrets.sh ci
       - name: Select Xcode 26.5

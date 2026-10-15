@@ -7,12 +7,15 @@ on:
         description: Version for the validation artifact
         required: true
         default: 0.1.0
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: read
+  actions: read
 
 concurrency:
   group: studio-recorder-stable-release
@@ -20,9 +23,18 @@ concurrency:
 
 jobs:
   signed-release:
+    if: >-
+      github.repository == 'rmarinsky/StudioRecorder' &&
+      github.triggering_actor == 'rmarinsky' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      asset: ${{ steps.version.outputs.asset }}
     env:
+      RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
       SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
@@ -30,6 +42,13 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Verify frozen pull request and exact-commit CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.triggering_actor }}
+        run: python3 scripts/validate-release-provenance.py "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$RELEASE_ACTOR"
 
       - name: Select Xcode 26.5
         run: sudo xcode-select --switch /Applications/Xcode_26.5.app
@@ -41,10 +60,10 @@ jobs:
           MANUAL_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             VERSION="$MANUAL_VERSION"
+          else
+            VERSION="$(sed -n 's/.*MARKETING_VERSION: "\([0-9.]*\)"/\1/p' project.yml)"
           fi
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version must use semantic version form, for example 0.1.0." >&2
@@ -113,7 +132,7 @@ jobs:
           echo "SPARKLE_PRIVATE_KEY_PATH=$SPARKLE_PRIVATE_KEY_PATH" >> "$GITHUB_ENV"
           existing_tags="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].tag_name')"
           while IFS= read -r tag; do
-            if [[ "$tag" == "v$VERSION" && "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$tag" == "v$VERSION" && "$GITHUB_EVENT_NAME" == workflow_run ]]; then
               echo 'This release already exists. Published assets are never replaced.' >&2
               exit 1
             fi
@@ -267,20 +286,6 @@ jobs:
           path: ${{ runner.temp }}/StudioRecorder.xcarchive/dSYMs
           if-no-files-found: error
 
-      - name: Publish GitHub release for tag
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSET_NAME: ${{ steps.version.outputs.asset }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            "$RUNNER_TEMP/release/$ASSET_NAME" "$RUNNER_TEMP/release/$ASSET_NAME.sha256" \
-            "$RUNNER_TEMP/release/appcast.xml" --draft --verify-tag \
-            --notes-file "Docs/releases/$VERSION.md" --title "Studio Recorder $GITHUB_REF_NAME"
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
-
       - name: Remove temporary signing material
         if: always()
         shell: bash
@@ -289,3 +294,44 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
           rm -f "${ASC_KEY_PATH:-}" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/sparkle-private-seed"
+
+  publish:
+    if: github.event_name == 'workflow_run' && github.triggering_actor == 'rmarinsky'
+    needs: signed-release
+    runs-on: ubuntu-latest
+    environment: production-release
+    env:
+      RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Recheck frozen release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.triggering_actor }}
+        run: python3 scripts/validate-release-provenance.py "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$RELEASE_ACTOR"
+      - name: Download the signed artifact from this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.signed-release.outputs.version }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "studio-recorder-$VERSION-signed" --dir release
+      - name: Publish the verified artifact without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.triggering_actor }}
+          ASSET_NAME: ${{ needs.signed-release.outputs.asset }}
+          VERSION: ${{ needs.signed-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check "$ASSET_NAME.sha256")
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/v$VERSION" -f sha="$RELEASE_COMMIT" >/dev/null
+          gh release create "v$VERSION" \
+            "release/$ASSET_NAME" "release/$ASSET_NAME.sha256" "release/appcast.xml" \
+            --draft --verify-tag --notes-file "Docs/releases/$VERSION.md" --title "Studio Recorder v$VERSION"
+          git fetch origin "refs/tags/v$VERSION"
+          python3 scripts/validate-release-provenance.py "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$RELEASE_ACTOR" \
+            --tag-commit "$(git rev-parse 'FETCH_HEAD^{commit}')"
+          gh release edit "v$VERSION" --draft=false --latest

@@ -61,11 +61,11 @@ This changes production signing configuration. Run it only as the repository own
 
 ## Release procedure
 
-1. Use a reviewed commit with green CI. Add `Docs/releases/X.Y.Z.md` before tagging. Versions are stable `X.Y.Z` only; no beta channel is implemented.
-2. Run the Release workflow manually for the next version. It produces internal signed artifacts and symbols without creating a GitHub release. `CFBundleVersion` uses the Release workflow's increasing run number.
-3. Verify a real install and upgrade as described below. Missing Apple credentials prevent this check; local fixture tests do not replace it.
-4. After explicit approval to publish, create and push `vX.Y.Z` at the reviewed commit. Tag pushes publish a release and update the public feed.
-5. Verify the release has all three assets, its tag/commit, signatures, notarization, release notes, and the production feed response. Retain debug symbols from the workflow artifacts.
+1. Add `Docs/releases/X.Y.Z.md` and set `MARKETING_VERSION` in the release pull request. Complete tests and signed install/upgrade verification before merging. Versions are stable `X.Y.Z` only.
+2. Only `rmarinsky` may merge the release PR and initiate the release run. No separate GitHub review approval is required. Freeze the final PR head before merging to `main`.
+3. Successful push CI on that exact merge commit starts Release automatically. The gate rejects direct pushes, unmerged commits, another merger or run initiator, and missing or failed CI for the exact commit on `main`.
+4. The workflow builds, signs, notarizes, and uploads the signed artifact, then publishes that same artifact without rebuilding. `production-release` allows only `main`, with no manual approval step. Manual workflow runs create internal rehearsal artifacts only and remain subject to the merged-PR provenance gate.
+5. Verify all three public assets, tag/commit, signatures, notarization, release notes, and the production feed response. Retain debug symbols. Releasing an existing version fails rather than replacing its assets.
 
 The workflow imports a temporary Developer ID keychain, archives, signs the bundled `whisper-cli`, and exports using Xcode's Developer ID distribution path. Export re-signs Sparkle's nested helpers. It verifies their identities, notarizes, staples, assesses Gatekeeper, then creates and verifies the final update artifacts. A draft release receives all assets before becoming public. Published versions are never overwritten. A failed draft requires owner review before cleanup/retry.
 
@@ -97,7 +97,7 @@ Exercise these cases:
 - Cancel, no-network, unavailable feed, and insufficient privileges fail without replacing the current app.
 - Screen Recording, Camera, Microphone permissions and Keychain access remain usable after upgrade.
 
-Publish only after this rehearsal. The current repository has no public release or production signing credentials configured as of 2026-09-29; the signed/notarized upgrade has **not** been verified.
+Publish only after this rehearsal. Production signing credentials were configured on 2026-10-15. The Apple notarization API accepted authentication, and the Sparkle key pair and exported certificate archive passed local validation. No public release exists yet; the signed/notarized install and upgrade have **not** been verified. Publication uses the exact merged pull-request commit and its signed artifacts. Only the repository owner can initiate it.
 
 ## Local checks
 
