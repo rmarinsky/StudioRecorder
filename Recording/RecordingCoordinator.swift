@@ -778,6 +778,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             return
         }
         isTearingDown = true
+        sourceHealthTask?.cancel()
+        sourceRecoveryTask?.cancel()
         state = .stopping
         updateFinalizationProgress(0.04, "Stopping capture sources…")
         durationTask?.cancel()
@@ -1289,7 +1291,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func considerSourceRecovery(
+    func considerSourceRecovery(
         _ snapshot: LiveSourceHealthSnapshot,
         at timestamp: TimeInterval
     ) {
@@ -1299,42 +1301,52 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             sourceRecoveryState = .idle
         }
         guard sourceRecoveryTask == nil,
-              case let .restartScreen(source, attempt, maximumAttempts)? = sourceRecoveryPolicy.decision(
-                for: snapshot,
-                at: timestamp
-              ),
-              let discriminator = source.discriminator,
-              let displayID = UInt32(discriminator),
-              let capture = captures[displayID] else { return }
-
-        sourceRecoveryState = .restarting(
-            source: source,
-            attempt: attempt,
-            maximumAttempts: maximumAttempts
-        )
+              let decision = sourceRecoveryPolicy.decision(for: snapshot, at: timestamp) else { return }
+        let source: LiveSourceID
+        let attempt: Int
+        let maximumAttempts: Int
+        switch decision {
+        case .restartScreen(let target, let count, let maximum),
+             .restartCamera(let target, let count, let maximum):
+            (source, attempt, maximumAttempts) = (target, count, maximum)
+        }
+        let displayID = source.category == .screen
+            ? source.discriminator.flatMap(UInt32.init)
+            : activeCaptureRequest?.primaryAudioDisplayID
+        let capture = displayID.flatMap { captures[$0] }
+        let projectID = activeProject?.id
+        sourceRecoveryState = .restarting(source: source, attempt: attempt, maximumAttempts: maximumAttempts)
         sourceRecoveryTask = Task { [weak self] in
             guard let self else { return }
             var failure: String?
             do {
-                try await capture.stream.updateContentFilter(capture.filter)
-                try await capture.stream.updateConfiguration(capture.configuration)
+                switch decision {
+                case .restartCamera:
+                    // The preview owns the shared camera session. Rebuilding it here
+                    // would detach the active movie output and lose the camera track.
+                    failure = "Camera recovery cannot rebuild an active movie session. Stop recording and reconnect the camera."
+                case .restartScreen:
+                    if let capture {
+                        try await capture.stream.updateContentFilter(capture.filter)
+                        guard !Task.isCancelled, self.activeProject?.id == projectID else { return }
+                        try await capture.stream.updateConfiguration(capture.configuration)
+                    } else {
+                        failure = "The capture source is no longer available."
+                    }
+                }
             } catch {
                 failure = error.localizedDescription
             }
-            sourceRecoveryPolicy.complete(
-                source: source,
-                at: ProcessInfo.processInfo.systemUptime
-            )
+            guard !Task.isCancelled, self.activeProject?.id == projectID else { return }
+            sourceRecoveryPolicy.complete(source: source, at: ProcessInfo.processInfo.systemUptime)
             if let failure {
                 sourceRecoveryState = .failed(
                     source: source,
-                    message: "Screen refresh attempt \(attempt) of \(maximumAttempts) failed. Recording continues with the last good frame. \(failure)"
+                    message: "Recovery attempt \(attempt) of \(maximumAttempts) failed. \(failure)"
                 )
             } else {
                 sourceRecoveryState = .waitingForSamples(
-                    source: source,
-                    attempt: attempt,
-                    maximumAttempts: maximumAttempts
+                    source: source, attempt: attempt, maximumAttempts: maximumAttempts
                 )
             }
             sourceRecoveryTask = nil
@@ -1641,6 +1653,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         guard !isTearingDown else { return }
         activeStartAttempt = nil
         isTearingDown = true
+        sourceHealthTask?.cancel()
+        sourceRecoveryTask?.cancel()
         state = .stopping
         durationTask?.cancel()
         durationTask = nil
