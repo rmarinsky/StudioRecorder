@@ -1295,9 +1295,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         _ snapshot: LiveSourceHealthSnapshot,
         at timestamp: TimeInterval
     ) {
-        if snapshot.entries.contains(where: {
-            $0.source.category == .screen && $0.state == .recovered
-        }) {
+        let recoveringSource: LiveSourceID?
+        switch sourceRecoveryState {
+        case .restarting(let source, _, _), .waitingForSamples(let source, _, _), .failed(let source, _):
+            recoveringSource = source
+        case .idle:
+            recoveringSource = nil
+        }
+        if let recoveringSource, snapshot[recoveringSource]?.state == .recovered {
             sourceRecoveryState = .idle
         }
         guard sourceRecoveryTask == nil,

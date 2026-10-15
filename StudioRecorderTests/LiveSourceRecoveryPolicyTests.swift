@@ -27,6 +27,21 @@ final class LiveSourceRecoveryPolicyTests: XCTestCase {
         }
     }
 
+    func testRecoveredAudioClearsItsOwnFailureWithoutHidingOtherSourceFailures() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = RecordingCoordinator(projectStore: RecordingProjectStore(baseDirectory: root))
+        coordinator.considerSourceRecovery(snapshot(.microphone, .stalled), at: 10)
+        try await Task.sleep(for: .milliseconds(50))
+        coordinator.considerSourceRecovery(snapshot(screen, .recovered), at: 11)
+        guard case .failed(let source, _) = coordinator.sourceRecoveryState else {
+            return XCTFail("An unrelated recovered display must not hide the microphone failure")
+        }
+        XCTAssertEqual(source, .microphone)
+        coordinator.considerSourceRecovery(snapshot(.microphone, .recovered), at: 12)
+        XCTAssertEqual(coordinator.sourceRecoveryState, .idle)
+    }
+
     func testStalledCaptureSourcesRequestTheirOwningIngressRecovery() {
         var policy = LiveSourceRecoveryPolicy()
 
