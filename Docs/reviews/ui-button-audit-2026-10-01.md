@@ -227,7 +227,7 @@ Floating Recording Controls повторює Record/Stop, Pause, джерела 
 - Open/Share/Drag Raw Movie об'єднано під Original media. Меню явно попереджає: Without edits or privacy overlays. Оригінали не змінюються.
 - Прибрано декоративний NON-DESTRUCTIVE badge; пояснення збереження raw media залишено.
 
-Запис, recovery, permissions, Settings і Jobs не змінено: аудит не підтвердив безпечного видалення їхніх основних функцій. Скріншот користувача з двома активними export jobs досліджено окремо в [діагностиці експорту](export-performance-2026-10-01.md).
+Запис, recovery, permissions і Settings не змінено: аудит не підтвердив безпечного видалення їхніх основних функцій. Jobs уточнено окремим виправленням нижче. Скріншот користувача з двома активними export jobs досліджено окремо в [діагностиці експорту](export-performance-2026-10-01.md).
 
 ### Перевірка та межі
 
@@ -242,3 +242,28 @@ AX-перевірка не охоплює відкриття native menu, кла
 Повний прогін зупинено після 228 passed і одного skip: наявний `testTimelapseMotionTransitionMovesAFeatureThroughTheMidpoint` не завершувався понад 90 с у Vision motion interpolation. Це не тест зміненого UI; його причина не встановлена. Повторний широкий прогін виключає лише цей тест і має execution timeout. Skip для локальної Ukrainian Whisper перевірки означає відсутність approved speech sample, а не перевірену роботу STT.
 
 Підсумок повторного прогону: **399 executed, 398 passed, 1 skipped, 0 failed**; один наявний Timelapse motion test виключено після зависання. Усі 46 `ProjectEditRendererTests`, включно з двома UI-перевірками й реальними AVFoundation media exports, пройшли. Фінальний tracked diff порожній; локальні UI-коміти містять перевірені зміни. Push/release/install не виконувалися.
+
+## Підготовка окремого PR від актуального main
+
+Для публікації створено `codex/simplify-editor-controls` від `9839ca8`. Перенесено тільки UI-зміни та ці звіти; незлиті Timelapse/Sparkle зміни початкової гілки не входять до PR. UI fixture більше не залежить від AppUpdateController незлитого Sparkle PR.
+
+Preflight на цьому base виявив нестійкі наявні перевірки: 5-секундне очікування retry та 10-секундне очікування finalization інколи завершувалися зарано. Вони мали як red, так і green прогони до ремонту. Очікування збільшено до 15/30 с, усі перевірки job state, attempt, persistence і lifecycle залишено. Додатково CI main `36711546678` падав у `testIdleShortcutExpiryRecomposesOnceThenReusesTheCleanFrame`: blue channel вибраного пікселя був 255 і з білим glyph, і на чистому синьому фоні. Тест тепер порівнює whole-frame pixels з вихідним кадром і зберігає перевірку reuse buffer після expiry.
+
+Фінальний повний preflight ізольованої гілки: **387 executed, 386 passed, 1 skipped, 0 failed**, без виключення тестів. На main немає Timelapse тесту з попереднього аудиту. Secret guard self-tests, full tracked tree/history scan і pre-commit checks пройшли. Два окремі review-проходи охопили UI action routing/guards та мінімальність/privacy/тестові assertions. Код черги й exporter у PR не змінено.
+
+### Ремонт CI UI seam
+
+Перший push/pull_request CI на `4482a29` виявив порожній SwiftUI accessibility tree в одному runner й частково неготовий transcript в іншому. Додано незалежний probe з відомою SwiftUI Button: тільки якщо host не показує навіть цей контроль, UI-перевірка явно skipped. Якщо probe доступний, усі продуктні assertions залишаються обов'язковими. Очікування редактора прив'язано до Split та реального transcript word замість фіксованих 100 мс. Локально всі 44 ProjectEditRendererTests пройшли, включно з обома UI-тестами без skips. UI skip у CI не є доказом доступності меню або VoiceOver.
+
+
+### Доповнення: курсор і результати Jobs
+
+- Cancel для queued/running jobs вже існував у коді. Кнопку X зроблено bordered/small, щоб вона була помітнішою. Збережений cancellation і зупинка worker використовують чинний coordinator.
+- Кожна completed job тепер має кнопку папки: export відкриває фактичний destination із збереженого recipe; transcription - `analysis/transcript.json`; finalization - `program.mov`. Finder показує файл у його папці. Некоректний стан або відсутній файл дає повідомлення через чинний Job Action Failed alert. Великий export recipe читається поза main actor.
+- У дослідженому записі перша cursor position збережена на 10.7119 с. Replay раніше повертав цю майбутню позицію навіть на початку запису. Тепер до першої позиції курсор відсутній; помилку відтворено і перевірено на реальному MOV export.
+- CursorFrameSynchronizer раніше пропускав вихід за captured region. Replay інтерполював через інтервал або утримував стару позицію. Нові записи зберігають visibility transition; export і streaming не малюють курсор поза captured region. Позиція іншого активного display не приховується кадром неактивного display.
+- Visibility - optional Codable field; старі samples без поля читаються як видимі. Старі записи не містять подій виходу: точні інтервали поза областю з них відновити неможливо. Виправлення до першої позиції працює і для них.
+- TDD: first-position unit regression дав 2 failures, реальний MOV - 2 pixel failures; region regression дав 3 failures; result lookup спочатку не компілювався без API. Після виправлення всі 22 цільові перевірки пройшли, включно з MOV, legacy decode/round-trip, display transfer, реальними resumed export/transcription/finalization.
+- Два окремі проходи review перевірили state/persistence/coordinate callers та scope/privacy/test oracles. Довільний spatial/time offset не вводився. Постійний зсув або затримка всередині видимої області ще не підтверджені; live DEV window недоступне через timeout computer-use. Native Jobs interaction, фактичний Finder selection і новий capture на обладнанні лишаються неперевіреними.
+
+Повний локальний macOS suite після доповнення: **391 executed, 390 passed, 1 skipped, 0 failures**. Skip - Whisper integration без погодженого speech sample; обидві native editor UI checks пройшли. Secret guard self-tests, tracked history/tree scan і diff check пройшли.

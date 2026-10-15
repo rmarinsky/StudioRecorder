@@ -150,7 +150,7 @@ final class ProjectEditTimelineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appending(path: "recognizer")
-        try Data("#!/bin/sh\nprintf '%s' \"$$\" > \"$(dirname \"$0\")/pid\"\nexec /bin/sleep 30\n".utf8)
+        try Data("#!/bin/sh\n: > \"$(dirname \"$0\")/pid\"\n/bin/sleep 0.05\nprintf '%s' \"$$\" > \"$(dirname \"$0\")/pid\"\nexec /bin/sleep 30\n".utf8)
             .write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let operation = Task {
@@ -164,14 +164,14 @@ final class ProjectEditTimelineTests: XCTestCase {
         defer { operation.cancel() }
         let pidURL = root.appending(path: "pid")
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        var startedPID: Int32?
-        repeat {
-            if let contents = try? String(contentsOf: pidURL, encoding: .utf8) {
-                startedPID = Int32(contents)
+        var reportedPID: Int32?
+        while reportedPID == nil, ContinuousClock.now < deadline {
+            if let text = try? String(contentsOf: pidURL, encoding: .utf8) {
+                reportedPID = Int32(text)
             }
-            if startedPID == nil { try await Task.sleep(for: .milliseconds(20)) }
-        } while startedPID == nil && ContinuousClock.now < deadline
-        let pid = try XCTUnwrap(startedPID, "The recognizer must publish its PID before cancellation")
+            if reportedPID == nil { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        let pid = try XCTUnwrap(reportedPID)
 
         operation.cancel()
         do {

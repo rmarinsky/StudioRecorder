@@ -862,6 +862,17 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         return nil
     }
 
+    func completedJobResult(for jobID: UUID) async throws -> URL {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let snapshot = projects.first(where: { $0.identity.manifestID == job.projectID }) else {
+            throw RecordingJobStoreError.jobNotFound
+        }
+        let project = try projectStore.openProject(at: snapshot.rootURL, expectedID: job.projectID)
+        return try await Task.detached(priority: .userInitiated) {
+            try RecordingJobStore().completedJobResult(jobID: jobID, in: project)
+        }.value
+    }
+
     func retryJob(_ jobID: UUID) async throws {
         await activeJobTask(for: jobID)?.value
         guard let job = jobs.first(where: { $0.id == jobID }),
@@ -1000,7 +1011,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription
@@ -1098,7 +1109,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription
@@ -1162,7 +1173,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try persistJob(job, in: project)
         } catch {
             job = jobs.first(where: { $0.id == queuedJob.id }) ?? job
-            if job.state != .cancelled {
+            if job.state != .cancelled, job.attempt == queuedJob.attempt {
                 job.state = .failed
                 job.stage = "Failed"
                 job.failure = error.localizedDescription

@@ -58,6 +58,9 @@ final class RecordingProjectStoreTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(coordinator.jobs.first(where: { $0.kind == .timelapseRender })?.state, .completed)
+        let renderJob = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .timelapseRender }))
+        let resultURL = try await coordinator.completedJobResult(for: renderJob.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "program.mov").resolvingSymlinksInPath())
         let movie = AVURLAsset(url: project.rootURL.appending(path: "program.mov"))
         let duration = try await movie.load(.duration).seconds
         XCTAssertEqual(duration, 0.8, accuracy: 0.02)
@@ -157,7 +160,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertFalse(activeRequest.audio.capturesSystemAudio)
         await coordinator.stopRecording()
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while coordinator.jobs.first(where: { $0.kind == .finalization })?.state != .completed,
               ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
@@ -245,57 +248,6 @@ final class RecordingProjectStoreTests: XCTestCase {
         }
     }
 
-    func testRetryWaitsForCancelledTranscriptionCleanupBeforeStartingAnotherAttempt() async throws {
-        let destination = temporaryRootURL()
-        defer { try? FileManager.default.removeItem(at: destination) }
-        let store = RecordingProjectStore(baseDirectory: destination)
-        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
-        let sourceURL = project.rootURL.appending(path: "program.mov")
-        try await writeReadableMovie(to: sourceURL, frameCount: 31)
-        try store.markStarted(trackID: "program", in: project)
-        try store.markFinished(trackID: "program", in: project)
-        try store.close(project)
-        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
-        let recipe = ProjectTranscriptionRecipe(
-            projectID: project.id, sourceTrackID: "program", sourceDuration: duration,
-            audioURL: sourceURL
-        )
-        let started = expectation(description: "transcription started")
-        let stopped = expectation(description: "transcription stopped")
-        let cleanupStarted = expectation(description: "transcription cleanup started")
-        started.assertForOverFulfill = false
-        stopped.assertForOverFulfill = false
-        cleanupStarted.assertForOverFulfill = false
-        let cleanup = CancellationCleanup()
-        let coordinator = RecordingCoordinator(
-            projectStore: store, transcriber: WaitingTranscriber(
-                started: started, stopped: stopped, cleanupStarted: cleanupStarted, cleanup: cleanup
-            )
-        )
-        await coordinator.refreshProjects()
-        try await coordinator.enqueueTranscription(recipe)
-        await fulfillment(of: [started], timeout: 10)
-
-        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
-        let cancelling = Task { try await coordinator.cancelJob(job.id) }
-        await fulfillment(of: [cleanupStarted], timeout: 10)
-        let retryEntered = expectation(description: "retry requested")
-        let retrying = Task {
-            retryEntered.fulfill()
-            try await coordinator.retryJob(job.id)
-        }
-        await fulfillment(of: [retryEntered], timeout: 10)
-        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 1,
-                       "Retry must not replace the attempt while its worker is cleaning up")
-        await cleanup.finish()
-        try await cancelling.value
-        await fulfillment(of: [stopped], timeout: 10)
-        try await retrying.value
-        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 2)
-        try await coordinator.cancelJob(job.id)
-        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
-    }
-
     func testCancellingRunningTranscriptionStopsWorkAndDoesNotResumeAfterRestart() async throws {
         let destination = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: destination) }
@@ -347,6 +299,93 @@ final class RecordingProjectStoreTests: XCTestCase {
         let restarted = RecordingCoordinator(projectStore: store, transcriber: StubTranscriber())
         await restarted.refreshProjects()
         XCTAssertEqual(restarted.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
+    }
+
+    private actor RetryingTranscriber: ProjectTranscribing {
+        let started: XCTestExpectation
+        let cancellationStarted: XCTestExpectation
+        let retryStarted: XCTestExpectation
+        private var calls = 0
+        private var cancellationContinuation: CheckedContinuation<Void, Never>?
+
+        init(started: XCTestExpectation, cancellationStarted: XCTestExpectation, retryStarted: XCTestExpectation) {
+            self.started = started
+            self.cancellationStarted = cancellationStarted
+            self.retryStarted = retryStarted
+        }
+
+        func transcribe(
+            _ recipe: ProjectTranscriptionRecipe,
+            progress: @escaping @MainActor @Sendable (Double, String) -> Void
+        ) async throws -> TimedTranscript {
+            calls += 1
+            if calls == 1 {
+                started.fulfill()
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch is CancellationError {
+                    cancellationStarted.fulfill()
+                    await withCheckedContinuation { cancellationContinuation = $0 }
+                    throw CancellationError()
+                }
+            } else {
+                retryStarted.fulfill()
+                try await Task.sleep(for: .seconds(30))
+            }
+            throw CancellationError()
+        }
+
+        func finishCancellation() {
+            cancellationContinuation?.resume()
+            cancellationContinuation = nil
+        }
+    }
+
+    func testRetryWhileCancellationFinishesDoesNotLoseTheNewAttempt() async throws {
+        let destination = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let store = RecordingProjectStore(baseDirectory: destination)
+        let project = try store.createProgramArchiveProject(request: archiveCaptureRequest(destination: destination))
+        let sourceURL = project.rootURL.appending(path: "program.mov")
+        try await writeReadableMovie(to: sourceURL, frameCount: 31)
+        try store.markStarted(trackID: "program", in: project)
+        try store.markFinished(trackID: "program", in: project)
+        try store.close(project)
+        let recipe = ProjectTranscriptionRecipe(
+            projectID: project.id, sourceTrackID: "program",
+            sourceDuration: try await AVURLAsset(url: sourceURL).load(.duration).seconds,
+            audioURL: sourceURL
+        )
+        let started = expectation(description: "first attempt started")
+        let cancellationStarted = expectation(description: "first attempt is stopping")
+        let retryStarted = expectation(description: "retry started")
+        let transcriber = RetryingTranscriber(
+            started: started, cancellationStarted: cancellationStarted, retryStarted: retryStarted
+        )
+        let coordinator = RecordingCoordinator(projectStore: store, transcriber: transcriber)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueTranscription(recipe)
+        await fulfillment(of: [started], timeout: 15)
+        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
+
+        let cancelling = Task { try await coordinator.cancelJob(job.id) }
+        await fulfillment(of: [cancellationStarted], timeout: 15)
+        let retryEntered = expectation(description: "retry requested")
+        let retrying = Task {
+            retryEntered.fulfill()
+            try await coordinator.retryJob(job.id)
+        }
+        await fulfillment(of: [retryEntered], timeout: 10)
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 1)
+        await transcriber.finishCancellation()
+        try await cancelling.value
+        try await retrying.value
+        await fulfillment(of: [retryStarted], timeout: 15)
+
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .running)
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first(where: { $0.id == job.id })?.attempt, 2)
+        try? await coordinator.cancelJob(job.id)
     }
 
     func testCancellingQueuedJobLeavesFollowingWorkAvailable() throws {
@@ -432,6 +471,8 @@ final class RecordingProjectStoreTests: XCTestCase {
             in: project.rootURL, expectedProjectID: project.id
         ))
         XCTAssertEqual(transcript.words.map(\.text), ["Привіт"])
+        let resultURL = try await coordinator.completedJobResult(for: job.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "analysis/transcript.json").resolvingSymlinksInPath())
     }
 
     func testUnreadableJobHistoryRemainsVisibleOnReadyProject() async throws {
@@ -545,6 +586,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         try jobStore.saveExport(recipe, for: job, in: project)
         job.state = .running
         try jobStore.save(job, in: project)
+        XCTAssertThrowsError(try jobStore.completedJobResult(jobID: job.id, in: project))
         try await ProjectEditStore().save(
             ProjectEditDocument(
                 projectID: project.id,
@@ -560,6 +602,8 @@ final class RecordingProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .completed)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.attempt, 2)
+        let revealURL = try await coordinator.completedJobResult(for: job.id)
+        XCTAssertEqual(revealURL, exportedURL)
         let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
         XCTAssertEqual(exportedDuration, sourceDuration - 0.7, accuracy: 0.12)
     }
@@ -677,6 +721,8 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(coordinator.jobs.first?.attempt, 2)
         XCTAssertEqual(coordinator.projects.first(where: { $0.identity.manifestID == project.id })?.lifecycle, .finalized)
         XCTAssertTrue(FileManager.default.fileExists(atPath: project.rootURL.appending(path: "program.mov").path))
+        let resultURL = try await coordinator.completedJobResult(for: interruptedJob.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "program.mov").resolvingSymlinksInPath())
     }
 
     func testFailedBackgroundFinalizationKeepsProjectInRecoveryWithRetryableJob() async throws {

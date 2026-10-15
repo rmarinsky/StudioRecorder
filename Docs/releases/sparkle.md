@@ -61,7 +61,7 @@ This changes production signing configuration. Run it only as the repository own
 
 ## Release procedure
 
-1. Add `Docs/releases/X.Y.Z.md` and set `MARKETING_VERSION` in the release pull request. Complete tests and signed install/upgrade verification before merging. Versions are stable `X.Y.Z` only.
+1. Optionally add `Docs/releases/X.Y.Z.md` in the release pull request. The existing release planner increments the latest stable patch version (first release: 0.1.0) and generates notes from first-parent commit/PR titles; version-specific notes override generated notes. Complete tests and signed install/upgrade verification before merging. Versions are stable `X.Y.Z` only.
 2. Only `rmarinsky` may merge the release PR and initiate the release run. No separate GitHub review approval is required. Freeze the final PR head before merging to `main`.
 3. Successful push CI on that exact merge commit starts Release automatically. The gate rejects direct pushes, unmerged commits, another merger or run initiator, and missing or failed CI for the exact commit on `main`.
 4. The workflow builds, signs, notarizes, and uploads the signed artifact, then publishes that same artifact without rebuilding. `production-release` allows only `main`, with no manual approval step. Manual workflow runs create internal rehearsal artifacts only and remain subject to the merged-PR provenance gate.

@@ -74,7 +74,7 @@ separate from a future release build.
 
 ## Releases
 
-CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. The Release workflow archives and exports with Developer ID, verifies nested helpers, notarizes and staples the app, then creates a signed Sparkle appcast, ZIP, and SHA-256 checksum. Manual runs produce internal artifacts; a `vX.Y.Z` tag publishes a GitHub release only after all checks pass. Production builds offer Check for Updates and defer installation while media work is active; DEV builds do not receive production updates.
+CI builds and tests pushes and pull requests on macOS 26 with Xcode 26.5. After successful main CI, the Release workflow accepts only the exact commit of a PR merged by rmarinsky and initiated by that account. It signs and notarizes the arm64 app, verifies nested helpers, and publishes the same signed ZIP, checksum, and Sparkle feed without rebuilding. No review approval is required. Manual runs create internal artifacts only. Production updates wait for active media work; DEV builds do not receive them. See [release procedures](Docs/releases/sparkle.md).
 
 See [the release setup and verification guide](Docs/releases/sparkle.md) for required Apple/Sparkle credentials, first-install bootstrap, and the signed upgrade rehearsal. Production signing and upgrade verification require those credentials and are not proved by local fixture tests.
 
