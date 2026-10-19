@@ -1,9 +1,137 @@
 @preconcurrency import AVFoundation
 import ImageIO
+import Vision
 import XCTest
 @testable import StudioRecorder
 
 final class ProjectMediaExporterTests: XCTestCase {
+    @MainActor
+    func testTimelapseCaptureSkipsPausedTicksAndDoesNotAppendAFrameThatArrivesAfterStop() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "frames.mov")
+        let frame = TimelapseFrame(pixelBuffer: try pixelBuffer(color: 0xFFFF0000))
+        var pendingFrame: CheckedContinuation<TimelapseFrame, Error>?
+        var requests = 0
+        let session = try TimelapseCaptureSession(
+            outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64),
+            settings: TimelapseSettings(captureInterval: 1),
+            frameProvider: {
+                requests += 1
+                if requests == 1 { return frame }
+                return try await withCheckedThrowingContinuation { pendingFrame = $0 }
+            }
+        )
+        try await session.start()
+        session.pause()
+        try await Task.sleep(for: .milliseconds(1_100))
+        XCTAssertEqual(session.frameCount, 1)
+        XCTAssertEqual(requests, 1)
+        session.resume()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while pendingFrame == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let continuation = try XCTUnwrap(pendingFrame)
+        let stopping = Task { try await session.stop() }
+        await Task.yield()
+        continuation.resume(returning: frame)
+        _ = try await stopping.value
+        XCTAssertEqual(session.frameCount, 1)
+        let duration = try await AVURLAsset(url: sourceURL).load(.duration).seconds
+        XCTAssertEqual(duration, 1, accuracy: 0.02)
+    }
+
+    func testTimelapseRendersOnlySelectedFramesAtTheConfiguredPaceWithoutAudio() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "selected-frames.mov")
+        let outputURL = directory.appending(path: "timelapse.mov")
+        let source = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64))
+        for color: UInt32 in [0xFFFF0000, 0xFF0000FF, 0xFF00FF00] {
+            try await source.append(TimelapseFrame(pixelBuffer: try pixelBuffer(color: color)))
+        }
+        _ = try await source.finish()
+
+        let report = try await TimelapseMovieRenderer().exportMovie(
+            from: sourceURL, settings: TimelapseSettings(frameDuration: 0.2),
+            to: outputURL
+        )
+
+        let asset = AVURLAsset(url: outputURL)
+        let duration = try await asset.load(.duration).seconds
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(duration, 0.6, accuracy: 0.02)
+        XCTAssertTrue(audioTracks.isEmpty)
+        XCTAssertEqual(report.sourceFrameCount, 3)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let midpoint = try await generator.image(at: CMTime(seconds: 0.1, preferredTimescale: 600)).image
+        let context = CIContext()
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(CIImage(cgImage: midpoint), toBitmap: &pixel, rowBytes: 4,
+                       bounds: CGRect(x: 32, y: 32, width: 1, height: 1), format: .RGBA8,
+                       colorSpace: CGColorSpaceCreateDeviceRGB())
+        XCTAssertGreaterThan(pixel[0], 80, "The midpoint must contain both neighboring colors")
+        XCTAssertGreaterThan(pixel[2], 80)
+        XCTAssertLessThan(pixel[1], 50, "Allow chroma rounding from the native video encoder")
+    }
+
+    func testTimelapseMotionTransitionMovesAFeatureThroughTheMidpoint() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appending(path: "selected-frames.mov")
+        let outputURL = directory.appending(path: "timelapse.mov")
+        let dissolveURL = directory.appending(path: "dissolve.mov")
+        let source = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 128, height: 64))
+        try await source.append(TimelapseFrame(pixelBuffer: try movingFeatureFrame(x: 16)))
+        try await source.append(TimelapseFrame(pixelBuffer: try movingFeatureFrame(x: 32)))
+        _ = try await source.finish()
+
+        let renderer = TimelapseMovieRenderer()
+        let report = try await renderer.exportMovie(
+            from: sourceURL,
+            settings: TimelapseSettings(frameDuration: 0.2, transition: .motion),
+            to: outputURL
+        )
+        try await renderer.exportMovie(
+            from: sourceURL,
+            settings: TimelapseSettings(frameDuration: 0.2, transition: .dissolve),
+            to: dissolveURL
+        )
+
+        let motionRed = try await redPixel(in: outputURL, at: 0.1, x: 28, y: 32)
+        let dissolveRed = try await redPixel(in: dissolveURL, at: 0.1, x: 28, y: 32)
+        // Probe the native service independently so unavailable VM hardware does not
+        // masquerade as a renderer regression, or hide one on a capable Mac.
+        let context = CIContext()
+        let first = CIImage(cvPixelBuffer: try movingFeatureFrame(x: 16))
+        let second = CIImage(cvPixelBuffer: try movingFeatureFrame(x: 32))
+        let firstCG = try XCTUnwrap(context.createCGImage(first, from: first.extent))
+        let secondCG = try XCTUnwrap(context.createCGImage(second, from: second.extent))
+        let probe = VNGenerateOpticalFlowRequest(targetedCGImage: secondCG)
+        probe.computationAccuracy = .high
+        probe.outputPixelFormat = kCVPixelFormatType_TwoComponent32Float
+        do {
+            try VNImageRequestHandler(cgImage: firstCG, options: [:]).perform([probe])
+            XCTAssertNotNil(probe.results?.first)
+        } catch {
+            XCTAssertEqual(report.motionFallbackTransitions, 1)
+            XCTAssertEqual(report.blendedMotionTransitions, 0)
+            XCTAssertEqual(Int(motionRed), Int(dissolveRed), accuracy: 3)
+            let duration = try await AVURLAsset(url: outputURL).load(.duration).seconds
+            XCTAssertEqual(duration, 0.4, accuracy: 0.02)
+            throw XCTSkip("Native optical flow unavailable: \(error). Dissolve fallback verified.")
+        }
+        XCTAssertGreaterThan(Int(motionRed), Int(dissolveRed) + 30,
+                             "Motion interpolation should move the feature more clearly than a dissolve")
+        XCTAssertGreaterThan(report.blendedMotionTransitions, 0)
+    }
+
     func testGIFExportSettingsClampTheShareClipToAvailableMediaAndSafeLimits() throws {
         let settings = GIFExportSettings(
             startTime: 8,
@@ -133,6 +261,40 @@ final class ProjectMediaExporterTests: XCTestCase {
             }
         }
         return pixelBuffer
+    }
+
+    private func movingFeatureFrame(x: Int) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, 128, 64, kCVPixelFormatType_32BGRA, nil, &buffer),
+            kCVReturnSuccess
+        )
+        let pixelBuffer = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        let rowPixels = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt32>.size
+        let pixels = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixelBuffer))
+            .assumingMemoryBound(to: UInt32.self)
+        for y in 0..<64 {
+            for column in 0..<128 {
+                pixels[(y * rowPixels) + column] = column >= x && column < x + 16 && y >= 24 && y < 40
+                    ? 0xFFFF0000
+                    : 0xFF000000
+            }
+        }
+        return pixelBuffer
+    }
+
+    private func redPixel(in movieURL: URL, at seconds: TimeInterval, x: Int, y: Int) async throws -> UInt8 {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: movieURL))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let frame = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        var pixel = [UInt8](repeating: 0, count: 4)
+        CIContext().render(CIImage(cgImage: frame), toBitmap: &pixel, rowBytes: 4,
+                           bounds: CGRect(x: x, y: y, width: 1, height: 1), format: .RGBA8,
+                           colorSpace: CGColorSpaceCreateDeviceRGB())
+        return pixel[0]
     }
 
     private func imageBytes(_ image: CGImage) -> Data? {

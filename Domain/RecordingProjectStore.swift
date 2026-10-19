@@ -14,6 +14,7 @@ enum RecordingJobKind: String, Codable, Sendable {
     case finalization
     case export
     case transcription
+    case timelapseRender
 }
 
 enum RecordingJobState: String, Codable, Sendable {
@@ -61,7 +62,7 @@ enum RecordingJobQueuePolicy {
     ) -> RecordingJob? {
         unblockedJobs(in: jobs, blockedIDs: blockedIDs).filter {
             $0.state == .queued
-                && ($0.kind == .finalization || $0.kind == .export || $0.kind == .transcription)
+                && ($0.kind == .finalization || $0.kind == .export || $0.kind == .transcription || $0.kind == .timelapseRender)
         }.min {
             $0.updatedAt == $1.updatedAt
                 ? $0.id.uuidString < $1.id.uuidString
@@ -208,6 +209,31 @@ final class RecordingJobStore {
         try JSONEncoder().encode(recipe).write(to: url, options: .atomic)
     }
 
+    func saveTimelapse(_ settings: TimelapseSettings, for job: RecordingJob, in project: RecordingProject) throws {
+        try validateTimelapse(settings, job: job, project: project)
+        let url = timelapseURL(for: job, in: project)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(settings).write(to: url, options: .atomic)
+    }
+
+    func loadTimelapse(for job: RecordingJob, in project: RecordingProject) throws -> TimelapseSettings {
+        let settings = try JSONDecoder().decode(TimelapseSettings.self, from: Data(contentsOf: timelapseURL(for: job, in: project)))
+        try validateTimelapse(settings, job: job, project: project)
+        return settings
+    }
+
+    private func timelapseURL(for job: RecordingJob, in project: RecordingProject) -> URL {
+        project.rootURL.appending(path: "jobs/timelapse-\(job.id.uuidString).json")
+    }
+
+    private func validateTimelapse(_ settings: TimelapseSettings, job: RecordingJob, project: RecordingProject) throws {
+        guard job.kind == .timelapseRender, job.projectID == project.id,
+              settings == settings.validated(),
+              settings.captureInterval == project.manifest.captureRequest?.timelapse?.captureInterval else {
+            throw RecordingJobStoreError.invalidJob
+        }
+    }
+
     func loadExport(for job: RecordingJob, in project: RecordingProject) throws -> ProjectExportRecipe {
         guard job.kind == .export else { throw RecordingJobStoreError.invalidExport }
         let recipe = try JSONDecoder().decode(
@@ -276,7 +302,7 @@ final class RecordingJobStore {
             destination = try loadExport(for: job, in: project).destinationURL
         case .transcription:
             destination = project.rootURL.appending(path: "analysis/transcript.json")
-        case .finalization:
+        case .finalization, .timelapseRender:
             destination = project.rootURL.appending(path: "program.mov")
         }
         guard fileManager.fileExists(atPath: destination.path) else {
@@ -410,6 +436,7 @@ enum RecordingTrackKind: String, Codable, Equatable, Sendable {
     case camera
     case audio
     case program
+    case timelapse
 }
 
 struct RecordingTrackDescriptor: Codable, Equatable, Sendable, Identifiable {
@@ -420,6 +447,9 @@ struct RecordingTrackDescriptor: Codable, Equatable, Sendable, Identifiable {
 }
 
 extension RecordingTrackDescriptor {
+    static let timelapse = RecordingTrackDescriptor(
+        id: "timelapse", kind: .timelapse, displayID: nil, relativePath: "raw-tracks/timelapse.mov"
+    )
     static let program = RecordingTrackDescriptor(
         id: "program",
         kind: .program,
@@ -490,6 +520,8 @@ struct RecordingProjectSnapshot: Identifiable, Equatable, Sendable {
     var programDisplayID: UInt32? = nil
     var frameRate = 30
     var jobHistoryError: String? = nil
+    var timelapse: TimelapseSettings? = nil
+    var screenWasCapturedAsFixedRegion = false
 
     var id: String { identity.stableID }
     var rootURL: URL { identity.packageURL }
@@ -509,6 +541,10 @@ struct RecordingProjectManifest: Codable, Equatable, Sendable {
     let appVersion: String?
     let appBuild: String?
     var tracks: [RecordingTrackDescriptor]?
+
+    var screenWasCapturedAsFixedRegion: Bool {
+        schemaVersion < 5 && captureRequest?.presentation.framing.mode == .fixedRegion
+    }
 
     init(
         schemaVersion: Int,
@@ -586,10 +622,12 @@ enum ProjectJournalEventKind: String, Codable, Equatable, Sendable {
 struct ProjectJournalEventDetail: Codable, Equatable, Sendable {
     let message: String?
     let captureProfile: String?
+    let mediaStartHostTime: TimeInterval?
 
-    init(message: String? = nil, captureProfile: String? = nil) {
+    init(message: String? = nil, captureProfile: String? = nil, mediaStartHostTime: TimeInterval? = nil) {
         self.message = message
         self.captureProfile = captureProfile
+        self.mediaStartHostTime = mediaStartHostTime
     }
 }
 
@@ -656,11 +694,27 @@ struct ProjectJournalEvent: Codable, Equatable, Sendable {
 }
 
 enum ProjectTrackTiming {
+    static func mediaOffset(
+        from referenceTrackID: String, to trackID: String, in events: [ProjectJournalEvent]
+    ) -> TimeInterval? {
+        guard let reference = events.first(where: {
+            $0.kind == .trackStarted && $0.trackID == referenceTrackID
+        })?.detail?.mediaStartHostTime,
+        let start = events.first(where: {
+            $0.kind == .trackStarted && $0.trackID == trackID
+        })?.detail?.mediaStartHostTime,
+        reference.isFinite, start.isFinite else { return nil }
+        return start - reference
+    }
+
     static func offset(
         from referenceTrackID: String,
         to trackID: String,
         in events: [ProjectJournalEvent]
     ) -> TimeInterval {
+        if let mediaOffset = mediaOffset(from: referenceTrackID, to: trackID, in: events) {
+            return mediaOffset
+        }
         let referenceStart = events.first {
             $0.kind == .trackStarted && $0.trackID == referenceTrackID
         }?.timestamp
@@ -792,6 +846,9 @@ final class RecordingProjectStore {
     }
 
     func createProject(request: CaptureRequest) throws -> RecordingProject {
+        if request.timelapse != nil {
+            return try createProject(request: request, tracks: [.timelapse], createsRawTracksDirectory: true)
+        }
         var tracks = request.displaySources.map {
             RecordingTrackDescriptor(
                 id: "screen-\($0.id)",
@@ -844,7 +901,7 @@ final class RecordingProjectStore {
 
         let displays = request.displaySources.map(\.id)
         let manifest = RecordingProjectManifest(
-            schemaVersion: 3,
+            schemaVersion: request.timelapse == nil ? 5 : 4,
             id: projectID,
             createdAt: createdAt,
             stoppedAt: nil,
@@ -882,8 +939,8 @@ final class RecordingProjectStore {
         try append(.init(kind: .trackPrepared, trackID: trackID), to: project)
     }
 
-    func markStarted(trackID: String?, in project: RecordingProject, timestamp: Date = Date()) throws {
-        try append(.init(kind: .trackStarted, trackID: trackID, timestamp: timestamp), to: project)
+    func markStarted(trackID: String?, in project: RecordingProject, timestamp: Date = Date(), mediaStartHostTime: TimeInterval? = nil) throws {
+        try append(.init(kind: .trackStarted, trackID: trackID, detail: mediaStartHostTime.map { .init(mediaStartHostTime: $0) }, timestamp: timestamp), to: project)
     }
 
     func markFinished(trackID: String?, in project: RecordingProject) throws {
@@ -1169,7 +1226,7 @@ final class RecordingProjectStore {
         guard let manifest = try? makeDecoder().decode(RecordingProjectManifest.self, from: data) else {
             return unreadableSnapshot(at: rootURL, createdAt: fallbackDate, diagnostic: "Unreadable manifest.json")
         }
-        guard (1...3).contains(manifest.schemaVersion) else {
+        guard (1...5).contains(manifest.schemaVersion) else {
             return unreadableSnapshot(at: rootURL, createdAt: manifest.createdAt, manifestID: manifest.id, diagnostic: "Unsupported manifest schema \(manifest.schemaVersion)")
         }
 
@@ -1219,7 +1276,9 @@ final class RecordingProjectStore {
                 programDisplayID: manifest.captureRequest?.profile.programDisplayID,
                 frameRate: manifest.captureRequest.map {
                     CaptureDefaults.supportedFrameRates.contains($0.profile.frameRate) ? $0.profile.frameRate : 30
-                } ?? 30
+                } ?? 30,
+                timelapse: manifest.captureRequest?.timelapse,
+                screenWasCapturedAsFixedRegion: manifest.screenWasCapturedAsFixedRegion
             )
         }
     }

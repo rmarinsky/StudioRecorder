@@ -599,7 +599,7 @@ final class CapturePresentationTests: XCTestCase {
         )
     }
 
-    func testFixedRegionStreamUsesTheCanvasOutputWhileFullDisplayPreservesNativePixels() {
+    func testEveryLiveLayoutPreservesFullDisplayPixelsForLaterFramingChanges() {
         var presentation = CapturePresentationSnapshot.default
         presentation.canvas = CaptureCanvasSnapshot(preset: .verticalHD)
         presentation.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.75)
@@ -609,8 +609,8 @@ final class CapturePresentationTests: XCTestCase {
             pointPixelScale: 2,
             presentation: presentation
         )
-        XCTAssertEqual(fixed.outputSize, CGSize(width: 1_080, height: 1_920))
-        XCTAssertFalse(fixed.sourceRect.isEmpty)
+        XCTAssertEqual(fixed.outputSize, CGSize(width: 3_840, height: 2_160))
+        XCTAssertTrue(fixed.sourceRect.isEmpty)
 
         presentation.framing.mode = .fullDisplay
         let full = CaptureGeometryPlanner.streamGeometry(

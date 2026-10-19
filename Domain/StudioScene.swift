@@ -251,6 +251,7 @@ struct StudioProfileConfiguration: Codable, Equatable, Sendable {
     var socialGuide: StudioSocialGuide
     var cameraSyncOffsets: [String: TimeInterval]?
     var displayIDs: Set<UInt32>?
+    var timelapse: TimelapseSettings?
 
     static let desktop = StudioProfileConfiguration(
         frameRate: 30,
@@ -279,7 +280,8 @@ struct StudioProfileConfiguration: Codable, Equatable, Sendable {
         cameraOrientation: StudioCameraOrientation,
         socialGuide: StudioSocialGuide,
         cameraSyncOffsets: [String: TimeInterval] = [:],
-        displayIDs: Set<UInt32>? = nil
+        displayIDs: Set<UInt32>? = nil,
+        timelapse: TimelapseSettings? = nil
     ) {
         self.frameRate = frameRate
         self.codecPolicy = codecPolicy
@@ -293,6 +295,7 @@ struct StudioProfileConfiguration: Codable, Equatable, Sendable {
         self.socialGuide = socialGuide
         self.cameraSyncOffsets = cameraSyncOffsets
         self.displayIDs = displayIDs
+        self.timelapse = timelapse
     }
 
     init(
@@ -312,7 +315,8 @@ struct StudioProfileConfiguration: Codable, Equatable, Sendable {
             cameraOrientation: cameraOrientation,
             socialGuide: socialGuide,
             cameraSyncOffsets: draft.cameraSyncOffsets,
-            displayIDs: draft.defaultDisplayIDs
+            displayIDs: draft.defaultDisplayIDs,
+            timelapse: draft.timelapse
         )
     }
 
@@ -320,6 +324,7 @@ struct StudioProfileConfiguration: Codable, Equatable, Sendable {
         var value = self
         if ![24, 25, 30, 48, 50, 60].contains(value.frameRate) { value.frameRate = 30 }
         value.cameraSyncOffsets = value.cameraSyncOffsets?.mapValues { min(max($0, -0.5), 0.5) }
+        value.timelapse = value.timelapse?.validated()
         return value
     }
 }
@@ -335,6 +340,7 @@ extension StudioDraft {
         frameRate = CaptureDefaults.frameRate(configuration.frameRate, for: presentation.canvas)
         codecPolicy = configuration.codecPolicy
         retentionPolicy = configuration.retentionPolicy
+        timelapse = configuration.timelapse
         includeCursor = configuration.includeCursor
         excludeStudioRecorder = configuration.excludeStudioRecorder
         excludeStudioRecorderAudio = configuration.excludeStudioRecorderAudio
@@ -1267,14 +1273,10 @@ struct StudioSceneLiveContract: Equatable, Sendable {
     ) -> StudioSceneLiveIncompatibility? {
         let initial = initialPresentation.validated()
         let candidate = candidate.validated()
-        guard candidate.canvas == initial.canvas else { return .canvasChanged }
+        guard candidate.canvas.pixelSize == initial.canvas.pixelSize else { return .canvasChanged }
         if candidate.camera.isVisible, !capturesCamera { return .cameraUnavailable }
         if candidate.framing.mode == .followCursor, !recordsCursorTelemetry {
             return .cursorTelemetryUnavailable
-        }
-        if initial.framing.mode == .fixedRegion,
-           candidate.framing != initial.framing {
-            return .captureRegionChanged
         }
         return nil
     }

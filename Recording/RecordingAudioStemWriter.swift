@@ -13,6 +13,7 @@ struct RecordingAudioStemWriterConfiguration: Sendable {
 }
 
 struct RecordingAudioStemWriterResult: Sendable {
+    let sourceStartTime: CMTime
     let outputURL: URL
     let sampleCounts: [RecordingAudioStemSource: Int]
     let persistentTrackIDs: [RecordingAudioStemSource: CMPersistentTrackID]
@@ -70,6 +71,7 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
     private let expectedSources: Set<RecordingAudioStemSource>
     private let sourceOrder: [RecordingAudioStemSource]
     private let outputURL: URL
+    private let onTimelineStarted: @Sendable (CMTime) -> Void
     private var pendingBeforeAnchor: [RecordingAudioStemSource: [CMSampleBuffer]] = [:]
     private var startedAt: CMTime?
     private var lastTimes: [RecordingAudioStemSource: CMTime] = [:]
@@ -79,8 +81,10 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
 
     init(
         configuration: RecordingAudioStemWriterConfiguration,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        onTimelineStarted: @escaping @Sendable (CMTime) -> Void = { _ in }
     ) throws {
+        self.onTimelineStarted = onTimelineStarted
         outputURL = configuration.outputURL
         try? fileManager.removeItem(at: outputURL)
         writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
@@ -117,7 +121,7 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
 
     @discardableResult
     func establishTimeline(at screenPresentationTime: CMTime) throws -> Bool {
-        try lock.withLock {
+        let didStart = try lock.withLock {
             guard failure == nil else { throw failure! }
             guard !isFinished else { return false }
             guard startedAt == nil else { return false }
@@ -141,6 +145,8 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
             }
             return true
         }
+        if didStart { onTimelineStarted(screenPresentationTime) }
+        return didStart
     }
 
     func append(_ sampleBuffer: CMSampleBuffer, source: RecordingAudioStemSource) throws {
@@ -231,6 +237,7 @@ final class RecordingAudioStemWriter: @unchecked Sendable {
             throw RecordingAudioStemWriterError.unreadableMovie
         }
         return RecordingAudioStemWriterResult(
+            sourceStartTime: lock.withLock { startedAt! },
             outputURL: outputURL,
             sampleCounts: counts,
             persistentTrackIDs: persistentTrackIDs

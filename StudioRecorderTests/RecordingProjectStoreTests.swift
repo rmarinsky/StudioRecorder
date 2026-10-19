@@ -1,11 +1,185 @@
 import AVFoundation
 import CoreVideo
+import ScreenCaptureKit
+import Sparkle
 import Foundation
 import XCTest
 @testable import StudioRecorder
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testRetiredRecordingOutputFailureDoesNotInterruptCurrentSession() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = RecordingCoordinator(
+            projectStore: RecordingProjectStore(baseDirectory: root), isReadyForTesting: true
+        )
+        let configuration = SCRecordingOutputConfiguration()
+        configuration.outputURL = root.appending(path: "retired.mov")
+        let retiredOutput = SCRecordingOutput(configuration: configuration, delegate: coordinator)
+        coordinator.recordingOutput(retiredOutput, didFailWithError: NSError(domain: "retired", code: 1))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(coordinator.state, .ready)
+        XCTAssertNil(coordinator.finalizationWarning)
+    }
+
+    func testTimelapseRetainsSelectedFramesAndRendersANewPaceThroughTheDurableJobQueue() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingProjectStore(baseDirectory: root)
+        let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings())
+        let project = try store.createProject(request: request)
+        XCTAssertEqual(project.manifest.tracks?.map(\.kind), [.timelapse])
+        let sourceURL = try XCTUnwrap(store.rawTrackURL(for: "timelapse", in: project))
+        let writer = try TimelapseSourceWriter(outputURL: sourceURL, canvasSize: CGSize(width: 64, height: 64))
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
+        try await writer.append(frame)
+        try await writer.append(frame)
+        _ = try await writer.finish()
+        try store.markStarted(trackID: "timelapse", in: project)
+        try store.markFinished(trackID: "timelapse", in: project)
+        let immutableSource = try Data(contentsOf: sourceURL)
+        try await RecordingRetentionFinalizer().finalize(
+            project: project, request: request, projectStore: store, cursorTimeline: nil
+        )
+        let snapshots = await store.discoverProjects()
+        let finalized = try XCTUnwrap(snapshots.first)
+        XCTAssertEqual(finalized.lifecycle, .finalized)
+        XCTAssertEqual(finalized.tracks.map(\.kind), [.timelapse, .program])
+
+        let coordinator = RecordingCoordinator(projectStore: store)
+        await coordinator.refreshProjects()
+        try await coordinator.enqueueTimelapseRender(projectID: project.id, settings: TimelapseSettings(frameDuration: 0.4))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while coordinator.jobs.contains(where: { $0.kind == .timelapseRender && ($0.state == .queued || $0.state == .running) }),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(coordinator.jobs.first(where: { $0.kind == .timelapseRender })?.state, .completed)
+        let renderJob = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .timelapseRender }))
+        let resultURL = try await coordinator.completedJobResult(for: renderJob.id)
+        XCTAssertEqual(resultURL.resolvingSymlinksInPath(), project.rootURL.appending(path: "program.mov").resolvingSymlinksInPath())
+        let movie = AVURLAsset(url: project.rootURL.appending(path: "program.mov"))
+        let duration = try await movie.load(.duration).seconds
+        XCTAssertEqual(duration, 0.8, accuracy: 0.02)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), immutableSource)
+        XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.settings.frameDuration, 0.4)
+    }
+
+    func testRawScreenGeometryDistinguishesNewProjectsFromLegacyCrops() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var presentation = CapturePresentationSnapshot.default
+        presentation.framing.mode = .fixedRegion
+        let store = RecordingProjectStore(baseDirectory: root)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: root, presentation: presentation))
+        XCTAssertFalse(project.manifest.screenWasCapturedAsFixedRegion)
+        let current = await store.discoverProjects()
+        XCTAssertEqual(current.first?.screenWasCapturedAsFixedRegion, false)
+        let manifestURL = project.rootURL.appending(path: "manifest.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        legacy["schemaVersion"] = 3
+        try JSONSerialization.data(withJSONObject: legacy).write(to: manifestURL)
+        let reopened = try store.openProject(at: project.rootURL, expectedID: project.id)
+        XCTAssertTrue(reopened.manifest.screenWasCapturedAsFixedRegion)
+        let old = await store.discoverProjects()
+        XCTAssertEqual(old.first?.screenWasCapturedAsFixedRegion, true)
+    }
+
+    func testLiveLayoutChangesThroughModelKeepOutputDimensionsAndPersistTheScene() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var initial = CapturePresentationSnapshot.default
+        initial.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+        initial.framing = ScreenFramingSnapshot(mode: .fixedRegion, scale: 0.5)
+        initial.camera.isVisible = false
+        let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: initial)
+        let store = RecordingProjectStore(baseDirectory: root)
+        let coordinator = RecordingCoordinator(
+            projectStore: store, isReadyForTesting: true, availableStorageCapacity: { _ in 20_000_000_000 }
+        )
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
+        await coordinator.startRecording(request, timelapseFrameProvider: { _ in frame })
+        XCTAssertEqual(coordinator.state, .recording)
+        let project = try XCTUnwrap(coordinator.activeProject)
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .recording
+        snapshot.activeCaptureRequest = request
+        snapshot.studioDraft = PreferencesStore().makeStudioDraft(displays: [], microphones: [])
+        snapshot.studioDraft?.presentation = initial
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: snapshot)
+        var changed = initial
+        changed.framing.mode = .fullDisplay
+        changed.screen.width = 0.7
+        let result = model.send(.setDraftPresentation(changed))
+        XCTAssertNotEqual(result, .ignored)
+        XCTAssertEqual(model.snapshot.studioDraft?.presentation.canvas.pixelSize, CGSize(width: 320, height: 320))
+        XCTAssertEqual(store.studioSceneTimeline(in: project)?.transitions.last?.presentation, changed.validated())
+        var resized = changed
+        resized.canvas = CaptureCanvasSnapshot(width: 640, height: 320)
+        XCTAssertEqual(model.send(.setDraftPresentation(resized)), .ignored)
+        XCTAssertEqual(coordinator.state, .recording)
+        await coordinator.stopRecording()
+    }
+
+    func testTimelapseCoordinatorCapturesAndFinalizesASilentSelectedFrameProject() async throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+        let settings = TimelapseSettings(captureInterval: 1, frameDuration: 0.2)
+        let request = archiveCaptureRequest(destination: root, timelapse: settings, presentation: presentation)
+        let store = RecordingProjectStore(baseDirectory: root)
+        let coordinator = RecordingCoordinator(
+            projectStore: store, isReadyForTesting: true, availableStorageCapacity: { _ in 20_000_000_000 }
+        )
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &pixelBuffer),
+            kCVReturnSuccess
+        )
+        let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(pixelBuffer))
+        var capturedContexts: [TimelapseCaptureContext] = []
+
+        await coordinator.startRecording(request, timelapseFrameProvider: { context in
+            capturedContexts.append(context)
+            return frame
+        })
+
+        XCTAssertEqual(coordinator.state, .recording)
+        XCTAssertEqual(coordinator.timelapseFrameCount, 1)
+        XCTAssertEqual(capturedContexts.first?.displayID, 9)
+        let activeRequest = try XCTUnwrap(coordinator.activeCaptureRequest)
+        XCTAssertFalse(activeRequest.audio.capturesMicrophone)
+        XCTAssertFalse(activeRequest.audio.capturesSystemAudio)
+        await coordinator.stopRecording()
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        while coordinator.jobs.first(where: { $0.kind == .finalization })?.state != .completed,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .finalization }))
+        XCTAssertEqual(job.state, .completed)
+        let projects = await store.discoverProjects()
+        let project = try XCTUnwrap(projects.first)
+        XCTAssertEqual(project.lifecycle, .finalized)
+        XCTAssertEqual(Set(project.tracks.map(\.kind)), [.timelapse, .program])
+        XCTAssertEqual(try TimelapseRenderDocument.load(in: project.rootURL)?.report.sourceFrameCount, 1)
+        let programTrack = try XCTUnwrap(project.tracks.first(where: { $0.kind == .program }))
+        let programURL = project.rootURL.appending(path: programTrack.relativePath)
+        let program = AVURLAsset(url: programURL)
+        let audioTracks = try await program.loadTracks(withMediaType: .audio)
+        XCTAssertTrue(audioTracks.isEmpty)
+    }
+
     private struct StubTranscriber: ProjectTranscribing {
         func transcribe(
             _ recipe: ProjectTranscriptionRecipe,
@@ -41,9 +215,21 @@ final class RecordingProjectStoreTests: XCTestCase {
         }
     }
 
+    private actor CancellationCleanup {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var finished = false
+        func wait() async {
+            if finished { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func finish() { finished = true; continuation?.resume(); continuation = nil }
+    }
+
     private struct WaitingTranscriber: ProjectTranscribing {
         let started: XCTestExpectation
         let stopped: XCTestExpectation
+        var cleanupStarted: XCTestExpectation? = nil
+        var cleanup: CancellationCleanup? = nil
 
         func transcribe(
             _ recipe: ProjectTranscriptionRecipe,
@@ -53,6 +239,8 @@ final class RecordingProjectStoreTests: XCTestCase {
             do {
                 try await Task.sleep(for: .seconds(30))
             } catch is CancellationError {
+                cleanupStarted?.fulfill()
+                await cleanup?.wait()
                 stopped.fulfill()
                 throw CancellationError()
             }
@@ -77,15 +265,32 @@ final class RecordingProjectStoreTests: XCTestCase {
         )
         let started = expectation(description: "transcription started")
         let stopped = expectation(description: "transcription stopped")
+        let cleanupStarted = expectation(description: "transcription cleanup started")
+        let cleanup = CancellationCleanup()
         let coordinator = RecordingCoordinator(
-            projectStore: store, transcriber: WaitingTranscriber(started: started, stopped: stopped)
+            projectStore: store, transcriber: WaitingTranscriber(
+                started: started, stopped: stopped, cleanupStarted: cleanupStarted, cleanup: cleanup
+            )
         )
         await coordinator.refreshProjects()
         try await coordinator.enqueueTranscription(recipe)
         await fulfillment(of: [started], timeout: 10)
 
         let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
-        try await coordinator.cancelJob(job.id)
+        let cancelling = Task { try await coordinator.cancelJob(job.id) }
+        await fulfillment(of: [cleanupStarted], timeout: 10)
+        var idleSnapshot = StudioRecorderSnapshot()
+        idleSnapshot.captureState = .ready
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: idleSnapshot)
+        let updates = AppUpdateController(model: model, bundle: Bundle(for: Self.self))
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { _ in },
+                      "Update installation must wait for cancelled work to finish cleanup")
+        await cleanup.finish()
+        try await cancelling.value
         await fulfillment(of: [stopped], timeout: 10)
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .cancelled)
         XCTAssertEqual(try RecordingJobStore().load(in: project).first(where: { $0.id == job.id })?.state, .cancelled)
@@ -163,10 +368,18 @@ final class RecordingProjectStoreTests: XCTestCase {
         await fulfillment(of: [started], timeout: 15)
         let job = try XCTUnwrap(coordinator.jobs.first(where: { $0.kind == .transcription }))
 
-        try await coordinator.cancelJob(job.id)
+        let cancelling = Task { try await coordinator.cancelJob(job.id) }
         await fulfillment(of: [cancellationStarted], timeout: 15)
-        try await coordinator.retryJob(job.id)
+        let retryEntered = expectation(description: "retry requested")
+        let retrying = Task {
+            retryEntered.fulfill()
+            try await coordinator.retryJob(job.id)
+        }
+        await fulfillment(of: [retryEntered], timeout: 10)
+        XCTAssertEqual(try RecordingJobStore().load(in: project).first?.attempt, 1)
         await transcriber.finishCancellation()
+        try await cancelling.value
+        try await retrying.value
         await fulfillment(of: [retryStarted], timeout: 15)
 
         XCTAssertEqual(coordinator.jobs.first(where: { $0.id == job.id })?.state, .running)
@@ -700,6 +913,20 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(recovered.recoveryReport.tracks.single?.state, .partialReadable)
     }
 
+    func testRecordingClockOffsetsSurviveJournalPersistenceWithoutWallClockRounding() throws {
+        let root = temporaryRootURL()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingProjectStore(baseDirectory: root)
+        let project = try store.createProject(request: archiveCaptureRequest(destination: root))
+        let screen = try XCTUnwrap(project.trackID(for: 9))
+        let audio = try XCTUnwrap(project.trackID(for: .audio))
+        let wallTime = Date(timeIntervalSince1970: 1_000)
+        try store.markStarted(trackID: screen, in: project, timestamp: wallTime, mediaStartHostTime: 12.75)
+        try store.markStarted(trackID: audio, in: project, timestamp: wallTime, mediaStartHostTime: 10)
+        let events = store.journalEvents(for: project)
+        XCTAssertEqual(ProjectTrackTiming.offset(from: screen, to: audio, in: events), -2.75, accuracy: 0.0001)
+    }
+
     func testProjectTrackTimingUsesRecordedTrackStartEvents() {
         let screenStart = Date(timeIntervalSince1970: 1_000)
         let cameraStart = Date(timeIntervalSince1970: 1_002.25)
@@ -884,7 +1111,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         let snapshots = await store.discoverProjects()
         let manifest = try decodeManifest(at: project.rootURL)
 
-        XCTAssertEqual(manifest.schemaVersion, 3)
+        XCTAssertEqual(manifest.schemaVersion, 5)
         XCTAssertNotNil(manifest.captureRequest)
         XCTAssertEqual(manifest.captureRequest?.capturesMicrophone, false)
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), ["raw-tracks/screen-1.mov"])
@@ -962,7 +1189,7 @@ final class RecordingProjectStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureRequest?.audio.capturesSystemAudio, false)
         XCTAssertEqual(manifest.captureRequest?.audio.excludesStudioRecorderAudio, false)
         XCTAssertEqual(manifest.captureRequest?.storage.destinationBookmarkID, "bookmark-9")
-        XCTAssertEqual(manifest.schemaVersion, 3)
+        XCTAssertEqual(manifest.schemaVersion, 5)
         XCTAssertEqual(manifest.tracks?.map(\.kind), [.screen, .camera, .audio])
         XCTAssertEqual(manifest.tracks?.map(\.relativePath), [
             "raw-tracks/screen-9.mov",
@@ -1359,7 +1586,11 @@ final class RecordingProjectStoreTests: XCTestCase {
         return packageURL
     }
 
-    private func archiveCaptureRequest(destination: URL) -> CaptureRequest {
+    private func archiveCaptureRequest(
+        destination: URL,
+        timelapse: TimelapseSettings? = nil,
+        presentation: CapturePresentationSnapshot = .default
+    ) -> CaptureRequest {
         CaptureRequest(
             id: UUID(),
             createdAt: Date(timeIntervalSinceReferenceDate: 42),
@@ -1373,8 +1604,8 @@ final class RecordingProjectStoreTests: XCTestCase {
                 ),
             ],
             audio: AudioCaptureSnapshot(
-                capturesSystemAudio: true,
-                capturesMicrophone: true,
+                capturesSystemAudio: timelapse == nil,
+                capturesMicrophone: timelapse == nil,
                 microphone: MicrophoneSourceSnapshot(id: "mic", name: "Microphone"),
                 primaryAudioDisplayID: 9,
                 excludesStudioRecorderAudio: true
@@ -1387,13 +1618,14 @@ final class RecordingProjectStoreTests: XCTestCase {
                 programResolutionTarget: "1920x1080",
                 cursorRendering: .composited
             ),
-            presentation: .default,
+            presentation: presentation,
             storage: StorageCaptureSnapshot(
                 destinationURL: destination,
                 destinationBookmarkID: "test-destination",
                 fallbackPath: destination.path,
                 retentionPolicy: .programOnly
-            )
+            ),
+            timelapse: timelapse
         )
     }
 

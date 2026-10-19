@@ -5,6 +5,43 @@ import XCTest
 final class LiveSourceRecoveryPolicyTests: XCTestCase {
     private let screen = LiveSourceID.screen(displayID: 7)
 
+    func testUnavailableRecoveryTargetsDoNotLeaveRecordingRecoveryInFlight() async throws {
+        for source in [LiveSourceID.microphone, .systemAudio, .camera] {
+            let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let coordinator = RecordingCoordinator(projectStore: RecordingProjectStore(baseDirectory: root))
+            coordinator.considerSourceRecovery(snapshot(source, .stalled), at: 10)
+            try await Task.sleep(for: .milliseconds(50))
+            guard case .failed(let failedSource, _) = coordinator.sourceRecoveryState else {
+                XCTFail("An unavailable recovery target must complete with a visible failure")
+                continue
+            }
+            XCTAssertEqual(failedSource, source)
+            coordinator.considerSourceRecovery(snapshot(screen, .stalled), at: ProcessInfo.processInfo.systemUptime + 3)
+            try await Task.sleep(for: .milliseconds(50))
+            guard case .failed(let nextSource, _) = coordinator.sourceRecoveryState else {
+                XCTFail("The next display recovery must not be blocked")
+                continue
+            }
+            XCTAssertEqual(nextSource, screen)
+        }
+    }
+
+    func testRecoveredAudioClearsItsOwnFailureWithoutHidingOtherSourceFailures() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = RecordingCoordinator(projectStore: RecordingProjectStore(baseDirectory: root))
+        coordinator.considerSourceRecovery(snapshot(.microphone, .stalled), at: 10)
+        try await Task.sleep(for: .milliseconds(50))
+        coordinator.considerSourceRecovery(snapshot(screen, .recovered), at: 11)
+        guard case .failed(let source, _) = coordinator.sourceRecoveryState else {
+            return XCTFail("An unrelated recovered display must not hide the microphone failure")
+        }
+        XCTAssertEqual(source, .microphone)
+        coordinator.considerSourceRecovery(snapshot(.microphone, .recovered), at: 12)
+        XCTAssertEqual(coordinator.sourceRecoveryState, .idle)
+    }
+
     func testStalledCaptureSourcesRequestTheirOwningIngressRecovery() {
         var policy = LiveSourceRecoveryPolicy()
 

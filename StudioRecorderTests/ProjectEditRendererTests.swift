@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Combine
 import ImageIO
+import Sparkle
 import XCTest
 import SwiftUI
 @testable import StudioRecorder
@@ -86,10 +87,11 @@ final class ProjectEditRendererTests: XCTestCase {
             language: "en", recognitionModel: "fixture", alignmentModel: "fixture",
             words: [.init(text: "Hello", sourceStart: 0.1, sourceEnd: 0.3, timingStatus: .aligned)]
         ), in: root)
+        let updates = AppUpdateController(model: StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot()), bundle: Bundle(for: Self.self))
         let host = NSHostingView(rootView: ProjectDetailView(
             project: project, onClose: {}, queueExport: { _ in }, jobs: [],
             queueTranscription: { _ in XCTFail("A saved transcript must not be queued again") }
-        ))
+        ).environmentObject(updates))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 1000),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
@@ -164,17 +166,22 @@ final class ProjectEditRendererTests: XCTestCase {
         throw XCTSkip("This host does not expose a known SwiftUI button through native accessibility; UI assertions require a desktop accessibility session")
     }
 
-    private func accessibilityLabels(in element: Any) -> [String] {
-        guard let object = element as? NSObject else { return [] }
+    private func accessibilityLabels(in element: Any, visited: Set<ObjectIdentifier> = []) -> [String] {
+        guard let object = element as? NSObject, !visited.contains(ObjectIdentifier(object)) else { return [] }
+        let visited = visited.union([ObjectIdentifier(object)])
         let labels = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].compactMap { name -> String? in
             let selector = NSSelectorFromString(name)
             guard object.responds(to: selector) else { return nil }
             return object.perform(selector)?.takeUnretainedValue() as? String
         }
-        let childrenSelector = NSSelectorFromString("accessibilityChildren")
-        let children = object.responds(to: childrenSelector)
-            ? object.perform(childrenSelector)?.takeUnretainedValue() as? [Any] : nil
-        return labels + (children ?? []).flatMap { accessibilityLabels(in: $0) }
+        for name in ["accessibilityChildrenInNavigationOrder", "accessibilityChildren"] {
+            let selector = NSSelectorFromString(name)
+            if object.responds(to: selector),
+               let children = object.perform(selector)?.takeUnretainedValue() as? [Any], !children.isEmpty {
+                return labels + children.flatMap { accessibilityLabels(in: $0, visited: visited) }
+            }
+        }
+        return labels
     }
 
     func testReorderedSegmentsExportInEditedPictureOrder() async throws {
@@ -595,6 +602,108 @@ final class ProjectEditRendererTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedEditSaveCanBeRetriedBeforeInstallingUpdate() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let parkedURL = rootURL.appendingPathExtension("parked")
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+            try? FileManager.default.removeItem(at: parkedURL)
+        }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "program.caf"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.6))
+        try FileManager.default.moveItem(at: rootURL, to: parkedURL)
+        session.stop()
+        for _ in 0..<40 where session.persistenceFailureMessage == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(session.persistenceFailureMessage)
+        XCTAssertTrue(session.hasPendingPersistence)
+
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let owner = UUID()
+        updates.registerActivity(owner, isBusy: { session.hasPendingPersistence },
+                                 persistenceFailure: { session.persistenceFailureMessage },
+                                 retryPersistence: { session.retryPendingPersistence() })
+        updates.unregisterActivity(owner)
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        let safeToRestart = expectation(description: "Saved edit is recovered")
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            safeToRestart.fulfill()
+        })
+        for _ in 0..<30 where updates.blockedSaveMessage == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(updates.blockedSaveMessage)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        updates.retryBlockedSaves()
+        await fulfillment(of: [safeToRestart], timeout: 3)
+        XCTAssertFalse(session.hasPendingPersistence)
+        XCTAssertNil(session.persistenceFailureMessage)
+        let saved = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+        XCTAssertEqual(saved?.audioAdjustment.gain, 0.6)
+    }
+
+    @MainActor
+    func testPendingAudioEditSaveDelaysUpdateAfterEditorCloses() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sourceURL = rootURL.appending(path: "program.caf")
+        try writeAudioFile(to: sourceURL)
+        let projectID = UUID()
+        let session = ProjectEditSession()
+        await session.load(
+            projectID: projectID, projectRootURL: rootURL,
+            track: .init(id: "program", kind: .program, displayID: nil, relativePath: "program.caf"),
+            sourceURL: sourceURL, programSources: nil, initialPresentation: .default
+        )
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot), bundle: Bundle(for: Self.self)
+        )
+        let owner = UUID()
+        updates.registerActivity(owner) { session.hasPendingPersistence }
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+
+        session.updateAudioAdjustment(ProjectAudioAdjustment(gain: 0.6))
+        XCTAssertTrue(session.hasPendingPersistence)
+        session.stop()
+        updates.unregisterActivity(owner)
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        let safeToRestart = expectation(description: "Edited audio was saved")
+        XCTAssertTrue(updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            safeToRestart.fulfill()
+        })
+        await fulfillment(of: [safeToRestart], timeout: 3)
+        XCTAssertFalse(session.hasPendingPersistence)
+        let saved = try await ProjectEditStore().load(from: rootURL, expectedProjectID: projectID)
+        XCTAssertEqual(saved?.audioAdjustment.gain, 0.6)
+    }
+
+    @MainActor
     func testAudioSliderGestureCreatesOneUndoStep() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -635,6 +744,8 @@ final class ProjectEditRendererTests: XCTestCase {
         await session.undo()
         XCTAssertEqual(session.audioAdjustment.gain, 1, accuracy: 0.001)
         XCTAssertFalse(session.canUndo)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(session.hasPendingPersistence, "A successfully saved undo must release the update gate")
         cancellable.cancel()
         session.stop()
     }
@@ -919,6 +1030,57 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertGreaterThan(firstPeak, 0.1)
         XCTAssertLessThan(secondPeak, 0.001)
         XCTAssertEqual(try Data(contentsOf: sourceURL), rawBytes)
+    }
+
+    func testSavedProgramAlignsAudioThatStartedBeforeScreenRecording() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let screenURL = directory.appending(path: "screen.mov")
+        let audioURL = directory.appending(path: "audio.caf")
+        let outputURL = directory.appending(path: "program.mov")
+        try await writeReadableMovie(to: screenURL)
+        try writeAudioFile(to: audioURL, duration: 3, toneStart: 1.5)
+        let timeline = try ProjectEditTimeline(trackID: "screen", sourceDuration: 2)
+        var presentation = CapturePresentationSnapshot.default
+        presentation.canvas = CaptureCanvasSnapshot(width: 64, height: 64)
+        presentation.camera.isVisible = false
+        try await ProjectProgramRenderer().exportMovie(
+            sources: ProjectProgramSources(
+                screenURL: screenURL, cameraURL: nil, audioURL: audioURL, audioTimeOffset: -1
+            ),
+            timeline: timeline, presentation: presentation, to: outputURL
+        )
+        let asset = AVURLAsset(url: outputURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var onset: Double?
+        while let sample = output.copyNextSampleBuffer() {
+            let block = try XCTUnwrap(sample.dataBuffer)
+            let size = CMBlockBufferGetDataLength(block)
+            var values = [Float](repeating: 0, count: size / MemoryLayout<Float>.size)
+            let status = values.withUnsafeMutableBytes {
+                CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: size, destination: $0.baseAddress!)
+            }
+            XCTAssertEqual(status, noErr)
+            if onset == nil, let index = values.firstIndex(where: { abs($0) > 0.03 }) {
+                let format = try XCTUnwrap(sample.formatDescription)
+                let description = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format))
+                onset = sample.presentationTimeStamp.seconds
+                    + Double(index) / Double(description.pointee.mChannelsPerFrame) / description.pointee.mSampleRate
+            }
+        }
+        XCTAssertEqual(reader.status, .completed)
+        XCTAssertEqual(try XCTUnwrap(onset), 0.5, accuracy: 0.04)
     }
 
     func testProgramPreviewUsesTheSameSelectedSegmentAudioBoundary() async throws {
@@ -2123,14 +2285,14 @@ final class ProjectEditRendererTests: XCTestCase {
         }
     }
 
-    private func writeAudioFile(to url: URL) throws {
+    private func writeAudioFile(to url: URL, duration: Double = 0.1, toneStart: Double = 0) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
-        buffer.frameLength = 4_800
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(duration * 48_000)))
+        buffer.frameLength = buffer.frameCapacity
         let samples = try XCTUnwrap(buffer.floatChannelData?[0])
         for index in 0..<Int(buffer.frameLength) {
-            samples[index] = sin(Float(index) * 0.02) * 0.2
+            samples[index] = Double(index) / 48_000 < toneStart ? 0 : sin(Float(index) * 0.02) * 0.2
         }
         try file.write(from: buffer)
     }

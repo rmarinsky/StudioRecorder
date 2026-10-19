@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class StudioRecorderModelTests: XCTestCase {
+    func testTimelapseModeCanStartWithoutMicrophoneAccessAndPreservesTheVideoDefaults() throws {
+        let store = makePreferencesStore()
+        let displays = [AvailableDisplay(id: 7, title: "Display", pixelSize: CGSize(width: 1920, height: 1080))]
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .ready
+        snapshot.route = .studio
+        snapshot.availableDisplays = displays
+        snapshot.selectedDisplayIDs = [7]
+        snapshot.permissionSnapshot = PermissionSnapshot(screenRecording: .granted, microphone: .denied)
+        snapshot.studioDraft = store.makeStudioDraft(displays: displays, microphones: [])
+        let model = StudioRecorderModel(coordinator: nil, preferencesStore: store, initialSnapshot: snapshot)
+
+        XCTAssertEqual(model.send(.setDraftTimelapse(TimelapseSettings(captureInterval: 5))), .draftChanged)
+        XCTAssertNil(model.snapshot.requiredCapturePermission)
+        XCTAssertEqual(StudioProfileConfiguration(draft: try XCTUnwrap(model.snapshot.studioDraft),
+                                                cameraOrientation: .automatic, socialGuide: .off).timelapse?.captureInterval, 5)
+        guard case .recordingStartRequested(let request) = model.send(.toggleRecording) else {
+            return XCTFail("A silent timelapse must start without microphone permission")
+        }
+        XCTAssertEqual(request.timelapse?.captureInterval, 5)
+        XCTAssertFalse(request.audio.capturesMicrophone)
+        XCTAssertEqual(model.send(.setDraftTimelapse(nil)), .ignored, "The mode is locked while recording")
+        XCTAssertTrue(store.preferences.audio.capturesMicrophone)
+    }
+
     func testCaptureTransitionShowsPreparationOnlyForARequestedRecording() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .preparing
@@ -220,7 +245,10 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(LiveScenePolicy.shouldRun(route: .studio, captureState: .stopping))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .projects, captureState: .recording))
         XCTAssertFalse(LiveScenePolicy.shouldRun(route: .settings, captureState: .recording))
-        XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording))
+        XCTAssertFalse(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .recording),
+                       "Live scene changes must preserve the session writing the camera movie")
+        XCTAssertFalse(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .paused))
+        XCTAssertTrue(LiveScenePolicy.shouldRunDraftCamera(route: .studio, captureState: .ready))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .recording))
         XCTAssertTrue(LiveScenePolicy.shouldPreserveCameraSession(captureState: .paused))
         XCTAssertFalse(LiveScenePolicy.shouldPreserveCameraSession(captureState: .ready))
