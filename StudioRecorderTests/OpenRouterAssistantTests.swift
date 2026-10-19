@@ -2,6 +2,31 @@ import XCTest
 @testable import StudioRecorder
 
 final class OpenRouterAssistantTests: XCTestCase {
+    private actor SummaryProbe {
+        var requests: [String] = []
+        func complete(_ text: String) -> String {
+            requests.append(text)
+            return "Короткий опис запису."
+        }
+    }
+
+    func testExportSummaryCoversTheWholeTranscriptWithBoundedRequests() async throws {
+        let text = "Початок. " + String(repeating: "Основний зміст відео. ", count: 300) + "Завершення."
+        let probe = SummaryProbe()
+        let description = try await ProjectExportSummary.summarize(text, chunkSize: 1_000) { chunk in
+            await probe.complete(chunk)
+        }
+        let requests = await probe.requests
+        XCTAssertGreaterThan(requests.count, 1)
+        XCTAssertTrue(requests.allSatisfy { $0.count <= 1_000 })
+        XCTAssertTrue(requests.joined().contains(text), "The last part must be included, not silently truncated")
+        XCTAssertEqual(description, "Короткий опис запису.")
+        do {
+            _ = try await ProjectExportSummary.summarize("Відео.") { _ in "   " }
+            XCTFail("An empty model reply must not become the video description")
+        } catch {}
+    }
+
     func testOllamaCatalogListsOnlyLocallyInstalledModelNames() throws {
         let payload = Data("""
         {"models":[{"name":"gemma3:4b","model":"gemma3:4b"},{"name":"qwen2.5:7b","model":"qwen2.5:7b"}]}

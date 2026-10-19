@@ -278,6 +278,30 @@ final class ProjectEditTimelineTests: XCTestCase {
         XCTAssertEqual(transcript.words(in: timeline).map(\.text), ["first", "second", "third"])
     }
 
+    func testExportSubtitlesFollowTheFinalEditAndExcludeCutWords() throws {
+        let transcript = TimedTranscript(
+            projectID: UUID(), sourceTrackID: "program", sourceDuration: 7,
+            language: "uk", recognitionModel: "fixture", alignmentModel: "fixture",
+            words: [
+                .init(text: "Привіт!", sourceStart: 0.2, sourceEnd: 1, timingStatus: .aligned),
+                .init(text: "Видалено.", sourceStart: 2.2, sourceEnd: 2.8, timingStatus: .aligned),
+                .init(text: "Обрізане", sourceStart: 2.9, sourceEnd: 3.2, timingStatus: .aligned),
+                .init(text: "Друга\nфраза.", sourceStart: 4, sourceEnd: 4.8, timingStatus: .aligned),
+            ]
+        )
+        var timeline = try ProjectEditTimeline(trackID: "program", sourceDuration: 7)
+        try timeline.delete(range: 2..<3)
+        try timeline.move(segmentID: timeline.segments[0].id, toIndex: 1)
+        let metadata = ProjectExportMetadata(
+            title: "Відео", createdAt: Date(timeIntervalSince1970: 0),
+            transcript: transcript, timeline: timeline
+        )
+        XCTAssertEqual(metadata.subtitleSRT, "1\n00:00:01,000 --> 00:00:01,800\nДруга фраза.\n\n2\n00:00:04,200 --> 00:00:05,000\nПривіт!\n\n")
+        XCTAssertEqual(metadata.transcriptText, "Друга фраза. Привіт!")
+        XCTAssertEqual(metadata.author, "Роман Марінський")
+        XCTAssertEqual(metadata.language, "uk")
+    }
+
     func testTranscriptGroupsEditedWordsIntoSelectablePhrases() throws {
         let transcript = TimedTranscript(
             projectID: UUID(), sourceTrackID: "program", sourceDuration: 7,

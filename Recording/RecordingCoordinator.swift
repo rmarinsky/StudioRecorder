@@ -225,7 +225,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     private var activeFinalizationTask: Task<Void, Never>?
     private var activeExportTask: Task<Void, Never>?
     private var activeTranscriptionTask: Task<Void, Never>?
-    private var didCheckAbandonedTranscriptionModels = false
+    private static var didCheckAbandonedTranscriptionModels = false
     private var blockedFinalizationJobIDs: Set<UUID> = []
     private var captures: [UInt32: Capture] = [:]
     private var cameraRecorder: CameraTrackRecorder?
@@ -334,9 +334,9 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     }
 
     func refreshProjects() async {
-        if !didCheckAbandonedTranscriptionModels {
-            didCheckAbandonedTranscriptionModels = true
-            Task.detached(priority: .background) {
+        if !Self.didCheckAbandonedTranscriptionModels {
+            Self.didCheckAbandonedTranscriptionModels = true
+            DispatchQueue.global(qos: .background).async {
                 WhisperTaskWorkspace.removeAbandonedWorkspaces()
             }
         }
@@ -1068,6 +1068,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     audioAdjustment: recipe.audioAdjustment,
                     sourceAudioAdjustments: recipe.sourceAudioAdjustments,
                     segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    metadata: recipe.metadata,
                     to: recipe.destinationURL,
                     progress: { [weak self, project] fraction in
                         self?.updateJobProgress(
@@ -1082,6 +1083,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     timeline: recipe.timeline,
                     audioAdjustment: recipe.audioAdjustment,
                     segmentAudioAdjustments: recipe.segmentAudioAdjustments,
+                    metadata: recipe.metadata,
                     to: recipe.destinationURL
                 )
             }
