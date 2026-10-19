@@ -127,10 +127,19 @@ final class ProjectEditRendererTests: XCTestCase {
             words: [.init(text: "Привіт!", sourceStart: 0.2, sourceEnd: 0.8, timingStatus: .aligned)]
         )
         let metadata = ProjectExportMetadata(title: "Відео", createdAt: Date(), transcript: transcript, timeline: timeline)
-        let host = NSHostingView(rootView: ProjectExportOptionsView(
+        let updates = AppUpdateController(
+            model: StudioRecorderModel(coordinator: nil, initialSnapshot: StudioRecorderSnapshot()),
+            bundle: Bundle(for: Self.self)
+        )
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        updates.updater(sparkle, willInstallUpdate: .empty())
+        XCTAssertFalse(updates.postponeTerminationIfNeeded { _ in XCTFail("No draft is open yet") })
+        let host = NSHostingView(rootView: AnyView(ProjectExportOptionsView(
             metadata: metadata, projectID: transcript.projectID, assistantProvider: .openRouter,
             assistantModel: "fixture", onCancel: {}, onExport: { _ in }
-        ))
+        ).environmentObject(updates)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 550, height: 650),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
@@ -148,6 +157,14 @@ final class ProjectEditRendererTests: XCTestCase {
         XCTAssertTrue(labels.contains("Sends only the edited transcript to OpenRouter and the selected model provider when you click Generate."))
         XCTAssertTrue(labels.contains("Export"))
         XCTAssertTrue(labels.contains("Cancel"))
+        let resumed = expectation(description: "Update resumes after the export form closes")
+        let postponed = updates.postponeTerminationIfNeeded { allowed in
+            XCTAssertTrue(allowed)
+            resumed.fulfill()
+        }
+        XCTAssertTrue(postponed, "An open export draft must survive a pending update")
+        host.rootView = AnyView(EmptyView())
+        if postponed { await fulfillment(of: [resumed], timeout: 3) }
     }
 
     private func requireNativeAccessibility() async throws {

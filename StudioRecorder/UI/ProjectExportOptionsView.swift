@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct ProjectExportOptionsView: View {
+    @EnvironmentObject private var updates: AppUpdateController
+    @State private var updateActivityID = UUID()
+    @State private var isPresented = false
     let projectID: UUID
     let assistantProvider: AssistantProvider
     let assistantModel: String
@@ -88,6 +91,14 @@ struct ProjectExportOptionsView: View {
         }
         .padding(20)
         .frame(width: 540)
+        .onAppear {
+            isPresented = true
+            updates.registerActivity(updateActivityID) { isPresented }
+        }
+        .onDisappear {
+            isPresented = false
+            updates.unregisterActivity(updateActivityID)
+        }
         .onChange(of: metadata.title) { _, value in
             metadata.title = String(value.prefix(300))
         }
