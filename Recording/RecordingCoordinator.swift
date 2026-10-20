@@ -1068,7 +1068,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
         activeFinalizationJobID = nil
         activeFinalizationTask = nil
-        await refreshProjects()
+        // Publishing the finished project is foreground feedback, even when rendering ran in the background.
+        await Task(priority: .userInitiated) { await self.refreshProjects() }.value
     }
 
     private func startNextExportJob() {
