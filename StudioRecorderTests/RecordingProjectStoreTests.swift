@@ -8,6 +8,15 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testNextRecordingIsUnavailableUntilStopRefreshFinishes() async {
+        let coordinator = RecordingCoordinator(projectStore: RecordingProjectStore(baseDirectory: temporaryRootURL()))
+        await coordinator.completeSuccessfulStop {
+            XCTAssertEqual(coordinator.state, .stopping,
+                           "Project discovery suspends; another start must not enter during teardown")
+        }
+        XCTAssertEqual(coordinator.state, .ready)
+    }
+
     func testRetiredRecordingOutputFailureDoesNotInterruptCurrentSession() async throws {
         let root = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: root) }

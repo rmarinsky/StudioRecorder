@@ -416,7 +416,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         _ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil,
         timelapseFrameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)? = nil
     ) async {
-        guard state == .ready else { return }
+        guard state == .ready, !isTearingDown else { return }
         let startAttempt = UUID()
         activeStartAttempt = startAttempt
         state = .preparing
@@ -713,10 +713,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try projectStore.markFinished(trackID: "timelapse", in: project)
             if let reason { throw TimelapseError.writerFailed(reason) }
             try jobStore.save(RecordingJob(projectID: project.id, kind: .finalization), in: project)
-            clearCaptureState()
-            state = .ready
-            isTearingDown = false
-            await refreshProjects()
+            await completeSuccessfulStop()
         } catch {
             await completeInterruptedTeardown(reason: reason ?? error.localizedDescription)
         }
@@ -844,11 +841,19 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
 
         updateFinalizationProgress(0.96, "Refreshing Projects…")
+        await completeSuccessfulStop()
+    }
+
+    // Remain unavailable across project discovery's suspension point. Publishing ready
+    // earlier allows a new start to be silently abandoned by the teardown guard.
+    func completeSuccessfulStop(refresh: (() async -> Void)? = nil) async {
+        isTearingDown = true
+        state = .stopping
         clearCaptureState()
-        state = .ready
-        await refreshProjects()
+        if let refresh { await refresh() } else { await refreshProjects() }
         isTearingDown = false
         finalizationProgress = nil
+        state = .ready
     }
 
     var hasActiveBackgroundWork: Bool {
