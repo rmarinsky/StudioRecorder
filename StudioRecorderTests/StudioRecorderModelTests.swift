@@ -41,6 +41,22 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(snapshot.captureTransitionPresentation?.detail.contains("start another recording") == true)
     }
 
+    func testTransitionClockStartsOnCommandAndSavingDoesNotInventPercentage() {
+        var snapshot = StudioRecorderSnapshot()
+        let start = Date(timeIntervalSince1970: 100)
+        snapshot.beginCaptureCommand(.start, at: start)
+        snapshot.applyCaptureState(.preparing)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.startedAt, start)
+        snapshot.applyCaptureState(.recording)
+        XCTAssertNil(snapshot.captureTransitionPresentation)
+        let stop = start.addingTimeInterval(60)
+        snapshot.beginCaptureCommand(.stop, at: stop)
+        snapshot.applyCaptureState(.stopping)
+        snapshot.finalizationProgress = RecordingFinalizationProgress(fraction: 0.22, phase: "Closing files")
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.startedAt, stop)
+        XCTAssertNil(snapshot.captureTransitionPresentation?.progress, "Milestones cannot predict remaining time")
+    }
+
     func testCaptureTransitionShowsPreparationOnlyForARequestedRecording() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .preparing
@@ -55,7 +71,8 @@ final class StudioRecorderModelTests: XCTestCase {
                 kind: .preparing,
                 title: "Preparing recording",
                 detail: "Starting camera and screen capture…",
-                progress: nil
+                progress: nil,
+                startedAt: snapshot.captureTransitionStartedAt
             )
         )
     }
@@ -74,7 +91,7 @@ final class StudioRecorderModelTests: XCTestCase {
                 kind: .saving,
                 title: "Saving recording",
                 detail: "Rendering final video…",
-                progress: 0.64
+                progress: nil
             )
         )
     }

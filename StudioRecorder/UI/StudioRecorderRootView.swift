@@ -2970,7 +2970,7 @@ private struct CaptureTransitionOverlay: View {
 
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 16) {
-                    if presentation.kind == .preparing {
+                    if presentation.kind == .preparing || presentation.kind == .saving {
                         ProgressView()
                             .controlSize(.large)
                     } else {
@@ -2988,18 +2988,23 @@ private struct CaptureTransitionOverlay: View {
                     }
                 }
 
-                if let progress = presentation.progress {
-                    VStack(spacing: 7) {
-                        ProgressView(value: progress)
-                            .progressViewStyle(.linear)
-                        HStack {
-                            Text("Keep Studio Recorder open")
-                            Spacer()
-                            Text("\(Int((progress * 100).rounded()))%")
+                if let startedAt = presentation.startedAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(alignment: .leading, spacing: 6) {
+                            let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
+                            Text("\(presentation.kind == .saved ? "Since Stop" : "Elapsed") \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))")
                                 .monospacedDigit()
+                            if presentation.kind == .preparing || presentation.kind == .saving {
+                                Text(presentation.kind == .preparing ? "Recording has not started yet." : "Keep Studio Recorder open until the files are saved.")
+                                Text("Remaining time is not yet available.")
+                                    .foregroundStyle(.secondary)
+                                if elapsed >= 15 {
+                                    Text("This is taking longer than usual. \(presentation.detail)")
+                                        .foregroundStyle(.orange)
+                                }
+                            }
                         }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                        .font(.callout)
                     }
                 }
                 if presentation.projectID != nil {
@@ -3024,7 +3029,7 @@ private struct CaptureTransitionOverlay: View {
             .shadow(color: .black.opacity(0.28), radius: 30, y: 16)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(presentation.title). \(presentation.detail)")
-            .accessibilityValue(presentation.progress.map { "\(Int(($0 * 100).rounded())) percent" } ?? "In progress")
+            .accessibilityValue(presentation.isReadyToEdit ? "Ready" : presentation.detail)
         }
     }
 }

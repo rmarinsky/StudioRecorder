@@ -261,6 +261,7 @@ struct CaptureTransitionPresentation: Equatable {
     let progress: Double?
     var projectID: String? = nil
     var isReadyToEdit = false
+    var startedAt: Date? = nil
 }
 
 struct StudioRecorderSnapshot: Equatable {
@@ -286,6 +287,7 @@ struct StudioRecorderSnapshot: Equatable {
     var finalizationProgress: RecordingFinalizationProgress?
     var sourceHealth = LiveSourceHealthSnapshot.empty
     var sourceRecoveryState = LiveSourceRecoveryState.idle
+    var captureTransitionStartedAt: Date?
     var completedRecordingID: UUID?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
@@ -316,8 +318,9 @@ struct StudioRecorderSnapshot: Equatable {
         ) ?? [.noDisplaySelected]
     }
 
-    mutating func beginCaptureCommand(_ command: PendingCaptureCommand) {
+    mutating func beginCaptureCommand(_ command: PendingCaptureCommand, at date: Date = .now) {
         pendingCaptureCommand = command
+        if command == .start || command == .stop { captureTransitionStartedAt = date }
     }
 
     mutating func applyCaptureState(_ state: RecordingState) {
@@ -340,7 +343,8 @@ struct StudioRecorderSnapshot: Equatable {
                 kind: .preparing,
                 title: "Preparing recording",
                 detail: "Starting camera and screen capture…",
-                progress: nil
+                progress: nil,
+                startedAt: captureTransitionStartedAt
             )
         }
         if pendingCaptureCommand == .stop || captureState == .stopping {
@@ -348,7 +352,8 @@ struct StudioRecorderSnapshot: Equatable {
                 kind: .saving,
                 title: "Saving recording",
                 detail: finalizationProgress?.phase ?? "Stopping capture sources…",
-                progress: finalizationProgress?.fraction ?? 0.02
+                progress: nil,
+                startedAt: captureTransitionStartedAt
             )
         }
         if let completedRecordingID,
@@ -363,7 +368,8 @@ struct StudioRecorderSnapshot: Equatable {
                 detail: problem ?? (ready ? "Your recording is ready to edit." : "\(stage ?? "Preparing for editing")… You can start another recording."),
                 progress: nil,
                 projectID: project.id,
-                isReadyToEdit: ready
+                isReadyToEdit: ready,
+                startedAt: captureTransitionStartedAt
             )
         }
         return nil
@@ -513,6 +519,7 @@ final class StudioRecorderModel: ObservableObject {
 
     func dismissCaptureTransition() {
         snapshot.completedRecordingID = nil
+        snapshot.captureTransitionStartedAt = nil
     }
 
     func launch() async {
