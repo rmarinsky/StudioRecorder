@@ -62,11 +62,19 @@ final class RecordingProjectStoreTests: XCTestCase {
             await firstStart.value
             XCTAssertEqual(coordinator.state, .recording, "Retired callbacks must not tear down the next recording")
             await coordinator.stopRecording()
-            let finishDeadline = ContinuousClock.now.advanced(by: .seconds(15))
-            while coordinator.hasActiveBackgroundWork, ContinuousClock.now < finishDeadline {
-                try await Task.sleep(for: .milliseconds(20))
+            let thirdRequest = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: presentation)
+            await coordinator.startRecording(thirdRequest, timelapseFrameProvider: { _ in frame })
+            XCTAssertEqual(coordinator.state, .recording, "Stop must permit an immediate fresh recording")
+            await coordinator.stopRecording()
+            XCTAssertEqual(coordinator.state, .ready)
+            // Rendering completion has its own system test. Cancel remaining fixture jobs
+            // before removing their files; encoder service latency is not a start deadline.
+            for jobID in coordinator.jobs.map(\.id) {
+                guard let job = coordinator.jobs.first(where: { $0.id == jobID }),
+                      job.state == .queued || job.state == .running else { continue }
+                do { try await coordinator.cancelJob(jobID) }
+                catch RecordingJobStoreError.notCancellable { /* The job completed during cleanup. */ }
             }
-            XCTAssertFalse(coordinator.hasActiveBackgroundWork)
         }
     }
 
@@ -220,7 +228,18 @@ final class RecordingProjectStoreTests: XCTestCase {
         let activeRequest = try XCTUnwrap(coordinator.activeCaptureRequest)
         XCTAssertFalse(activeRequest.audio.capturesMicrophone)
         XCTAssertFalse(activeRequest.audio.capturesSystemAudio)
-        await coordinator.stopRecording()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .recording
+        snapshot.activeCaptureRequest = activeRequest
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: snapshot)
+        XCTAssertEqual(model.send(.toggleRecording), .recordingStopRequested)
+        let stopDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while model.snapshot.completedRecordingID == nil, ContinuousClock.now < stopDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.snapshot.completedRecordingID, request.id)
+        XCTAssertEqual(model.snapshot.captureTransitionPresentation?.kind, .saved)
+        XCTAssertTrue(model.snapshot.captureTransitionPresentation?.canStartAnother == true)
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while coordinator.jobs.first(where: { $0.kind == .finalization })?.state != .completed,

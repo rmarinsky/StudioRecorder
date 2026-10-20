@@ -921,6 +921,8 @@ struct StudioRecorderRootView: View {
     }
 
     private func beginNewRecording() {
+        guard !snapshot.isCaptureCommandInFlight, !isCaptureTransitioning, !isDeliveryActive else { return }
+        model.dismissCaptureTransition()
         newRecordingName = ""
         newRecordingProfileID = sceneLibrary.activeProfileID
         isCreatingRecording = true

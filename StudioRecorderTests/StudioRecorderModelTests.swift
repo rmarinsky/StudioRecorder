@@ -41,6 +41,18 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(snapshot.captureTransitionPresentation?.detail.contains("start another recording") == true)
     }
 
+    func testLateStopResultDoesNotReplaceANewerStartFailure() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.beginCaptureCommand(.stop)
+        let oldTransition = snapshot.captureTransitionID
+        snapshot.applyCaptureState(.ready)
+        snapshot.beginCaptureCommand(.start)
+        snapshot.applyCaptureState(.failed("New camera failure"))
+        snapshot.finishStopCommand(projectID: UUID(), transitionID: oldTransition)
+        XCTAssertNil(snapshot.completedRecordingID)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.detail, "New camera failure")
+    }
+
     func testFailedStartRemainsActionableAndOldCompletionCannotCoverANewRecording() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.beginCaptureCommand(.start)
@@ -685,6 +697,7 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(request.displaySources.map(\.id), [7])
         XCTAssertTrue(request.audio.capturesMicrophone)
         XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
+        XCTAssertEqual(model.send(.newRecording), .ignored)
         XCTAssertEqual(model.send(.toggleRecording), .ignored)
 
         var synchronized = model.snapshot
