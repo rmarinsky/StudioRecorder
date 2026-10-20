@@ -29,6 +29,64 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(store.preferences.audio.capturesMicrophone)
     }
 
+    func testStoppedRecordingOffersNextActionsWhileFinalizationRuns() throws {
+        var snapshot = StudioRecorderSnapshot()
+        var project = interruptedProject()
+        project.lifecycle = .finalizing
+        snapshot.projects = [project]
+        snapshot.captureState = .ready
+        snapshot.completedRecordingID = project.identity.manifestID
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.kind, .saved)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.title, "Recording saved")
+        XCTAssertTrue(snapshot.captureTransitionPresentation?.detail.contains("start another recording") == true)
+    }
+
+    func testLateStopResultDoesNotReplaceANewerStartFailure() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.beginCaptureCommand(.stop)
+        let oldTransition = snapshot.captureTransitionID
+        snapshot.applyCaptureState(.ready)
+        snapshot.beginCaptureCommand(.start)
+        snapshot.applyCaptureState(.failed("New camera failure"))
+        snapshot.finishStopCommand(projectID: UUID(), transitionID: oldTransition)
+        XCTAssertNil(snapshot.completedRecordingID)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.detail, "New camera failure")
+    }
+
+    func testFailedStartRemainsActionableAndOldCompletionCannotCoverANewRecording() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.beginCaptureCommand(.start)
+        snapshot.applyCaptureState(.failed("Camera did not respond"))
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.kind, .failed)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.detail, "Camera did not respond")
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+        model.dismissCaptureTransition()
+        XCTAssertNil(model.snapshot.captureTransitionPresentation)
+
+        var project = interruptedProject()
+        project.lifecycle = .finalizing
+        snapshot.projects = [project]
+        snapshot.completedRecordingID = project.identity.manifestID
+        snapshot.applyCaptureState(.recording)
+        XCTAssertNil(snapshot.captureTransitionPresentation, "An old Stop result cannot cover an active recording")
+    }
+
+    func testTransitionClockStartsOnCommandAndSavingDoesNotInventPercentage() {
+        var snapshot = StudioRecorderSnapshot()
+        let start = Date(timeIntervalSince1970: 100)
+        snapshot.beginCaptureCommand(.start, at: start)
+        snapshot.applyCaptureState(.preparing)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.startedAt, start)
+        snapshot.applyCaptureState(.recording)
+        XCTAssertNil(snapshot.captureTransitionPresentation)
+        let stop = start.addingTimeInterval(60)
+        snapshot.beginCaptureCommand(.stop, at: stop)
+        snapshot.applyCaptureState(.stopping)
+        snapshot.finalizationProgress = RecordingFinalizationProgress(fraction: 0.22, phase: "Closing files")
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.startedAt, stop)
+        XCTAssertNil(snapshot.captureTransitionPresentation?.progress, "Milestones cannot predict remaining time")
+    }
+
     func testCaptureTransitionShowsPreparationOnlyForARequestedRecording() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .preparing
@@ -43,7 +101,8 @@ final class StudioRecorderModelTests: XCTestCase {
                 kind: .preparing,
                 title: "Preparing recording",
                 detail: "Starting camera and screen capture…",
-                progress: nil
+                progress: nil,
+                startedAt: snapshot.captureTransitionStartedAt
             )
         )
     }
@@ -60,9 +119,9 @@ final class StudioRecorderModelTests: XCTestCase {
             snapshot.captureTransitionPresentation,
             CaptureTransitionPresentation(
                 kind: .saving,
-                title: "Saving recording",
+                title: "Finishing recording",
                 detail: "Rendering final video…",
-                progress: 0.64
+                progress: nil
             )
         )
     }
@@ -638,6 +697,7 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertEqual(request.displaySources.map(\.id), [7])
         XCTAssertTrue(request.audio.capturesMicrophone)
         XCTAssertTrue(model.snapshot.isCaptureCommandInFlight)
+        XCTAssertEqual(model.send(.newRecording), .ignored)
         XCTAssertEqual(model.send(.toggleRecording), .ignored)
 
         var synchronized = model.snapshot

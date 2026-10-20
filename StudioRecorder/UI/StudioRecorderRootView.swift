@@ -201,9 +201,30 @@ struct StudioRecorderRootView: View {
         .background(shellContent)
         .background(WindowChromeConfigurator())
         .tint(coral)
+        .disabled(snapshot.captureTransitionPresentation != nil)
+        .accessibilityHidden(snapshot.captureTransitionPresentation != nil)
         .overlay {
             if let transition = snapshot.captureTransitionPresentation {
-                CaptureTransitionOverlay(presentation: transition)
+                CaptureTransitionOverlay(
+                    presentation: transition,
+                    dismiss: { model.dismissCaptureTransition() },
+                    cancelStart: { model.cancelRecordingStart() },
+                    retryStart: { model.retryRecordingStart() },
+                    newRecording: {
+                        model.dismissCaptureTransition()
+                        beginNewRecording()
+                    },
+                    openProject: {
+                        model.dismissCaptureTransition()
+                        if let project = snapshot.projects.first(where: { $0.id == transition.projectID }) {
+                            switch ProjectRowDestination.forProject(project) {
+                            case .editor: model.send(.openProject(project.id))
+                            case .jobs: isShowingJobs = true
+                            case .recovery: model.send(.selectRoute(.recovery))
+                            }
+                        }
+                    }
+                )
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(100)
             }
@@ -900,6 +921,8 @@ struct StudioRecorderRootView: View {
     }
 
     private func beginNewRecording() {
+        guard !snapshot.isCaptureCommandInFlight, !isCaptureTransitioning, !isDeliveryActive else { return }
+        model.dismissCaptureTransition()
         newRecordingName = ""
         newRecordingProfileID = sceneLibrary.activeProfileID
         isCreatingRecording = true
@@ -2942,6 +2965,11 @@ struct StudioRecorderRootView: View {
 
 private struct CaptureTransitionOverlay: View {
     let presentation: CaptureTransitionPresentation
+    let dismiss: () -> Void
+    let cancelStart: () -> Void
+    let retryStart: () -> Void
+    let newRecording: () -> Void
+    let openProject: () -> Void
 
     var body: some View {
         ZStack {
@@ -2950,14 +2978,13 @@ private struct CaptureTransitionOverlay: View {
 
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 16) {
-                    if presentation.kind == .preparing {
+                    if presentation.kind == .preparing || presentation.kind == .saving {
                         ProgressView()
                             .controlSize(.large)
                     } else {
-                        Image(systemName: "externaldrive.badge.timemachine")
+                        Image(systemName: presentation.kind == .failed ? "exclamationmark.triangle" : "externaldrive.badge.checkmark")
                             .font(.system(size: 28, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .symbolEffect(.pulse)
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
@@ -2969,32 +2996,62 @@ private struct CaptureTransitionOverlay: View {
                     }
                 }
 
-                if let progress = presentation.progress {
-                    VStack(spacing: 7) {
-                        ProgressView(value: progress)
-                            .progressViewStyle(.linear)
-                        HStack {
-                            Text("Keep Studio Recorder open")
-                            Spacer()
-                            Text("\(Int((progress * 100).rounded()))%")
+                if let startedAt = presentation.startedAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(alignment: .leading, spacing: 6) {
+                            let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
+                            Text("\(presentation.kind == .saved ? "Since Stop" : "Elapsed") \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))")
                                 .monospacedDigit()
+                            if presentation.kind == .preparing || presentation.kind == .saving {
+                                Text(presentation.kind == .preparing ? "Recording has not started yet." : "Keep Studio Recorder open while capture finishes.")
+                                Text("Remaining time is not yet available.")
+                                    .foregroundStyle(.secondary)
+                                if elapsed >= 15 {
+                                    Text("This is taking longer than usual. \(presentation.detail)")
+                                        .foregroundStyle(.orange)
+                                }
+                            }
                         }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                        .font(.callout)
+                    }
+                }
+                if presentation.kind == .preparing {
+                    Button("Cancel Start", action: cancelStart)
+                        .keyboardShortcut(.cancelAction)
+                }
+                if presentation.kind == .failed && presentation.projectID == nil {
+                    HStack {
+                        Button("Close", action: dismiss).keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Try Again", action: retryStart)
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+                if presentation.projectID != nil {
+                    HStack {
+                        Button("Close", action: dismiss)
+                            .keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button(presentation.kind == .failed ? "Review Recording" : (presentation.isReadyToEdit ? "Open in Editor" : "View Processing"), action: openProject)
+                        Button("New Recording", action: newRecording)
+                            .disabled(!presentation.canStartAnother)
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
                     }
                 }
             }
             .padding(24)
-            .frame(width: 370)
+            .frame(width: 460)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(.white.opacity(0.10))
             }
             .shadow(color: .black.opacity(0.28), radius: 30, y: 16)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("\(presentation.title). \(presentation.detail)")
-            .accessibilityValue(presentation.progress.map { "\(Int(($0 * 100).rounded())) percent" } ?? "In progress")
+            .accessibilityValue(presentation.isReadyToEdit ? "Ready" : presentation.detail)
         }
     }
 }
