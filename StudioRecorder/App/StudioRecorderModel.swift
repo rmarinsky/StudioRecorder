@@ -251,12 +251,16 @@ struct CaptureTransitionPresentation: Equatable {
     enum Kind: Equatable {
         case preparing
         case saving
+        case saved
+        case failed
     }
 
     let kind: Kind
     let title: String
     let detail: String
     let progress: Double?
+    var projectID: String? = nil
+    var isReadyToEdit = false
 }
 
 struct StudioRecorderSnapshot: Equatable {
@@ -282,6 +286,7 @@ struct StudioRecorderSnapshot: Equatable {
     var finalizationProgress: RecordingFinalizationProgress?
     var sourceHealth = LiveSourceHealthSnapshot.empty
     var sourceRecoveryState = LiveSourceRecoveryState.idle
+    var completedRecordingID: UUID?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
@@ -344,6 +349,21 @@ struct StudioRecorderSnapshot: Equatable {
                 title: "Saving recording",
                 detail: finalizationProgress?.phase ?? "Stopping capture sources…",
                 progress: finalizationProgress?.fraction ?? 0.02
+            )
+        }
+        if let completedRecordingID,
+           let project = projects.first(where: { $0.identity.manifestID == completedRecordingID }) {
+            let ready = project.lifecycle == .finalized || project.lifecycle == .recovered
+            let failedJob = jobs.first { $0.projectID == completedRecordingID && $0.kind == .finalization && $0.state == .failed }
+            let problem = finalizationWarning ?? failedJob?.failure ?? (project.isInterrupted ? "Review the captured files in Recovery." : nil)
+            let stage = jobs.first { $0.projectID == completedRecordingID && $0.kind == .finalization }?.stage
+            return CaptureTransitionPresentation(
+                kind: problem == nil ? .saved : .failed,
+                title: problem != nil ? "Recording needs attention" : (ready ? "Recording ready" : "Recording saved"),
+                detail: problem ?? (ready ? "Your recording is ready to edit." : "\(stage ?? "Preparing for editing")… You can start another recording."),
+                progress: nil,
+                projectID: project.id,
+                isReadyToEdit: ready
             )
         }
         return nil
@@ -491,6 +511,10 @@ final class StudioRecorderModel: ObservableObject {
         observeCoordinator()
     }
 
+    func dismissCaptureTransition() {
+        snapshot.completedRecordingID = nil
+    }
+
     func launch() async {
         snapshot.launchPhase = .checking
         if let permissionCenter {
@@ -628,6 +652,7 @@ final class StudioRecorderModel: ObservableObject {
 
         switch intent {
         case .newRecording:
+            snapshot.completedRecordingID = nil
             snapshot.route = .studio
             snapshot.selectedProjectID = nil
             createFreshStudioDraft()
@@ -925,6 +950,7 @@ final class StudioRecorderModel: ObservableObject {
                 }
                 snapshot.studioDraft = draft
                 snapshot.activeCaptureRequest = request
+                snapshot.completedRecordingID = nil
                 snapshot.beginCaptureCommand(.start)
                 result = .recordingStartRequested(request)
 
@@ -1073,9 +1099,11 @@ final class StudioRecorderModel: ObservableObject {
             }
 
         case .recordingStopRequested:
+            let projectID = coordinator.activeProject?.id
             Task { @MainActor [weak self] in
                 await coordinator.stopRecording()
                 self?.synchronizeFromCoordinator()
+                self?.snapshot.completedRecordingID = projectID
             }
 
         case .recordingPauseRequested:

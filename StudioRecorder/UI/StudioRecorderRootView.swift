@@ -203,7 +203,24 @@ struct StudioRecorderRootView: View {
         .tint(coral)
         .overlay {
             if let transition = snapshot.captureTransitionPresentation {
-                CaptureTransitionOverlay(presentation: transition)
+                CaptureTransitionOverlay(
+                    presentation: transition,
+                    dismiss: { model.dismissCaptureTransition() },
+                    newRecording: {
+                        model.dismissCaptureTransition()
+                        isCreatingRecording = true
+                    },
+                    openProject: {
+                        model.dismissCaptureTransition()
+                        if let project = snapshot.projects.first(where: { $0.id == transition.projectID }) {
+                            switch ProjectRowDestination.forProject(project) {
+                            case .editor: model.send(.openProject(project.id))
+                            case .jobs: isShowingJobs = true
+                            case .recovery: model.send(.selectRoute(.recovery))
+                            }
+                        }
+                    }
+                )
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(100)
             }
@@ -2942,6 +2959,9 @@ struct StudioRecorderRootView: View {
 
 private struct CaptureTransitionOverlay: View {
     let presentation: CaptureTransitionPresentation
+    let dismiss: () -> Void
+    let newRecording: () -> Void
+    let openProject: () -> Void
 
     var body: some View {
         ZStack {
@@ -2954,10 +2974,9 @@ private struct CaptureTransitionOverlay: View {
                         ProgressView()
                             .controlSize(.large)
                     } else {
-                        Image(systemName: "externaldrive.badge.timemachine")
+                        Image(systemName: presentation.kind == .failed ? "exclamationmark.triangle" : "externaldrive.badge.checkmark")
                             .font(.system(size: 28, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .symbolEffect(.pulse)
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
@@ -2983,16 +3002,27 @@ private struct CaptureTransitionOverlay: View {
                         .foregroundStyle(.tertiary)
                     }
                 }
+                if presentation.projectID != nil {
+                    HStack {
+                        Button("Close", action: dismiss)
+                            .keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button(presentation.kind == .failed ? "Review Recording" : (presentation.isReadyToEdit ? "Open in Editor" : "View Processing"), action: openProject)
+                        Button("New Recording", action: newRecording)
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
             }
             .padding(24)
-            .frame(width: 370)
+            .frame(width: 460)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(.white.opacity(0.10))
             }
             .shadow(color: .black.opacity(0.28), radius: 30, y: 16)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("\(presentation.title). \(presentation.detail)")
             .accessibilityValue(presentation.progress.map { "\(Int(($0 * 100).rounded())) percent" } ?? "In progress")
         }

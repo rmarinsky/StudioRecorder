@@ -29,6 +29,18 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(store.preferences.audio.capturesMicrophone)
     }
 
+    func testStoppedRecordingOffersNextActionsWhileFinalizationRuns() throws {
+        var snapshot = StudioRecorderSnapshot()
+        var project = interruptedProject()
+        project.lifecycle = .finalizing
+        snapshot.projects = [project]
+        snapshot.captureState = .ready
+        snapshot.completedRecordingID = project.identity.manifestID
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.kind, .saved)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.title, "Recording saved")
+        XCTAssertTrue(snapshot.captureTransitionPresentation?.detail.contains("start another recording") == true)
+    }
+
     func testCaptureTransitionShowsPreparationOnlyForARequestedRecording() {
         var snapshot = StudioRecorderSnapshot()
         snapshot.captureState = .preparing
