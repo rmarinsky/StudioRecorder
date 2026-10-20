@@ -41,6 +41,24 @@ final class StudioRecorderModelTests: XCTestCase {
         XCTAssertTrue(snapshot.captureTransitionPresentation?.detail.contains("start another recording") == true)
     }
 
+    func testFailedStartRemainsActionableAndOldCompletionCannotCoverANewRecording() {
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.beginCaptureCommand(.start)
+        snapshot.applyCaptureState(.failed("Camera did not respond"))
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.kind, .failed)
+        XCTAssertEqual(snapshot.captureTransitionPresentation?.detail, "Camera did not respond")
+        let model = StudioRecorderModel(coordinator: nil, initialSnapshot: snapshot)
+        model.dismissCaptureTransition()
+        XCTAssertNil(model.snapshot.captureTransitionPresentation)
+
+        var project = interruptedProject()
+        project.lifecycle = .finalizing
+        snapshot.projects = [project]
+        snapshot.completedRecordingID = project.identity.manifestID
+        snapshot.applyCaptureState(.recording)
+        XCTAssertNil(snapshot.captureTransitionPresentation, "An old Stop result cannot cover an active recording")
+    }
+
     func testTransitionClockStartsOnCommandAndSavingDoesNotInventPercentage() {
         var snapshot = StudioRecorderSnapshot()
         let start = Date(timeIntervalSince1970: 100)
@@ -89,7 +107,7 @@ final class StudioRecorderModelTests: XCTestCase {
             snapshot.captureTransitionPresentation,
             CaptureTransitionPresentation(
                 kind: .saving,
-                title: "Saving recording",
+                title: "Finishing recording",
                 detail: "Rendering final video…",
                 progress: nil
             )

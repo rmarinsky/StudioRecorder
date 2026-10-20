@@ -201,14 +201,18 @@ struct StudioRecorderRootView: View {
         .background(shellContent)
         .background(WindowChromeConfigurator())
         .tint(coral)
+        .disabled(snapshot.captureTransitionPresentation != nil)
+        .accessibilityHidden(snapshot.captureTransitionPresentation != nil)
         .overlay {
             if let transition = snapshot.captureTransitionPresentation {
                 CaptureTransitionOverlay(
                     presentation: transition,
                     dismiss: { model.dismissCaptureTransition() },
+                    cancelStart: { model.cancelRecordingStart() },
+                    retryStart: { model.retryRecordingStart() },
                     newRecording: {
                         model.dismissCaptureTransition()
-                        isCreatingRecording = true
+                        beginNewRecording()
                     },
                     openProject: {
                         model.dismissCaptureTransition()
@@ -2960,6 +2964,8 @@ struct StudioRecorderRootView: View {
 private struct CaptureTransitionOverlay: View {
     let presentation: CaptureTransitionPresentation
     let dismiss: () -> Void
+    let cancelStart: () -> Void
+    let retryStart: () -> Void
     let newRecording: () -> Void
     let openProject: () -> Void
 
@@ -2995,7 +3001,7 @@ private struct CaptureTransitionOverlay: View {
                             Text("\(presentation.kind == .saved ? "Since Stop" : "Elapsed") \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))")
                                 .monospacedDigit()
                             if presentation.kind == .preparing || presentation.kind == .saving {
-                                Text(presentation.kind == .preparing ? "Recording has not started yet." : "Keep Studio Recorder open until the files are saved.")
+                                Text(presentation.kind == .preparing ? "Recording has not started yet." : "Keep Studio Recorder open while capture finishes.")
                                 Text("Remaining time is not yet available.")
                                     .foregroundStyle(.secondary)
                                 if elapsed >= 15 {
@@ -3007,6 +3013,19 @@ private struct CaptureTransitionOverlay: View {
                         .font(.callout)
                     }
                 }
+                if presentation.kind == .preparing {
+                    Button("Cancel Start", action: cancelStart)
+                        .keyboardShortcut(.cancelAction)
+                }
+                if presentation.kind == .failed && presentation.projectID == nil {
+                    HStack {
+                        Button("Close", action: dismiss).keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Try Again", action: retryStart)
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
                 if presentation.projectID != nil {
                     HStack {
                         Button("Close", action: dismiss)
@@ -3014,6 +3033,7 @@ private struct CaptureTransitionOverlay: View {
                         Spacer()
                         Button(presentation.kind == .failed ? "Review Recording" : (presentation.isReadyToEdit ? "Open in Editor" : "View Processing"), action: openProject)
                         Button("New Recording", action: newRecording)
+                            .disabled(!presentation.canStartAnother)
                             .buttonStyle(.borderedProminent)
                             .keyboardShortcut(.defaultAction)
                     }
