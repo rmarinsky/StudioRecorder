@@ -201,6 +201,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
     @Published private(set) var jobs: [RecordingJob] = []
     @Published private(set) var finalizationWarning: String?
     @Published private(set) var finalizationProgress: RecordingFinalizationProgress?
+    @Published private(set) var preparationPhase = "Starting camera and screen capture…"
+    @Published private(set) var isCancellingStart = false
     @Published private(set) var sourceHealth = LiveSourceHealthSnapshot.empty
     @Published private(set) var sourceRecoveryState = LiveSourceRecoveryState.idle
 
@@ -412,14 +414,40 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         await refreshProjects()
     }
 
+    func cancelRecordingStart(reason: String = "Recording start cancelled. You can try again.") async {
+        guard state == .preparing, activeStartAttempt != nil, !isTearingDown else { return }
+        isCancellingStart = true
+        if timelapseSession != nil {
+            await stopTimelapse(reason: reason)
+        } else {
+            await beginInterruptedTeardown(reason: reason)
+        }
+    }
+
+    func prepareForRecordingRetry() {
+        guard case .failed = state, !isTearingDown, activeProject == nil else { return }
+        isCancellingStart = false
+        finalizationWarning = nil
+        state = .ready
+    }
+
     func startRecording(
         _ request: CaptureRequest, cameraPreviewSession: CameraSessionReference? = nil,
-        timelapseFrameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)? = nil
+        timelapseFrameProvider: (@MainActor (TimelapseCaptureContext) async throws -> TimelapseFrame)? = nil,
+        startTimeout: Duration = .seconds(20)
     ) async {
-        guard state == .ready else { return }
+        guard state == .ready, !isTearingDown else { return }
         let startAttempt = UUID()
         activeStartAttempt = startAttempt
+        isCancellingStart = false
+        preparationPhase = "Checking capture sources…"
         state = .preparing
+        let watchdog = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: startTimeout) } catch { return }
+            guard let self, canContinueRecordingStart(startAttempt) else { return }
+            await cancelRecordingStart(reason: "Recording did not start in time. \(preparationPhase) You can try again.")
+        }
+        defer { watchdog.cancel() }
         terminalFailure = nil
         timelapseFrameCount = 0
         finalizationWarning = nil
@@ -572,16 +600,18 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             }
 
             if let camera = request.camera {
+                preparationPhase = "Starting camera…"
                 guard let outputURL = projectStore.rawTrackURL(for: "camera", in: project) else {
                     throw CameraTrackRecorderError.outputUnavailable
                 }
                 let recorder = CameraTrackRecorder { [weak self] message in
                     Task { @MainActor [weak self] in
-                        guard let self else { return }
+                        guard let self, activeProject?.id == project.id else { return }
                         terminalFailure = terminalFailure ?? message
                         await beginInterruptedTeardown(reason: message)
                     }
                 }
+                cameraRecorder = recorder
                 do {
                     try await recorder.start(
                         deviceID: camera.id,
@@ -599,17 +629,15 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     )
                     throw error
                 }
-                guard canContinueRecordingStart(startAttempt) else {
-                    try? await recorder.stop()
-                    return
-                }
-                cameraRecorder = recorder
+                // Cancellation owns teardown, including a camera whose start is still pending.
+                guard canContinueRecordingStart(startAttempt) else { return }
                 try projectStore.markStarted(trackID: project.trackID(for: .camera), in: project)
             }
             screenStartGate.configure(
                 expected: Set(selected.map { LiveSourceID.screen(displayID: $0.displayID) }),
                 startedAfter: Self.currentHostTime
             )
+            preparationPhase = "Starting screen and audio capture…"
             for capture in Array(captures.values) {
                 try await capture.stream.startCapture()
                 guard canContinueRecordingStart(startAttempt) else {
@@ -617,6 +645,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                     return
                 }
             }
+            preparationPhase = "Waiting for the first screen frame…"
             let hasFreshScreenFrames = await waitForFreshScreenFrames()
             guard canContinueRecordingStart(startAttempt) else { return }
             guard hasFreshScreenFrames else {
@@ -685,10 +714,14 @@ final class RecordingCoordinator: NSObject, ObservableObject {
                 },
                 onFrame: { [weak self] count in self?.timelapseFrameCount = count },
                 onFailure: { [weak self] message in
-                    Task { @MainActor in await self?.stopTimelapse(reason: message) }
+                    Task { @MainActor in
+                        guard let self, self.activeProject?.id == project.id else { return }
+                        await self.stopTimelapse(reason: message)
+                    }
                 }
             )
             timelapseSession = session
+            preparationPhase = "Waiting for the first timelapse frame…"
             try await session.start()
             guard canContinueRecordingStart(attempt) else { return }
             try projectStore.markStarted(trackID: "timelapse", in: project)
@@ -696,6 +729,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             state = .recording
             activeStartAttempt = nil
         } catch {
+            guard canContinueRecordingStart(attempt) else { return }
             await stopTimelapse(reason: error.localizedDescription)
         }
     }
@@ -713,10 +747,7 @@ final class RecordingCoordinator: NSObject, ObservableObject {
             try projectStore.markFinished(trackID: "timelapse", in: project)
             if let reason { throw TimelapseError.writerFailed(reason) }
             try jobStore.save(RecordingJob(projectID: project.id, kind: .finalization), in: project)
-            clearCaptureState()
-            state = .ready
-            isTearingDown = false
-            await refreshProjects()
+            await completeSuccessfulStop()
         } catch {
             await completeInterruptedTeardown(reason: reason ?? error.localizedDescription)
         }
@@ -844,11 +875,19 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
 
         updateFinalizationProgress(0.96, "Refreshing Projects…")
+        await completeSuccessfulStop()
+    }
+
+    // Remain unavailable across project discovery's suspension point. Publishing ready
+    // earlier allows a new start to be silently abandoned by the teardown guard.
+    func completeSuccessfulStop(refresh: (() async -> Void)? = nil) async {
+        isTearingDown = true
+        state = .stopping
         clearCaptureState()
-        state = .ready
-        await refreshProjects()
+        if let refresh { await refresh() } else { await refreshProjects() }
         isTearingDown = false
         finalizationProgress = nil
+        state = .ready
     }
 
     var hasActiveBackgroundWork: Bool {
@@ -1029,7 +1068,8 @@ final class RecordingCoordinator: NSObject, ObservableObject {
         }
         activeFinalizationJobID = nil
         activeFinalizationTask = nil
-        await refreshProjects()
+        // Publishing the finished project is foreground feedback, even when rendering ran in the background.
+        await Task(priority: .userInitiated) { await self.refreshProjects() }.value
     }
 
     private func startNextExportJob() {

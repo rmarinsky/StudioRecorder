@@ -8,6 +8,76 @@ import XCTest
 
 @MainActor
 final class RecordingProjectStoreTests: XCTestCase {
+    func testNextRecordingIsUnavailableUntilStopRefreshFinishes() async {
+        let coordinator = RecordingCoordinator(projectStore: RecordingProjectStore(baseDirectory: temporaryRootURL()))
+        await coordinator.completeSuccessfulStop {
+            XCTAssertEqual(coordinator.state, .stopping,
+                           "Project discovery suspends; another start must not enter during teardown")
+        }
+        XCTAssertEqual(coordinator.state, .ready)
+    }
+
+    func testCancelledAndTimedOutStartsCannotStopTheNextRecording() async throws {
+        for automaticTimeout in [false, true] {
+            let root = temporaryRootURL()
+            defer { try? FileManager.default.removeItem(at: root) }
+            var presentation = CapturePresentationSnapshot.default
+            presentation.canvas = CaptureCanvasSnapshot(width: 320, height: 320)
+            let request = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: presentation)
+            let coordinator = RecordingCoordinator(
+                projectStore: RecordingProjectStore(baseDirectory: root), isReadyForTesting: true,
+                availableStorageCapacity: { _ in 20_000_000_000 }
+            )
+            var pendingFrame: CheckedContinuation<TimelapseFrame, Error>?
+            let firstStart = Task {
+                await coordinator.startRecording(request, timelapseFrameProvider: { _ in
+                    try await withCheckedThrowingContinuation { pendingFrame = $0 }
+                }, startTimeout: automaticTimeout ? .milliseconds(100) : .seconds(20))
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while pendingFrame == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let pending = try XCTUnwrap(pendingFrame)
+            if automaticTimeout {
+                while coordinator.state == .preparing || coordinator.state == .stopping,
+                      ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            } else {
+                await coordinator.cancelRecordingStart()
+            }
+            if case .failed = coordinator.state {} else {
+                XCTFail("A stalled start must finish with an actionable failure")
+            }
+            coordinator.prepareForRecordingRetry()
+            XCTAssertEqual(coordinator.state, .ready)
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &buffer), kCVReturnSuccess)
+            let frame = TimelapseFrame(pixelBuffer: try XCTUnwrap(buffer))
+            let nextRequest = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: presentation)
+            await coordinator.startRecording(nextRequest, timelapseFrameProvider: { _ in frame })
+            XCTAssertEqual(coordinator.state, .recording)
+            pending.resume(throwing: TimelapseError.writerFailed("Late failure from the retired start"))
+            await firstStart.value
+            XCTAssertEqual(coordinator.state, .recording, "Retired callbacks must not tear down the next recording")
+            await coordinator.stopRecording()
+            let thirdRequest = archiveCaptureRequest(destination: root, timelapse: TimelapseSettings(), presentation: presentation)
+            await coordinator.startRecording(thirdRequest, timelapseFrameProvider: { _ in frame })
+            XCTAssertEqual(coordinator.state, .recording, "Stop must permit an immediate fresh recording")
+            await coordinator.stopRecording()
+            XCTAssertEqual(coordinator.state, .ready)
+            // Rendering completion has its own system test. Cancel remaining fixture jobs
+            // before removing their files; encoder service latency is not a start deadline.
+            for jobID in coordinator.jobs.map(\.id) {
+                guard let job = coordinator.jobs.first(where: { $0.id == jobID }),
+                      job.state == .queued || job.state == .running else { continue }
+                do { try await coordinator.cancelJob(jobID) }
+                catch RecordingJobStoreError.notCancellable { /* The job completed during cleanup. */ }
+            }
+        }
+    }
+
     func testRetiredRecordingOutputFailureDoesNotInterruptCurrentSession() async throws {
         let root = temporaryRootURL()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -158,7 +228,18 @@ final class RecordingProjectStoreTests: XCTestCase {
         let activeRequest = try XCTUnwrap(coordinator.activeCaptureRequest)
         XCTAssertFalse(activeRequest.audio.capturesMicrophone)
         XCTAssertFalse(activeRequest.audio.capturesSystemAudio)
-        await coordinator.stopRecording()
+        var snapshot = StudioRecorderSnapshot()
+        snapshot.captureState = .recording
+        snapshot.activeCaptureRequest = activeRequest
+        let model = StudioRecorderModel(coordinator: coordinator, initialSnapshot: snapshot)
+        XCTAssertEqual(model.send(.toggleRecording), .recordingStopRequested)
+        let stopDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while model.snapshot.completedRecordingID == nil, ContinuousClock.now < stopDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.snapshot.completedRecordingID, request.id)
+        XCTAssertEqual(model.snapshot.captureTransitionPresentation?.kind, .saved)
+        XCTAssertTrue(model.snapshot.captureTransitionPresentation?.canStartAnother == true)
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while coordinator.jobs.first(where: { $0.kind == .finalization })?.state != .completed,

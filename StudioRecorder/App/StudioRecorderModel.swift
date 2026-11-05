@@ -251,12 +251,18 @@ struct CaptureTransitionPresentation: Equatable {
     enum Kind: Equatable {
         case preparing
         case saving
+        case saved
+        case failed
     }
 
     let kind: Kind
     let title: String
     let detail: String
     let progress: Double?
+    var projectID: String? = nil
+    var isReadyToEdit = false
+    var startedAt: Date? = nil
+    var canStartAnother = false
 }
 
 struct StudioRecorderSnapshot: Equatable {
@@ -282,6 +288,11 @@ struct StudioRecorderSnapshot: Equatable {
     var finalizationProgress: RecordingFinalizationProgress?
     var sourceHealth = LiveSourceHealthSnapshot.empty
     var sourceRecoveryState = LiveSourceRecoveryState.idle
+    var preparationPhase = "Starting camera and screen capture…"
+    var isCancellingStart = false
+    private(set) var captureTransitionID = UUID()
+    var captureTransitionStartedAt: Date?
+    var completedRecordingID: UUID?
     private(set) var pendingCaptureCommand: PendingCaptureCommand?
 
     var isCaptureCommandInFlight: Bool { pendingCaptureCommand != nil }
@@ -311,8 +322,17 @@ struct StudioRecorderSnapshot: Equatable {
         ) ?? [.noDisplaySelected]
     }
 
-    mutating func beginCaptureCommand(_ command: PendingCaptureCommand) {
+    mutating func beginCaptureCommand(_ command: PendingCaptureCommand, at date: Date = .now) {
         pendingCaptureCommand = command
+        if command == .start || command == .stop {
+            captureTransitionID = UUID()
+            captureTransitionStartedAt = date
+        }
+    }
+
+    mutating func finishStopCommand(projectID: UUID?, transitionID: UUID) {
+        guard captureTransitionID == transitionID else { return }
+        completedRecordingID = projectID
     }
 
     mutating func applyCaptureState(_ state: RecordingState) {
@@ -330,20 +350,49 @@ struct StudioRecorderSnapshot: Equatable {
     }
 
     var captureTransitionPresentation: CaptureTransitionPresentation? {
-        if pendingCaptureCommand == .start || (captureState == .preparing && activeCaptureRequest != nil) {
+        if !isCancellingStart && (pendingCaptureCommand == .start || (captureState == .preparing && activeCaptureRequest != nil)) {
             return CaptureTransitionPresentation(
                 kind: .preparing,
                 title: "Preparing recording",
-                detail: "Starting camera and screen capture…",
-                progress: nil
+                detail: preparationPhase,
+                progress: nil,
+                startedAt: captureTransitionStartedAt
             )
         }
-        if pendingCaptureCommand == .stop || captureState == .stopping {
+        if pendingCaptureCommand == .stop || captureState == .stopping || (isCancellingStart && pendingCaptureCommand == .start) {
             return CaptureTransitionPresentation(
                 kind: .saving,
-                title: "Saving recording",
-                detail: finalizationProgress?.phase ?? "Stopping capture sources…",
-                progress: finalizationProgress?.fraction ?? 0.02
+                title: isCancellingStart ? "Cancelling start" : "Finishing recording",
+                detail: isCancellingStart ? "Releasing camera and screen capture…" : (finalizationProgress?.phase ?? "Stopping capture sources…"),
+                progress: nil,
+                startedAt: captureTransitionStartedAt
+            )
+        }
+        switch captureState {
+        case .ready, .failed: break
+        case .preparing, .recording, .paused, .stopping: return nil
+        }
+        if let completedRecordingID,
+           let project = projects.first(where: { $0.identity.manifestID == completedRecordingID }) {
+            let ready = project.lifecycle == .finalized || project.lifecycle == .recovered
+            let failedJob = jobs.first { $0.projectID == completedRecordingID && $0.kind == .finalization && $0.state == .failed }
+            let problem = finalizationWarning ?? failedJob?.failure ?? (project.isInterrupted ? "Review the captured files in Recovery." : nil)
+            let stage = jobs.first { $0.projectID == completedRecordingID && $0.kind == .finalization }?.stage
+            return CaptureTransitionPresentation(
+                kind: problem == nil ? .saved : .failed,
+                title: problem != nil ? "Recording needs attention" : (ready ? "Recording ready" : "Recording saved"),
+                detail: problem ?? (ready ? "Your recording is ready to edit." : "\(stage ?? "Preparing for editing")… You can start another recording."),
+                progress: nil,
+                projectID: project.id,
+                isReadyToEdit: ready,
+                startedAt: captureTransitionStartedAt,
+                canStartAnother: captureState == .ready
+            )
+        }
+        if case .failed(let message) = captureState, captureTransitionStartedAt != nil {
+            return CaptureTransitionPresentation(
+                kind: .failed, title: "Recording needs attention", detail: message,
+                progress: nil, startedAt: captureTransitionStartedAt
             )
         }
         return nil
@@ -491,6 +540,44 @@ final class StudioRecorderModel: ObservableObject {
         observeCoordinator()
     }
 
+    func dismissCaptureTransition() {
+        snapshot.completedRecordingID = nil
+        snapshot.captureTransitionStartedAt = nil
+        coordinator?.prepareForRecordingRetry()
+        synchronizeFromCoordinator()
+    }
+
+    func cancelRecordingStart() {
+        guard let coordinator else { return }
+        let requestID = snapshot.activeCaptureRequest?.id
+        let transitionID = snapshot.captureTransitionID
+        snapshot.isCancellingStart = true
+        Task { @MainActor [weak self] in
+            // The first frame can arrive between the click and this task running.
+            if coordinator.state == .recording, coordinator.activeCaptureRequest?.id == requestID {
+                let projectID = coordinator.activeProject?.id
+                await coordinator.stopRecording()
+                self?.synchronizeFromCoordinator()
+                if coordinator.state == .ready {
+                    self?.snapshot.finishStopCommand(projectID: projectID, transitionID: transitionID)
+                }
+            } else {
+                await coordinator.cancelRecordingStart()
+                self?.synchronizeFromCoordinator()
+            }
+        }
+    }
+
+    func retryRecordingStart() {
+        guard let coordinator, case .failed = coordinator.state else { return }
+        coordinator.prepareForRecordingRetry()
+        synchronizeFromCoordinator()
+        guard snapshot.captureState == .ready else { return }
+        snapshot.completedRecordingID = nil
+        snapshot.route = .studio
+        _ = send(.toggleRecording)
+    }
+
     func launch() async {
         snapshot.launchPhase = .checking
         if let permissionCenter {
@@ -628,6 +715,10 @@ final class StudioRecorderModel: ObservableObject {
 
         switch intent {
         case .newRecording:
+            guard !snapshot.isCaptureCommandInFlight,
+                  snapshot.captureState != .recording, snapshot.captureState != .paused,
+                  snapshot.captureState != .stopping else { return .ignored }
+            snapshot.completedRecordingID = nil
             snapshot.route = .studio
             snapshot.selectedProjectID = nil
             createFreshStudioDraft()
@@ -925,6 +1016,7 @@ final class StudioRecorderModel: ObservableObject {
                 }
                 snapshot.studioDraft = draft
                 snapshot.activeCaptureRequest = request
+                snapshot.completedRecordingID = nil
                 snapshot.beginCaptureCommand(.start)
                 result = .recordingStartRequested(request)
 
@@ -1073,9 +1165,14 @@ final class StudioRecorderModel: ObservableObject {
             }
 
         case .recordingStopRequested:
+            let projectID = coordinator.activeProject?.id
+            let transitionID = snapshot.captureTransitionID
             Task { @MainActor [weak self] in
                 await coordinator.stopRecording()
                 self?.synchronizeFromCoordinator()
+                if coordinator.activeCaptureRequest == nil {
+                    self?.snapshot.finishStopCommand(projectID: projectID, transitionID: transitionID)
+                }
             }
 
         case .recordingPauseRequested:
@@ -1107,6 +1204,8 @@ final class StudioRecorderModel: ObservableObject {
         snapshot.interruptedProjects = coordinator.interruptedProjects
         snapshot.finalizationWarning = coordinator.finalizationWarning
         snapshot.finalizationProgress = coordinator.finalizationProgress
+        snapshot.preparationPhase = coordinator.preparationPhase
+        snapshot.isCancellingStart = coordinator.isCancellingStart
         snapshot.recordedDuration = coordinator.recordedDuration
         snapshot.timelapseFrameCount = coordinator.timelapseFrameCount
         snapshot.sourceHealth = coordinator.sourceHealth
